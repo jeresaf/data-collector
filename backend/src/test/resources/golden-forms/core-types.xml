@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<h:html xmlns:h="http://www.w3.org/1999/xhtml"
+        xmlns="http://www.w3.org/2002/xforms"
+        xmlns:jr="http://openrosa.org/javarosa">
+  <h:head>
+    <h:title>Golden Core Types</h:title>
+    <model>
+      <instance>
+        <data id="golden_core" version="2026.08.14">
+          <name/>
+          <age/>
+          <score/>
+          <visit_date/>
+          <consent/>
+          <adult/>
+          <meta><instanceID/></meta>
+        </data>
+      </instance>
+      <bind nodeset="/data/name" type="string" required="true()"/>
+      <bind nodeset="/data/age" type="int" constraint=". &gt;= 0 and . &lt;= 120"/>
+      <bind nodeset="/data/score" type="decimal"/>
+      <bind nodeset="/data/visit_date" type="date"/>
+      <bind nodeset="/data/consent" type="select1"/>
+      <bind nodeset="/data/adult" type="string" calculate="if(/data/age &gt;= 18, 'yes', 'no')"/>
+    </model>
+  </h:head>
+  <h:body>
+    <input ref="/data/name"><label>Name</label></input>
+    <input ref="/data/age"><label>Age</label></input>
+    <input ref="/data/score"><label>Score</label></input>
+    <input ref="/data/visit_date"><label>Visit date</label></input>
+    <select1 ref="/data/consent">
+      <label>Consent</label>
+      <item><label>Yes</label><value>yes</value></item>
+      <item><label>No</label><value>no</value></item>
+    </select1>
+  </h:body>
+</h:html>

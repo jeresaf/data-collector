@@ -1,0 +1,241 @@
+# =========================================================
+# ODK Platform - Root .gitignore
+# Spring Boot / Maven + Vue / Vite + Playwright + Python tools
+# =========================================================
+
+# ---------------------------------------------------------
+# OS files
+# ---------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+
+# ---------------------------------------------------------
+# IDE / Editor files
+# ---------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+
+.project
+.classpath
+.settings/
+.factorypath
+
+# ---------------------------------------------------------
+# Java / Maven
+# ---------------------------------------------------------
+backend/target/
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Maven backup / release files
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+
+# ---------------------------------------------------------
+# Spring Boot / application runtime
+# ---------------------------------------------------------
+*.log
+logs/
+backend/logs/
+
+# Local runtime storage / uploaded files
+backend/uploads/
+backend/storage/
+backend/data/
+uploads/
+storage/
+
+# PID / temp files
+*.pid
+*.pid.lock
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------
+# Environment / secrets
+# ---------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.template
+
+backend/.env
+frontend/.env
+
+# Local Spring configuration that may contain secrets
+backend/src/main/resources/application-local.yml
+backend/src/main/resources/application-local.yaml
+backend/src/main/resources/application-local.properties
+
+# Certificates / keys / secrets
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# ---------------------------------------------------------
+# Frontend / Node / Vue / Vite
+# ---------------------------------------------------------
+frontend/node_modules/
+node_modules/
+
+frontend/dist/
+dist/
+
+frontend/.vite/
+.vite/
+
+frontend/coverage/
+coverage/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Keep npm lockfile committed
+# package-lock.json
+
+# ---------------------------------------------------------
+# Vitest
+# ---------------------------------------------------------
+.vitest/
+frontend/.vitest/
+
+# ---------------------------------------------------------
+# Playwright
+# ---------------------------------------------------------
+frontend/playwright-report/
+frontend/test-results/
+frontend/blob-report/
+playwright-report/
+test-results/
+blob-report/
+
+# Playwright browser cache if locally redirected into project
+.playwright/
+
+# ---------------------------------------------------------
+# Python / pyxform
+# ---------------------------------------------------------
+.pyxform-venv/
+backend/.ci-pyxform/
+.venv/
+venv/
+env/
+ENV/
+
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python packaging
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ---------------------------------------------------------
+# Test / coverage outputs
+# ---------------------------------------------------------
+backend/target/surefire-reports/
+backend/target/failsafe-reports/
+*.exec
+
+# ---------------------------------------------------------
+# Database / local development files
+# ---------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+
+# PostgreSQL local data directories if created inside repo
+postgres-data/
+pgdata/
+
+# ---------------------------------------------------------
+# Docker local overrides
+# ---------------------------------------------------------
+docker-compose.override.yml
+docker-compose.local.yml
+
+# ---------------------------------------------------------
+# Local temporary / generated files
+# ---------------------------------------------------------
+tmp/
+temp/
+.cache/
+backend/.cache/
+frontend/.cache/
+
+*.bak
+*.backup
+*.orig
+
+# ---------------------------------------------------------
+# Archives / generated exports
+# ---------------------------------------------------------
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Generated report/export files
+exports/
+backend/exports/
+
+# ---------------------------------------------------------
+# Project-specific local certification artifacts
+# ---------------------------------------------------------
+backend/target/
+frontend/playwright-report/
+frontend/test-results/
+
+# Do NOT ignore source migrations, tests, fixtures, docs, or lockfiles.
+# Keep committed:
+# - backend/src/main/resources/db/migration/
+# - backend/src/test/resources/db/migration/
+# - frontend/e2e/
+# - frontend/package-lock.json
+# - .github/workflows/

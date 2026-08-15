@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<h:html xmlns:h="http://www.w3.org/1999/xhtml"
+        xmlns="http://www.w3.org/2002/xforms"
+        xmlns:jr="http://openrosa.org/javarosa">
+  <h:head>
+    <h:title>Golden Groups and Repeats</h:title>
+    <model>
+      <instance>
+        <data id="golden_repeat" version="2026.08.14">
+          <household_name/>
+          <members>
+            <member jr:template="">
+              <name/>
+              <age/>
+            </member>
+          </members>
+          <meta><instanceID/></meta>
+        </data>
+      </instance>
+      <bind nodeset="/data/household_name" type="string"/>
+      <bind nodeset="/data/members/member/name" type="string" required="true()"/>
+      <bind nodeset="/data/members/member/age" type="int"/>
+    </model>
+  </h:head>
+  <h:body>
+    <input ref="/data/household_name"><label>Household name</label></input>
+    <group ref="/data/members">
+      <label>Members</label>
+      <repeat nodeset="/data/members/member">
+        <input ref="/data/members/member/name"><label>Member name</label></input>
+        <input ref="/data/members/member/age"><label>Member age</label></input>
+      </repeat>
+    </group>
+  </h:body>
+</h:html>
