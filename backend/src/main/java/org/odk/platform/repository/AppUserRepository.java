@@ -15,7 +15,11 @@ public interface AppUserRepository extends JpaRepository<AppUser, UUID> {
 
     Optional<AppUser> findByUsername(String username);
 
+    Optional<AppUser> findByEmail(String email);
+
     boolean existsByUsername(String username);
+
+    boolean existsByEmail(String email);
 
     @Query("SELECT au FROM AppUser au JOIN FETCH au.appUserProjects WHERE au.id = :id")
     Optional<AppUser> findByIdWithProjects(@Param("id") UUID id);
@@ -25,6 +29,6 @@ public interface AppUserRepository extends JpaRepository<AppUser, UUID> {
 
     List<AppUser> findByIsActiveTrue();
 
-    @Query("SELECT au FROM AppUser au JOIN au.appUserProjects aup WHERE aup.project.id = :projectId")
+    @Query("SELECT DISTINCT au FROM AppUser au JOIN au.appUserProjects aup WHERE aup.project.id = :projectId")
     List<AppUser> findByProjectId(@Param("projectId") UUID projectId);
 }

@@ -11,6 +11,13 @@ import SubmissionsView from '@/views/SubmissionsView.vue'
 import SubmissionDetailView from '@/views/SubmissionDetailView.vue'
 import WebFormView from '@/views/WebFormView.vue'
 import LoginView from '@/views/LoginView.vue'
+import AppFormsView from '@/views/AppFormsView.vue'
+import AppFormStartView from '@/views/AppFormStartView.vue'
+import AppDraftsView from '@/views/AppDraftsView.vue'
+import AppSubmittedView from '@/views/AppSubmittedView.vue'
+import ReviewAnswersPage from '@/views/ReviewAnswersPage.vue'
+import AppSessionSubmitView from '@/views/AppSessionSubmitView.vue'
+import IdentityAdminView from '@/views/IdentityAdminView.vue'
 import { getStoredAuthUser, hasStoredAccessToken } from '@/stores/auth'
 
 declare module 'vue-router' {
@@ -59,6 +66,58 @@ const router = createRouter({
       component: SubmissionDetailView,
       meta: { requiresAuth: true },
     },
+
+    // User-facing form workflow shell.
+    {
+      path: '/app/forms',
+      name: 'app-forms',
+      component: AppFormsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/app/forms/:formId/start',
+      name: 'app-form-start',
+      component: AppFormStartView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/app/sessions/:sessionId/fill',
+      name: 'app-session-fill',
+      component: WebFormView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/app/sessions/:sessionId/review',
+      name: 'app-session-review',
+      component: ReviewAnswersPage,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/app/sessions/:sessionId/submit',
+      name: 'app-session-submit',
+      component: AppSessionSubmitView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/app/drafts',
+      name: 'app-drafts',
+      component: AppDraftsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/app/submitted',
+      name: 'app-submitted',
+      component: AppSubmittedView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/admin/identity',
+      name: 'identity-admin',
+      component: IdentityAdminView,
+      meta: { requiresAuth: true, roles: ['SYSTEM_ADMIN'] },
+    },
+
+    // Compatibility routes retained for existing links/tests.
     {
       path: '/forms/:formVersionId/web',
       name: 'web-form-new',

@@ -32,6 +32,14 @@ async function logout() {
         <nav class="app-nav" aria-label="Primary navigation">
           <RouterLink to="/" class="nav-link">Projects</RouterLink>
           <RouterLink to="/submissions" class="nav-link">Submissions</RouterLink>
+          <RouterLink to="/app/forms" class="nav-link">Forms</RouterLink>
+          <RouterLink
+            v-if="authStore.hasRole('SYSTEM_ADMIN')"
+            to="/admin/identity"
+            class="nav-link"
+          >
+            Users
+          </RouterLink>
         </nav>
 
         <div class="auth-actions">
@@ -92,13 +100,18 @@ async function logout() {
     flex-wrap: wrap;
   }
 
-  .auth-actions {
+  .app-nav {
+    order: 3;
     width: 100%;
-    justify-content: flex-end;
+    overflow-x: auto;
+  }
+
+  .auth-actions {
+    margin-left: auto;
   }
 
   .user-name {
-    max-width: 55vw;
+    max-width: 35vw;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

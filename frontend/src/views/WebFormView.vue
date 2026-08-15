@@ -10,8 +10,9 @@ const route = useRoute()
 const router = useRouter()
 const webFormStore = useWebFormStore()
 
-const formVersionId = computed(() => route.params.formVersionId as string)
+const formVersionId = computed(() => route.params.formVersionId as string | undefined)
 const sessionId = computed(() => route.params.sessionId as string | undefined)
+const isAppWorkflow = computed(() => String(route.path || '').startsWith('/app/'))
 
 const isLoading = ref(false)
 const showSubmitConfirm = ref(false)
@@ -20,19 +21,22 @@ const validationErrors = ref<string[]>([])
 async function initializeForm() {
   isLoading.value = true
   try {
-    await webFormStore.getFormDefinition(formVersionId.value)
-
     if (sessionId.value) {
-      // Resume existing session.
-      await webFormStore.getSession(sessionId.value)
+      // User-facing /app sessions intentionally carry only the session id.
+      // Resolve the exact persisted form version from the authorized session.
+      const session = await webFormStore.getSession(sessionId.value)
+      await webFormStore.getFormDefinition(session.formVersionId)
       await webFormStore.getCurrentScreen(sessionId.value)
-    } else {
-      // Start a new JavaRosa-backed session.
+    } else if (formVersionId.value) {
+      // Compatibility path for existing technical form-version links.
+      await webFormStore.getFormDefinition(formVersionId.value)
       await webFormStore.startSession(formVersionId.value)
+    } else {
+      throw new Error('A form version or existing session is required')
     }
   } catch (err) {
     console.error('Failed to initialize form:', err)
-    router.push({ name: 'projects' })
+    router.push({ name: String(route.path || '').startsWith('/app/') ? 'app-forms' : 'projects' })
   } finally {
     isLoading.value = false
   }
@@ -133,13 +137,23 @@ async function handleValidate() {
 
 async function handleSubmit() {
   if (!webFormStore.currentSession) return
-  
+
+  if (isAppWorkflow.value) {
+    // New user-facing workflow: review persisted answers before finalization.
+    await router.push({
+      name: 'app-session-review',
+      params: { sessionId: webFormStore.currentSession.id },
+    })
+    return
+  }
+
+  // Compatibility behavior for existing technical links and certified E2E.
   showSubmitConfirm.value = true
 }
 
 async function confirmSubmit() {
   if (!webFormStore.currentSession) return
-  
+
   try {
     const result = await webFormStore.finalizeSession(webFormStore.currentSession.id)
     if (result.success) {
@@ -336,7 +350,9 @@ watch(
           <p>You have reached the end of the form. Review your answers and submit when ready.</p>
           <div class="complete-actions">
             <button @click="handleValidate" class="btn-secondary">Validate Form</button>
-            <button @click="handleSubmit" class="btn-primary">Submit Form</button>
+            <button @click="handleSubmit" class="btn-primary">
+              {{ isAppWorkflow ? 'Review answers' : 'Submit Form' }}
+            </button>
           </div>
         </div>
 
@@ -382,7 +398,9 @@ watch(
       </footer>
     </div>
 
-    <!-- Submit Confirmation Modal -->
+
+    <!-- Legacy technical-route submit confirmation. The /app workflow uses
+         dedicated review and submit pages instead. -->
     <div v-if="showSubmitConfirm" class="modal-overlay" @click.self="showSubmitConfirm = false">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <h3 id="modal-title">Submit Form</h3>
@@ -689,6 +707,7 @@ watch(
 .btn-danger:hover:not(:disabled) {
   background: #dc2626;
 }
+
 
 .modal-overlay {
   position: fixed;

@@ -10,9 +10,16 @@ public final class AuditActions {
     public static final String LOGIN_SUCCESS = "LOGIN_SUCCESS";
     public static final String LOGIN_FAILURE = "LOGIN_FAILURE";
     public static final String LOGOUT = "LOGOUT";
+
     public static final String USER_CREATED = "USER_CREATED";
+    public static final String USER_UPDATED = "USER_UPDATED";
+    public static final String USER_STATUS_CHANGED = "USER_STATUS_CHANGED";
     public static final String USER_ROLE_CHANGED = "USER_ROLE_CHANGED";
+
     public static final String APP_USER_CREATED = "APP_USER_CREATED";
+    public static final String APP_USER_UPDATED = "APP_USER_UPDATED";
+    public static final String APP_USER_STATUS_CHANGED = "APP_USER_STATUS_CHANGED";
+
     public static final String PROJECT_CREATED = "PROJECT_CREATED";
     public static final String PROJECT_UPDATED = "PROJECT_UPDATED";
     public static final String PROJECT_ARCHIVED = "PROJECT_ARCHIVED";

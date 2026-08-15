@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Project, CreateProjectRequest, UpdateProjectRequest } from '@/stores/project'
 
 interface Props {
@@ -91,7 +91,7 @@ function handleClose() {
             :class="{ error: errors.name }"
             placeholder="Enter project name"
             maxlength="100"
-            disabled="submitting"
+            :disabled="submitting"
           />
           <span v-if="errors.name" class="error-message">{{ errors.name }}</span>
         </div>
@@ -104,7 +104,7 @@ function handleClose() {
             rows="4"
             placeholder="Enter project description (optional)"
             maxlength="500"
-            disabled="submitting"
+            :disabled="submitting"
           ></textarea>
           <span class="char-count">{{ form.description.length }}/500</span>
         </div>
