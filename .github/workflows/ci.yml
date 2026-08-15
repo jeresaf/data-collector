@@ -42,7 +42,24 @@ jobs:
           python3 -m venv .ci-pyxform
           .ci-pyxform/bin/python -m pip install --upgrade pip
           .ci-pyxform/bin/pip install "pyxform==4.5.0"
-          .ci-pyxform/bin/xls2xform --version || true
+          test -x .ci-pyxform/bin/xls2xform
+
+      - name: Resolve Maven dependencies with retry
+        run: |
+          for attempt in 1 2 3; do
+            if mvn -B -ntp -U -DskipTests dependency:go-offline; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "Maven dependency resolution failed after 3 attempts."
+              exit 1
+            fi
+
+            sleep_seconds=$((attempt * 20))
+            echo "Maven Central request failed; retrying in ${sleep_seconds}s..."
+            sleep "$sleep_seconds"
+          done
 
       - name: Run backend test suite
         run: mvn -B -ntp clean test
@@ -58,6 +75,7 @@ jobs:
 
   postgres-testcontainers:
     name: PostgreSQL Testcontainers
+    needs: backend-tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
