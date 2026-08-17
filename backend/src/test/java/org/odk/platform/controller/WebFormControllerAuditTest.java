@@ -11,6 +11,7 @@ import org.odk.platform.domain.FormVersion;
 import org.odk.platform.domain.Project;
 import org.odk.platform.domain.Submission;
 import org.odk.platform.domain.XForm;
+import org.odk.platform.service.FormDefinition;
 import org.odk.platform.service.WebFormAccessService;
 import org.odk.platform.service.WebFormRuntimeService;
 
@@ -26,6 +27,7 @@ class WebFormControllerAuditTest {
     @Mock WebFormRuntimeService webFormRuntimeService;
     @Mock WebFormAccessService webFormAccessService;
     @Mock AuditService auditService;
+    @Mock FormDefinition formDefinition;
     @InjectMocks WebFormController controller;
 
     @Test
@@ -43,6 +45,8 @@ class WebFormControllerAuditTest {
                 .formVersion(version)
                 .instanceId("uuid:web-audit")
                 .build();
+        when(webFormRuntimeService.getFormDefinitionWithInstance(sessionId)).thenReturn(formDefinition);
+        when(formDefinition.validate()).thenReturn(new FormDefinition.ValidationResult(true, null, 0));
         when(webFormRuntimeService.finalizeSession(sessionId)).thenReturn(submission);
 
         var response = controller.finalizeSession(sessionId);
@@ -58,6 +62,8 @@ class WebFormControllerAuditTest {
     @Test
     void finalizeFailure_emitsErrorAudit() {
         UUID sessionId = UUID.randomUUID();
+        when(webFormRuntimeService.getFormDefinitionWithInstance(sessionId)).thenReturn(formDefinition);
+        when(formDefinition.validate()).thenReturn(new FormDefinition.ValidationResult(true, null, 0));
         when(webFormRuntimeService.finalizeSession(sessionId)).thenThrow(new IllegalStateException("invalid form"));
 
         var response = controller.finalizeSession(sessionId);

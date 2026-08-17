@@ -249,14 +249,14 @@ class OpenRosaSubmissionIntegrationTest {
     // ==================== HEAD Endpoint Tests ====================
 
     @Test
-    void submissionHeadEndpoint_ReturnsOkWithContentLength() throws Exception {
+    void submissionHeadEndpoint_ReturnsNoContentWithAcceptContentLength() throws Exception {
         mockMvc.perform(head("/v1/projects/{projectId}/submission", testProjectId)
                         .header("Authorization", validCredentials)
                         .contentType(MediaType.APPLICATION_XML)
                         .content("<data id=\"test_submission_form\"><name>Test</name></data>"))
-                .andExpect(status().isOk())
+                .andExpect(status().isNoContent())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"))
-                .andExpect(header().exists("Content-Length"));
+                .andExpect(header().string("X-OpenRosa-Accept-Content-Length", "104857600"));
     }
 
     @Test

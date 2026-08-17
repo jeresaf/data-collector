@@ -112,6 +112,12 @@ describe('WebFormView web runtime integration', () => {
         } as any
       }
 
+      if (url === '/web/sessions/session-1/progress') {
+        return {
+          data: { answeredQuestions: 0, totalQuestions: 1, percent: 0 },
+        } as any
+      }
+
       throw new Error(`Unexpected GET ${url}`)
     })
 
@@ -178,4 +184,99 @@ describe('WebFormView web runtime integration', () => {
       },
     )
   })
+
+  it('renders every relevant question in an appearance=field-list group on one screen', async () => {
+    const fieldListGroup = {
+      label: 'Enumerator and interview details',
+      path: 'enumerator_details',
+      instancePath: 'enumerator_details[1]',
+      depth: 0,
+      hierarchy: [],
+      isRepeat: false,
+      repeatCount: 0,
+      currentRepeatIndex: null,
+      repeatTargetCount: null,
+      repeatCountControlled: false,
+      canAddRepeat: false,
+      canDeleteRepeat: false,
+      appearanceHint: 'field-list',
+    }
+
+    const baseQuestion = {
+      index: 1,
+      groupHierarchy: [{
+        label: 'Enumerator and interview details',
+        path: 'enumerator_details',
+        instancePath: 'enumerator_details[1]',
+        repeat: false,
+        repeatIndex: null,
+        depth: 0,
+        appearanceHint: 'field-list',
+      }],
+      repeatPath: null,
+      repeatIndex: null,
+      hint: '',
+      controlType: 1,
+      required: true,
+      readOnly: false,
+      constraintText: '',
+      appearanceHint: '',
+      mediaType: null,
+      currentAnswer: null,
+      choices: [],
+    }
+
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/web/forms/form-version-1/definition') {
+        return { data: {
+          formVersionId: 'form-version-1',
+          title: 'Farm Data Collection - Comprehensive Test',
+          xmlFormId: 'farm_data_collection_test',
+          availableLocales: ['en'],
+          compatibilityWarnings: [],
+        } } as any
+      }
+      if (url === '/web/sessions/session-1') {
+        return { data: {
+          id: 'session-1', formVersionId: 'form-version-1', status: 'active',
+          currentScreen: '8', startedAt: '2026-08-16T10:00:00Z',
+          lastActivityAt: '2026-08-16T10:00:00Z', completedAt: null,
+        } } as any
+      }
+      if (url === '/web/sessions/session-1/current') {
+        return { data: {
+          event: 8, isAtBeginning: false, isAtEnd: false,
+          question: null, group: fieldListGroup, repeatJuncture: null,
+        } } as any
+      }
+      if (url === '/web/sessions/session-1/progress') {
+        return { data: { answeredQuestions: 0, totalQuestions: 8, percent: 0 } } as any
+      }
+      if (url === '/web/sessions/session-1/field-list') {
+        return { data: {
+          groupPath: 'enumerator_details',
+          groupInstancePath: 'enumerator_details[1]',
+          questions: [
+            { ...baseQuestion, name: 'enumerator_name', path: 'enumerator_details/enumerator_name', instancePath: 'enumerator_details[1]/enumerator_name[1]', label: 'Enumerator name', dataType: 1, questionType: 'text' },
+            { ...baseQuestion, index: 2, name: 'interview_date', path: 'enumerator_details/interview_date', instancePath: 'enumerator_details[1]/interview_date[1]', label: 'Interview date', dataType: 4, questionType: 'date' },
+            { ...baseQuestion, index: 3, name: 'interview_time', path: 'enumerator_details/interview_time', instancePath: 'enumerator_details[1]/interview_time[1]', label: 'Interview time', dataType: 5, questionType: 'time' },
+          ],
+        } } as any
+      }
+      throw new Error(`Unexpected GET ${url}`)
+    })
+
+    const wrapper = mount(WebFormView, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Enumerator and interview details')
+    expect(wrapper.text()).toContain('Enumerator name')
+    expect(wrapper.text()).toContain('Interview date')
+    expect(wrapper.text()).toContain('Interview time')
+    expect(wrapper.text()).not.toContain('no questions to answer')
+    expect(wrapper.findAll('.web-form-question')).toHaveLength(3)
+    expect(wrapper.findAll('input[type="date"]')).toHaveLength(1)
+    expect(wrapper.findAll('input[type="time"]')).toHaveLength(1)
+  })
+
 })

@@ -43,9 +43,9 @@ import java.util.Map;
 @Slf4j
 public class JavaRosaFormLoader {
 
-    // JavaRosa uses a non-blocking global parse lock. Serialize parses here so
-    // concurrent web requests wait instead of failing with "Another XForm is being parsed!".
-    private static final Object XFORM_PARSER_LOCK = new Object();
+    // JavaRosa uses a process-global, non-blocking parser lock. All application
+    // parsing entry points synchronize on XFormParser.class so this loader and
+    // FormDefinition share the same blocking monitor.
 
     /*
      * JavaRosa keeps the XForms restoration/answer factory in process-global
@@ -76,7 +76,7 @@ public class JavaRosaFormLoader {
                 new ByteArrayInputStream(processedXml.getBytes(StandardCharsets.UTF_8)),
                 StandardCharsets.UTF_8)) {
             FormDef formDef;
-            synchronized (XFORM_PARSER_LOCK) {
+            synchronized (XFormParser.class) {
                 formDef = new XFormParser(reader).parse();
             }
             // Store original XML for metadata extraction
@@ -122,7 +122,7 @@ public class JavaRosaFormLoader {
                         StandardCharsets.UTF_8)) {
 
             FormDef formDef;
-            synchronized (XFORM_PARSER_LOCK) {
+            synchronized (XFormParser.class) {
                 formDef = new XFormParser(formReader, instanceReader).parse();
             }
             if (formDef.getLocalizer() == null) {
@@ -173,7 +173,7 @@ public class JavaRosaFormLoader {
 
         try (Reader formReader = new StringReader(formXml);
              Reader instanceReader = new StringReader(instanceXml)) {
-            synchronized (XFORM_PARSER_LOCK) {
+            synchronized (XFormParser.class) {
                 return new XFormParser(formReader, instanceReader).parse();
             }
         } catch (XFormParser.ParseException e) {

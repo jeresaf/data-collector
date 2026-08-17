@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root>
+  <item><name>loam</name><label>Loam</label><ph>6.5</ph><drainage>good</drainage></item>
+  <item><name>clay</name><label>Clay</label><ph>6.0</ph><drainage>slow</drainage></item>
+  <item><name>sandy</name><label>Sandy soil</label><ph>5.8</ph><drainage>fast</drainage></item>
+  <item><name>volcanic</name><label>Volcanic / fertile dark soil</label><ph>6.8</ph><drainage>good</drainage></item>
+</root>

@@ -1,6 +1,5 @@
 package org.odk.platform.audit;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,7 +34,6 @@ public class AuditService {
     private static final String USER_AGENT = "userAgent";
 
     private final AuditLogRepository auditLogRepository;
-    private final ObjectMapper objectMapper;
     private final UserRepository userRepository;
     private final AppUserRepository appUserRepository;
 
@@ -98,11 +96,7 @@ public class AuditService {
                 : new LinkedHashMap<>(details);
 
         if (!safeDetails.isEmpty()) {
-            try {
-                auditLog.setNewValues(objectMapper.writeValueAsString(safeDetails));
-            } catch (Exception e) {
-                log.warn("Failed to serialize audit details: {}", e.getMessage());
-            }
+            auditLog.setNewValues(new LinkedHashMap<>(safeDetails));
         }
 
         resolveActor(auditLog, safeDetails);

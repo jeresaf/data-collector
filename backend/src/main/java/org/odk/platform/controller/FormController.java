@@ -30,13 +30,19 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class FormController {
 
+    private static final String READ_ACCESS =
+            "hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_ADMIN') or " +
+            "hasRole('PROJECT_MANAGER') or hasRole('DATA_ANALYST') or hasRole('VIEWER') or hasRole('USER')";
+    private static final String MANAGE_ACCESS =
+            "hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_ADMIN') or hasRole('PROJECT_MANAGER')";
+
     private final FormVersionService formVersionService;
     private final FormAttachmentService attachmentService;
     private final FormExternalDatasetService externalDatasetService;
 
     // Form Version endpoints
     @GetMapping
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<FormVersion> getFormVersion(
             @PathVariable UUID formId,
             @PathVariable UUID versionId) {
@@ -48,7 +54,7 @@ public class FormController {
 
     // Form Attachment endpoints
     @GetMapping("/attachments")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<Page<FormAttachmentDto>> getAttachments(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -58,7 +64,7 @@ public class FormController {
     }
 
     @GetMapping("/attachments/all")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<List<FormAttachmentDto>> getAllAttachments(
             @PathVariable UUID formId,
             @PathVariable UUID versionId) {
@@ -67,7 +73,7 @@ public class FormController {
     }
 
     @GetMapping("/attachments/{attachmentId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<FormAttachmentDto> getAttachment(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -78,7 +84,7 @@ public class FormController {
     }
 
     @PostMapping("/attachments")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ResponseEntity<FormAttachmentDto> uploadAttachment(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -89,7 +95,7 @@ public class FormController {
     }
 
     @PutMapping("/attachments/{attachmentId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ResponseEntity<FormAttachmentDto> updateAttachment(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -100,7 +106,7 @@ public class FormController {
     }
 
     @DeleteMapping("/attachments/{attachmentId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ResponseEntity<Void> deleteAttachment(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -110,7 +116,7 @@ public class FormController {
     }
 
     @GetMapping("/attachments/{attachmentId}/download")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<Resource> downloadAttachment(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -128,7 +134,7 @@ public class FormController {
     }
 
     @GetMapping("/attachments/count")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<Long> getAttachmentCount(
             @PathVariable UUID formId,
             @PathVariable UUID versionId) {
@@ -137,7 +143,7 @@ public class FormController {
     }
 
     @GetMapping("/attachments/total-size")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<Long> getTotalAttachmentSize(
             @PathVariable UUID formId,
             @PathVariable UUID versionId) {
@@ -147,7 +153,7 @@ public class FormController {
 
     // Form External Dataset endpoints
     @GetMapping("/external-datasets")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<Page<FormExternalDatasetDto>> getExternalDatasets(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -157,7 +163,7 @@ public class FormController {
     }
 
     @GetMapping("/external-datasets/all")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<List<FormExternalDatasetDto>> getAllExternalDatasets(
             @PathVariable UUID formId,
             @PathVariable UUID versionId) {
@@ -166,7 +172,7 @@ public class FormController {
     }
 
     @GetMapping("/external-datasets/active")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<List<FormExternalDatasetDto>> getActiveExternalDatasets(
             @PathVariable UUID formId,
             @PathVariable UUID versionId) {
@@ -175,7 +181,7 @@ public class FormController {
     }
 
     @GetMapping("/external-datasets/{externalDatasetId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<FormExternalDatasetDto> getExternalDataset(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -186,7 +192,7 @@ public class FormController {
     }
 
     @PostMapping("/external-datasets")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ResponseEntity<FormExternalDatasetDto> uploadExternalDataset(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -197,7 +203,7 @@ public class FormController {
     }
 
     @PutMapping("/external-datasets/{externalDatasetId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ResponseEntity<FormExternalDatasetDto> updateExternalDataset(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -208,7 +214,7 @@ public class FormController {
     }
 
     @DeleteMapping("/external-datasets/{externalDatasetId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ResponseEntity<Void> deleteExternalDataset(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -218,7 +224,7 @@ public class FormController {
     }
 
     @GetMapping("/external-datasets/{externalDatasetId}/download")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<Resource> downloadExternalDataset(
             @PathVariable UUID formId,
             @PathVariable UUID versionId,
@@ -236,7 +242,7 @@ public class FormController {
     }
 
     @GetMapping("/external-datasets/count")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<Long> getExternalDatasetCount(
             @PathVariable UUID formId,
             @PathVariable UUID versionId) {

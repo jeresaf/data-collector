@@ -15,19 +15,31 @@ const workflow = useWebFormWorkflowStore()
 const submitting = ref(false)
 const instanceId = ref<string | null>(null)
 const completed = ref(false)
+const submissionError = ref<string | null>(null)
+const failedQuestionLabel = ref<string | null>(null)
 const sessionId = computed(() => route.params.sessionId as string)
 
 async function submit() {
   submitting.value = true
+  submissionError.value = null
+  failedQuestionLabel.value = null
   try {
+    const validation = await runtime.validateForm(sessionId.value)
+    if (!validation.valid) {
+      failedQuestionLabel.value = validation.failedQuestion?.label || validation.failedQuestion?.name || null
+      submissionError.value = validation.message || 'Please correct the highlighted form field before submitting.'
+      return
+    }
+
     const result = await runtime.finalizeSession(sessionId.value)
     if (!result.success) {
-      throw new Error(result.message)
+      submissionError.value = result.validation?.message || result.message || 'The form could not be submitted.'
+      return
     }
     instanceId.value = result.instanceId
     completed.value = true
   } catch {
-    // Runtime store contains the API error; keep user on confirmation screen.
+    submissionError.value = runtime.error || 'The form could not be submitted. Please try again.'
   } finally {
     submitting.value = false
   }
@@ -82,9 +94,18 @@ onMounted(async () => {
           </div>
         </dl>
 
-        <p v-if="workflow.error || runtime.error" class="error" role="alert">
-          {{ workflow.error || runtime.error }}
-        </p>
+        <div v-if="submissionError || workflow.error || runtime.error" class="error" role="alert">
+          <strong>Submission needs attention</strong>
+          <p>{{ submissionError || workflow.error || runtime.error }}</p>
+          <button
+            v-if="failedQuestionLabel"
+            type="button"
+            class="fix-field"
+            @click="router.push({ name: 'app-session-fill', params: { sessionId } })"
+          >
+            Fix {{ failedQuestionLabel }}
+          </button>
+        </div>
 
         <footer class="actions">
           <button
@@ -121,6 +142,8 @@ button {
 }
 button.secondary { background: #e5e7eb; color: #374151; }
 button:disabled { opacity: .6; cursor: not-allowed; }
-.error { color: #b91c1c; }
+.error { color: #b91c1c; margin-top: 1rem; }
+.error p { color: inherit; margin: .35rem 0 .65rem; }
+.fix-field { background: #b91c1c; padding: .55rem .75rem; font-size: .875rem; }
 @media (max-width: 600px) { .actions { flex-direction: column-reverse; } }
 </style>

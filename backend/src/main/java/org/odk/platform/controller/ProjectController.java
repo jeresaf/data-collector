@@ -66,14 +66,14 @@ public class ProjectController {
     private final XlsFormImportService xlsFormImportService;
 
     @PostMapping
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
-    public ResponseEntity<Project> createProject(@Valid @RequestBody CreateProjectRequest request) {
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    public ResponseEntity<ProjectSummaryResponse> createProject(@Valid @RequestBody CreateProjectRequest request) {
         Project project = projectService.createProject(request.getName(), request.getDescription());
-        return ResponseEntity.ok(project);
+        return ResponseEntity.ok(toProjectSummaryResponse(project));
     }
 
     @GetMapping
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<Page<ProjectSummaryResponse>> listProjects(
             @PageableDefault(size = 20) Pageable pageable) {
         Page<ProjectSummaryResponse> projects = projectService.findAll(pageable)
@@ -82,7 +82,7 @@ public class ProjectController {
     }
 
     @GetMapping("/my")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<Page<ProjectSummaryResponse>> listMyProjects(
             @PageableDefault(size = 20) Pageable pageable) {
         Page<ProjectSummaryResponse> projects = projectService.findByMemberUserId(
@@ -92,29 +92,30 @@ public class ProjectController {
     }
 
     @GetMapping("/{projectId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
-    public ResponseEntity<Project> getProject(@PathVariable UUID projectId) {
-        return projectService.findByIdWithOwnerAndCreatedBy(projectId)
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    public ResponseEntity<ProjectSummaryResponse> getProject(@PathVariable UUID projectId) {
+        return projectService.findById(projectId)
+                .map(this::toProjectSummaryResponse)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
     @PutMapping("/{projectId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
-    public ResponseEntity<Project> updateProject(
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    public ResponseEntity<ProjectSummaryResponse> updateProject(
             @PathVariable UUID projectId,
             @Valid @RequestBody UpdateProjectRequest request) {
         try {
             Project project = projectService.updateProject(
                     projectId, request.getName(), request.getDescription(), request.getIsActive());
-            return ResponseEntity.ok(project);
+            return ResponseEntity.ok(toProjectSummaryResponse(project));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.notFound().build();
         }
     }
 
     @DeleteMapping("/{projectId}")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN')")
     public ResponseEntity<Void> deleteProject(@PathVariable UUID projectId) {
         try {
             projectService.deleteProject(projectId);
@@ -125,7 +126,7 @@ public class ProjectController {
     }
 
     @PostMapping("/{projectId}/archive")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<Void> archiveProject(@PathVariable UUID projectId) {
         try {
             projectService.archiveProject(projectId);
@@ -137,14 +138,14 @@ public class ProjectController {
 
     // Project Settings endpoints
     @GetMapping("/{projectId}/settings")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<Map<String, Object>> getProjectSettings(@PathVariable UUID projectId) {
         Map<String, Object> settings = projectService.getAllSettingsAsMap(projectId);
         return ResponseEntity.ok(settings);
     }
 
     @GetMapping("/{projectId}/settings/{settingKey}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<ProjectSettingResponse> getProjectSetting(
             @PathVariable UUID projectId,
             @PathVariable String settingKey) {
@@ -155,7 +156,7 @@ public class ProjectController {
     }
 
     @PutMapping("/{projectId}/settings/{settingKey}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<ProjectSettingResponse> updateProjectSetting(
             @PathVariable UUID projectId,
             @PathVariable String settingKey,
@@ -166,7 +167,7 @@ public class ProjectController {
     }
 
     @DeleteMapping("/{projectId}/settings/{settingKey}")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN')")
     public ResponseEntity<Void> deleteProjectSetting(
             @PathVariable UUID projectId,
             @PathVariable String settingKey) {
@@ -175,7 +176,7 @@ public class ProjectController {
     }
 
     @PostMapping("/{projectId}/settings/initialize")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<Void> initializeDefaultSettings(@PathVariable UUID projectId) {
         projectService.initializeDefaultSettings(projectId, projectService.getCurrentUser());
         return ResponseEntity.ok().build();
@@ -183,7 +184,7 @@ public class ProjectController {
 
     // Form upload endpoints
     @PostMapping("/{projectId}/forms/upload")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<?> uploadFormXml(
             @PathVariable UUID projectId,
             @RequestParam(value = "file", required = false) MultipartFile file) {
@@ -337,7 +338,7 @@ public class ProjectController {
     }
 
     @PostMapping("/{projectId}/forms/validate")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<ValidationResponse> validateFormXml(
             @PathVariable UUID projectId,
             @RequestParam(value = "file", required = false) MultipartFile file) {
@@ -430,7 +431,7 @@ public class ProjectController {
     }
     
     @DeleteMapping("/{projectId}/forms/{formId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<Void> deleteForm(
             @PathVariable UUID projectId,
             @PathVariable UUID formId) {
@@ -456,7 +457,7 @@ public class ProjectController {
     }
     
     @PostMapping("/{projectId}/forms/upload-xlsform")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<FormUploadResponse> uploadXLSForm(
             @PathVariable UUID projectId,
             @RequestParam(value = "file", required = false) MultipartFile file,
@@ -582,7 +583,7 @@ public class ProjectController {
     }
     
     @GetMapping("/{projectId}/forms")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<Page<XFormResponse>> listForms(
             @PathVariable UUID projectId,
             @PageableDefault(size = 20) Pageable pageable) {
@@ -592,7 +593,7 @@ public class ProjectController {
     }
     
     @GetMapping("/{projectId}/forms/{formId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<XFormResponse> getForm(
             @PathVariable UUID projectId,
             @PathVariable UUID formId) {
@@ -603,7 +604,7 @@ public class ProjectController {
     }
     
     @GetMapping("/{projectId}/forms/{formId}/versions")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<List<FormVersion>> listFormVersions(
             @PathVariable UUID projectId,
             @PathVariable UUID formId) {
@@ -612,8 +613,8 @@ public class ProjectController {
     }
     
     @PostMapping("/{projectId}/forms/{formId}/publish")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
-    public ResponseEntity<FormVersion> publishForm(
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    public ResponseEntity<PublishFormResponse> publishForm(
             @PathVariable UUID projectId,
             @PathVariable UUID formId,
             @RequestParam UUID versionId) {
@@ -624,34 +625,37 @@ public class ProjectController {
             return ResponseEntity.badRequest().build();
         }
         
-        User actor = projectService.getCurrentUser();
-
-        // Keep one published/current version. The selected version's lifecycle
-        // transition is delegated to FormPublishHistoryService so the state
-        // change and traceability record stay together.
+        // Unpublish all other versions
         List<FormVersion> allVersions = formVersionService.findByFormIdOrderByVersionDesc(formId);
         for (FormVersion v : allVersions) {
-            if (!v.getId().equals(version.getId()) && Boolean.TRUE.equals(v.getIsPublished())) {
+            if (v.getIsPublished()) {
                 v.setIsPublished(false);
-                v.setIsLatest(false);
                 v.setPublishedAt(null);
                 v.setPublishedBy(null);
                 formVersionService.save(v);
             }
         }
+        
+        // Publish this version
+        User currentUser = projectService.getCurrentUser();
+        version.setIsPublished(true);
+        version.setIsLatest(true);
+        version.setPublishedAt(java.time.Instant.now());
+        version.setPublishedBy(currentUser);
+        formVersionService.save(version);
 
+        // Persist explicit form lifecycle history in addition to the general audit event.
         formPublishHistoryService.recordPublish(
                 version,
-                actor,
-                "Published version " + version.getVersion() + " from project administration");
+                currentUser,
+                "Published version " + version.getVersion() + " for form " + version.getForm().getTitle());
 
-        // Update the owning form to point to the version whose lifecycle was
-        // just published.
+        // Update form
         XForm form = version.getForm();
         form.setIsPublished(true);
         form.setCurrentVersion(version);
-        form.setPublishedAt(version.getPublishedAt() != null ? version.getPublishedAt() : java.time.Instant.now());
-        form.setPublishedBy(actor);
+        form.setPublishedAt(java.time.Instant.now());
+        form.setPublishedBy(currentUser);
         xFormService.save(form);
 
         auditService.log(
@@ -663,44 +667,51 @@ public class ProjectController {
                         "projectId", projectId,
                         "formVersionId", version.getId(),
                         "version", version.getVersion()));
-        
-        return ResponseEntity.ok(version);
+        return ResponseEntity.ok(PublishFormResponse.builder()
+                .formId(form.getId())
+                .formVersionId(version.getId())
+                .version(version.getVersion())
+                .published(Boolean.TRUE.equals(version.getIsPublished()))
+                .latest(Boolean.TRUE.equals(version.getIsLatest()))
+                .publishedAt(version.getPublishedAt())
+                .build());
     }
-    
+
     @PostMapping("/{projectId}/forms/{formId}/archive")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<Void> archiveForm(
             @PathVariable UUID projectId,
             @PathVariable UUID formId) {
         XForm form = xFormService.findByIdAndProjectId(formId, projectId)
                 .orElseThrow(() -> new IllegalArgumentException("Form not found: " + formId));
         
-        User actor = projectService.getCurrentUser();
-        FormVersion lifecycleVersion = form.getCurrentVersion();
-        if (lifecycleVersion == null) {
-            lifecycleVersion = formVersionService.findByFormIdOrderByVersionDesc(formId).stream()
-                    .filter(v -> Boolean.TRUE.equals(v.getIsPublished()))
+        User currentUser = projectService.getCurrentUser();
+        FormVersion versionToArchive = form.getCurrentVersion();
+        if (versionToArchive == null) {
+            versionToArchive = formVersionService.findByFormIdOrderByVersionDesc(formId)
+                    .stream()
+                    .filter(version -> Boolean.TRUE.equals(version.getIsPublished()))
                     .findFirst()
                     .orElse(null);
         }
 
-        if (lifecycleVersion != null) {
+        if (versionToArchive != null) {
             formPublishHistoryService.recordArchive(
-                    lifecycleVersion,
-                    actor,
-                    "Archived form from project administration");
+                    versionToArchive,
+                    currentUser,
+                    "Archived form " + form.getTitle());
         }
 
         form.setIsActive(false);
         form.setIsPublished(false);
         xFormService.save(form);
-        
+
         return ResponseEntity.ok().build();
     }
 
     // Form Assignment endpoints for app users (mobile users)
     @PostMapping("/{projectId}/app-users/{appUserId}/form-assignments")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<List<AppUserProject>> assignFormsToAppUser(
             @PathVariable UUID projectId,
             @PathVariable UUID appUserId,
@@ -721,7 +732,7 @@ public class ProjectController {
     }
 
     @GetMapping("/{projectId}/app-users/{appUserId}/form-assignments")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<List<AppUserProject>> getAppUserFormAssignments(
             @PathVariable UUID projectId,
             @PathVariable UUID appUserId) {
@@ -730,7 +741,7 @@ public class ProjectController {
     }
 
     @GetMapping("/{projectId}/app-users/{appUserId}/form-assignments/active")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<List<AppUserProject>> getActiveAppUserFormAssignments(
             @PathVariable UUID projectId,
             @PathVariable UUID appUserId) {
@@ -739,7 +750,7 @@ public class ProjectController {
     }
 
     @GetMapping("/{projectId}/forms/{formId}/assignments")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<List<AppUserProject>> getFormAssignments(
             @PathVariable UUID projectId,
             @PathVariable UUID formId) {
@@ -748,7 +759,7 @@ public class ProjectController {
     }
 
     @DeleteMapping("/{projectId}/app-users/{appUserId}/form-assignments/{formId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<Void> removeFormAssignment(
             @PathVariable UUID projectId,
             @PathVariable UUID appUserId,
@@ -764,7 +775,7 @@ public class ProjectController {
     }
 
     @DeleteMapping("/{projectId}/app-users/{appUserId}/form-assignments")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
     public ResponseEntity<Void> removeAllFormAssignments(
             @PathVariable UUID projectId,
             @PathVariable UUID appUserId) {
@@ -779,7 +790,7 @@ public class ProjectController {
     }
 
     @GetMapping("/{projectId}/app-users/{appUserId}/form-assignments/check/{formId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<FormAccessResponse> checkFormAccess(
             @PathVariable UUID projectId,
             @PathVariable UUID appUserId,
@@ -791,7 +802,7 @@ public class ProjectController {
     }
 
     @GetMapping("/{projectId}/app-users/{appUserId}/form-assignments/ids")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize("hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
     public ResponseEntity<List<UUID>> getAssignedFormIds(
             @PathVariable UUID projectId,
             @PathVariable UUID appUserId) {
@@ -823,6 +834,8 @@ public class ProjectController {
                 .name(project.getName())
                 .description(project.getDescription())
                 .isActive(project.getIsActive())
+                .createdAt(project.getCreatedAt())
+                .updatedAt(project.getUpdatedAt())
                 .build();
     }
 
@@ -874,6 +887,8 @@ public class ProjectController {
         private String name;
         private String description;
         private Boolean isActive;
+        private Instant createdAt;
+        private Instant updatedAt;
     }
 
     @Data
@@ -884,6 +899,19 @@ public class ProjectController {
         private String settingKey;
         private Map<String, Object> settingValue;
         private String description;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class PublishFormResponse {
+        private UUID formId;
+        private UUID formVersionId;
+        private String version;
+        private boolean published;
+        private boolean latest;
+        private Instant publishedAt;
     }
 
     @Data

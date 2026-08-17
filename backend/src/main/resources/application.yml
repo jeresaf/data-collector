@@ -1,7 +1,8 @@
 server:
   port: 8080
-  servlet:
-    context-path: /api
+  forward-headers-strategy: framework
+  tomcat:
+    redirect-context-root: false
 
 spring:
   application:
@@ -77,7 +78,7 @@ logging:
 
 app:
   jwt:
-    secret: ${JWT_SECRET:change-this-secret-in-production-min-256-bits}
+    secret: ${JWT_SECRET}
     expiration: 86400000 # 24 hours in milliseconds
     refresh-expiration: 604800000 # 7 days in milliseconds
   cors:
@@ -88,7 +89,7 @@ app:
   storage:
     driver: ${STORAGE_DRIVER:local}
     local:
-      path: ${STORAGE_LOCAL_PATH:/var/lib/odk-platform/storage}
+      path: ${STORAGE_LOCAL_PATH:/var/lib/odk}
     s3:
       bucket: ${STORAGE_S3_BUCKET:odk-platform}
       region: ${STORAGE_S3_REGION:us-east-1}
@@ -96,7 +97,7 @@ app:
       secret-key: ${STORAGE_S3_SECRET_KEY:}
   odk:
     collect:
-      server-url: ${ODK_COLLECT_SERVER_URL:http://localhost:8080/api/v1}
+      server-url: ${ODK_COLLECT_SERVER_URL:http://localhost:8080/v1}
     enketo:
       url: ${ENKETO_URL:https://enketo.example.org}
   audit:
@@ -131,7 +132,7 @@ spring:
   datasource:
     url: jdbc:h2:mem:odk_platform_test;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
     username: sa
-    password: 
+    password:
     driver-class-name: org.h2.Driver
   jpa:
     hibernate:
@@ -152,7 +153,7 @@ spring:
 
 app:
   jwt:
-    secret: dGVzdC1zZWNyZXQta2V5LWZvci10ZXN0aW5nLXB1cnBvc2VzLW9ubHktbXVzdC1iZS1iYXNlNjQtZW5jb2RlZA==
+    secret: ${JWT_SECRET}
     expiration: 3600000
     refresh-expiration: 7200000
 

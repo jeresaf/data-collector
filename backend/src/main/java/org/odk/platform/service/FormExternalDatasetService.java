@@ -23,7 +23,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -44,9 +43,6 @@ public class FormExternalDatasetService {
     private final FormVersionRepository formVersionRepository;
     private final StorageServiceFactory storageServiceFactory;
     private final CurrentUserService currentUserService;
-
-    @Value("${app.storage.local.base-path:/var/lib/odk/external-datasets}")
-    private String localStorageBasePath;
 
     @Value("${app.storage.max-file-size:104857600}")
     private long maxFileSize;
@@ -326,7 +322,7 @@ public class FormExternalDatasetService {
                 ? ""
                 : "." + extension;
         String fileName = datasetId + suffix;
-        return Paths.get(localStorageBasePath, formVersionId.toString(), datePath, fileName).toString();
+        return Paths.get("external-datasets", formVersionId.toString(), datePath, fileName).toString();
     }
 
     private FormExternalDatasetDto toDto(FormExternalDataset externalDataset) {

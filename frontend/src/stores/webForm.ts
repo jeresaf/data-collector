@@ -19,6 +19,7 @@ export interface GroupContextResponse {
   repeat: boolean
   repeatIndex: number | null
   depth: number
+  appearanceHint?: string | null
 }
 
 export interface QuestionResponse {
@@ -33,11 +34,15 @@ export interface QuestionResponse {
   hint: string
   dataType: number
   controlType: number
+  questionType?: string | null
   required: boolean
   readOnly: boolean
   constraintText: string
   appearanceHint: string
   mediaType?: string | null
+  promptAudioFile?: string | null
+  promptImageFile?: string | null
+  promptVideoFile?: string | null
   currentAnswer: string | null
   choices: SelectChoice[]
   validationStatus?: string
@@ -62,6 +67,13 @@ export interface GroupResponse {
   repeatCountControlled: boolean
   canAddRepeat: boolean
   canDeleteRepeat: boolean
+  appearanceHint?: string | null
+}
+
+export interface FieldListResponse {
+  groupPath: string | null
+  groupInstancePath: string | null
+  questions: QuestionResponse[]
 }
 
 export interface RepeatJunctureResponse {
@@ -85,6 +97,12 @@ export interface CurrentScreenResponse {
   question: QuestionResponse | null
   group: GroupResponse | null
   repeatJuncture: RepeatJunctureResponse | null
+}
+
+export interface ProgressResponse {
+  answeredQuestions: number
+  totalQuestions: number
+  percent: number
 }
 
 export interface StartSessionRequest {
@@ -141,9 +159,10 @@ export interface NavigationResponse {
 
 export interface FinalizeResponse {
   success: boolean
-  submissionId: string
-  instanceId: string
+  submissionId: string | null
+  instanceId: string | null
   message: string
+  validation?: ValidationResponse | null
 }
 
 export interface FormDefinitionResponse {
@@ -176,6 +195,8 @@ export interface ValidationResponse {
   valid: boolean
   failedPromptIndex: string | null
   outcomeCode: number
+  message: string | null
+  failedQuestion: QuestionResponse | null
 }
 
 // JavaRosa 4.3.2 FormEntryController event constants
@@ -217,6 +238,7 @@ export const useWebFormStore = defineStore('webForm', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
   const formDefinition = ref<FormDefinitionResponse | null>(null)
+  const progress = ref<ProgressResponse | null>(null)
 
   async function startSession(formVersionId: string, request: StartSessionRequest = {}): Promise<StartSessionResponse> {
     loading.value = true
@@ -280,27 +302,24 @@ export const useWebFormStore = defineStore('webForm', () => {
   }
 
   async function saveAnswer(sessionId: string, request: SaveAnswerRequest): Promise<AnswerResponse> {
-    loading.value = true
-    error.value = null
+    // Do not toggle the global loading flag for answer autosaves. A text input
+    // emits change while the user is clicking Next; disabling the Next button
+    // between mousedown and click causes the browser to cancel that click and
+    // makes the UI appear to require two clicks. WebFormView serializes saves
+    // and awaits the queue before navigation instead.
     try {
       const response = await api.post<AnswerResponse>(`/web/sessions/${sessionId}/answers`, request)
-      
-      // Update current screen with next question/group
-      currentScreen.value = {
-        event: response.data.currentEvent,
-        isAtBeginning: false, // Will be updated from next navigation
-        isAtEnd: response.data.isAtEnd,
-        question: response.data.nextQuestion,
-        group: response.data.nextGroup,
-        repeatJuncture: response.data.nextRepeatJuncture
-      }
-      
+
+      // Saving an answer must not navigate the visible form. Navigation is
+      // owned exclusively by the navigate* actions.
       return response.data
     } catch (err: any) {
-      error.value = err.response?.data?.message || 'Failed to save answer'
+      // Required/constraint failures are field-level validation errors and are
+      // rendered beside the control by WebFormView.
+      if (err.response?.status !== 400) {
+        error.value = err.response?.data?.message || err.response?.data?.error || 'Failed to save answer'
+      }
       throw err
-    } finally {
-      loading.value = false
     }
   }
 
@@ -414,6 +433,67 @@ export const useWebFormStore = defineStore('webForm', () => {
     }
   }
 
+  async function getFieldList(sessionId: string): Promise<FieldListResponse> {
+    const response = await api.get<FieldListResponse>(`/web/sessions/${sessionId}/field-list`)
+    return response.data
+  }
+
+  async function navigateFieldListNext(sessionId: string, groupInstancePath: string): Promise<NavigationResponse> {
+    loading.value = true
+    error.value = null
+    try {
+      const response = await api.post<NavigationResponse>(`/web/sessions/${sessionId}/field-list/navigate/next`, { groupInstancePath })
+      currentScreen.value = {
+        event: response.data.event,
+        isAtBeginning: response.data.isAtBeginning,
+        isAtEnd: response.data.isAtEnd,
+        question: response.data.question,
+        group: response.data.group,
+        repeatJuncture: response.data.repeatJuncture
+      }
+      return response.data
+    } catch (err: any) {
+      error.value = err.response?.data?.message || err.response?.data?.error || 'Failed to leave field-list group'
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function navigateFieldListPrevious(sessionId: string, groupInstancePath: string): Promise<NavigationResponse> {
+    loading.value = true
+    error.value = null
+    try {
+      const response = await api.post<NavigationResponse>(`/web/sessions/${sessionId}/field-list/navigate/previous`, { groupInstancePath })
+      currentScreen.value = {
+        event: response.data.event,
+        isAtBeginning: response.data.isAtBeginning,
+        isAtEnd: response.data.isAtEnd,
+        question: response.data.question,
+        group: response.data.group,
+        repeatJuncture: response.data.repeatJuncture
+      }
+      return response.data
+    } catch (err: any) {
+      error.value = err.response?.data?.message || err.response?.data?.error || 'Failed to leave field-list group'
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function getProgress(sessionId: string): Promise<ProgressResponse> {
+    try {
+      const response = await api.get<ProgressResponse>(`/web/sessions/${sessionId}/progress`)
+      progress.value = response.data
+      return response.data
+    } catch (err: any) {
+      // Progress must never replace the primary form error state.
+      console.error('Failed to load web-form progress:', err)
+      throw err
+    }
+  }
+
   async function finalizeSession(sessionId: string): Promise<FinalizeResponse> {
     loading.value = true
     error.value = null
@@ -425,6 +505,10 @@ export const useWebFormStore = defineStore('webForm', () => {
       }
       return response.data
     } catch (err: any) {
+      const response = err.response?.data as FinalizeResponse | undefined
+      if (response && response.success === false) {
+        return response
+      }
       error.value = err.response?.data?.message || 'Failed to finalize session'
       throw err
     } finally {
@@ -497,6 +581,7 @@ export const useWebFormStore = defineStore('webForm', () => {
       await api.delete(`/web/sessions/${sessionId}`)
       currentSession.value = null
       currentScreen.value = null
+      progress.value = null
     } catch (err: any) {
       error.value = err.response?.data?.message || 'Failed to delete session'
       throw err
@@ -512,6 +597,7 @@ export const useWebFormStore = defineStore('webForm', () => {
   function clearSession() {
     currentSession.value = null
     currentScreen.value = null
+    progress.value = null
   }
 
   return {
@@ -520,6 +606,7 @@ export const useWebFormStore = defineStore('webForm', () => {
     loading,
     error,
     formDefinition,
+    progress,
     startSession,
     getSession,
     getCurrentScreen,
@@ -529,6 +616,10 @@ export const useWebFormStore = defineStore('webForm', () => {
     descendIntoRepeat,
     createNewRepeat,
     deleteRepeat,
+    getFieldList,
+    navigateFieldListNext,
+    navigateFieldListPrevious,
+    getProgress,
     finalizeSession,
     saveDraft,
     uploadAttachment,

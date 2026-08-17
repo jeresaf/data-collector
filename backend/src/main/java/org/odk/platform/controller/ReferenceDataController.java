@@ -23,17 +23,23 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ReferenceDataController {
 
+    private static final String READ_ACCESS =
+            "hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_ADMIN') or " +
+            "hasRole('PROJECT_MANAGER') or hasRole('DATA_ANALYST') or hasRole('VIEWER') or hasRole('USER')";
+    private static final String MANAGE_ACCESS =
+            "hasRole('SYSTEM_ADMIN') or hasRole('ADMIN') or hasRole('PROJECT_ADMIN') or hasRole('PROJECT_MANAGER')";
+
     private static final long MAX_CSV_BYTES = 5L * 1024 * 1024;
     private final ReferenceDataService service;
 
     @GetMapping
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public List<ReferenceDataService.ReferenceListView> list(@PathVariable UUID projectId) {
         return service.listLists(projectId);
     }
 
     @PostMapping
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ReferenceDataService.ReferenceListView create(@PathVariable UUID projectId,
                                                           @RequestBody ListRequest request) {
         return service.createList(projectId, new ReferenceDataService.CreateListCommand(
@@ -41,7 +47,7 @@ public class ReferenceDataController {
     }
 
     @PutMapping("/{listId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ReferenceDataService.ReferenceListView update(@PathVariable UUID projectId, @PathVariable UUID listId,
                                                           @RequestBody ListRequest request) {
         return service.updateList(projectId, listId, new ReferenceDataService.UpdateListCommand(
@@ -49,27 +55,27 @@ public class ReferenceDataController {
     }
 
     @DeleteMapping("/{listId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ResponseEntity<Void> delete(@PathVariable UUID projectId, @PathVariable UUID listId) {
         service.deleteList(projectId, listId);
         return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/{listId}/items")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public List<ReferenceDataService.ReferenceItemView> items(@PathVariable UUID projectId, @PathVariable UUID listId) {
         return service.listItems(projectId, listId);
     }
 
     @PostMapping("/{listId}/items")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ReferenceDataService.ReferenceItemView createItem(@PathVariable UUID projectId, @PathVariable UUID listId,
                                                               @RequestBody ItemRequest request) {
         return service.createItem(projectId, listId, toCommand(request));
     }
 
     @PutMapping("/{listId}/items/{itemId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ReferenceDataService.ReferenceItemView updateItem(@PathVariable UUID projectId, @PathVariable UUID listId,
                                                               @PathVariable UUID itemId,
                                                               @RequestBody ItemRequest request) {
@@ -77,7 +83,7 @@ public class ReferenceDataController {
     }
 
     @DeleteMapping("/{listId}/items/{itemId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ResponseEntity<Void> deleteItem(@PathVariable UUID projectId, @PathVariable UUID listId,
                                             @PathVariable UUID itemId) {
         service.deleteItem(projectId, listId, itemId);
@@ -85,7 +91,7 @@ public class ReferenceDataController {
     }
 
     @PostMapping("/{listId}/items/{itemId}/relationships")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ReferenceDataService.RelationshipView addRelationship(@PathVariable UUID projectId,
                                                                   @PathVariable UUID listId,
                                                                   @PathVariable UUID itemId,
@@ -99,14 +105,14 @@ public class ReferenceDataController {
     }
 
     @DeleteMapping("/relationships/{relationshipId}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ResponseEntity<Void> deleteRelationship(@PathVariable UUID projectId, @PathVariable UUID relationshipId) {
         service.deleteRelationship(projectId, relationshipId);
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping(value = "/{listId}/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER')")
+    @PreAuthorize(MANAGE_ACCESS)
     public ReferenceDataService.ImportResult importCsv(@PathVariable UUID projectId, @PathVariable UUID listId,
                                                         @RequestParam("file") MultipartFile file) throws IOException {
         String filename = file.getOriginalFilename() == null ? "" : file.getOriginalFilename();
@@ -121,7 +127,7 @@ public class ReferenceDataController {
     }
 
     @GetMapping(value = "/{listId}/export", produces = "text/csv")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('PROJECT_MANAGER') or hasRole('USER')")
+    @PreAuthorize(READ_ACCESS)
     public ResponseEntity<byte[]> exportCsv(@PathVariable UUID projectId, @PathVariable UUID listId) {
         ReferenceDataService.CsvExport export = service.exportCsv(projectId, listId);
         HttpHeaders headers = new HttpHeaders();

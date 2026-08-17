@@ -51,6 +51,13 @@ function openEditModal(form: Form) {
   showCreateModal.value = true
 }
 
+function handleManage(formId: string) {
+  router.push({
+    name: 'form-detail',
+    params: { projectId: props.projectId, formId },
+  })
+}
+
 async function handleSave(formData: Partial<Form>) {
   try {
     if (editingForm.value) {
@@ -117,6 +124,7 @@ onMounted(() => {
         v-for="form in forms"
         :key="form.id"
         :form="form"
+        @manage="handleManage"
         @edit="openEditModal"
         @delete="handleDelete"
         @publish="handlePublish"

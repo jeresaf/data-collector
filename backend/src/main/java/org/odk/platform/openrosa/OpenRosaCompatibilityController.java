@@ -59,7 +59,8 @@ public class OpenRosaCompatibilityController {
     private OpenRosaSubmissionService openRosaSubmissionService;
 
     private static final String OPEN_ROSA_VERSION = "1.0";
-    private static final long MAX_CONTENT_LENGTH = 104857600L; // 100MB
+    private static final long MAX_CONTENT_LENGTH = 104857600L;
+    private static final String OPENROSA_XML_MEDIA_TYPE = "text/xml;charset=UTF-8"; // 100MB
 
     /**
      * Get the project ID from the current authenticated app user's project assignment.
@@ -80,7 +81,7 @@ public class OpenRosaCompatibilityController {
      * GET /formList - Compatibility alias for /v1/projects/{projectId}/formList
      * Uses the authenticated app user's project context
      */
-    @GetMapping(value = "/formList", produces = MediaType.APPLICATION_XML_VALUE)
+    @GetMapping(value = "/formList", produces = OPENROSA_XML_MEDIA_TYPE)
     public ResponseEntity<String> compatibilityFormList(
             HttpServletRequest request,
             HttpServletResponse response) {
@@ -110,6 +111,10 @@ public class OpenRosaCompatibilityController {
             if (latestVersion.isPresent()) {
                 FormVersion fv = latestVersion.get();
                 xml.append("  <xform>\n");
+                // formID is the canonical OpenRosa/XForms identifier expected by
+                // ODK Collect. Keep xmlns as an additional compatibility field,
+                // but do not substitute it for the required formID element.
+                xml.append("    <formID>").append(escapeXml(fv.getXmlns())).append("</formID>\n");
                 xml.append("    <name>").append(escapeXml(form.getTitle())).append("</name>\n");
                 xml.append("    <version>").append(escapeXml(fv.getVersion())).append("</version>\n");
                 xml.append("    <xmlns>").append(escapeXml(fv.getXmlns())).append("</xmlns>\n");
@@ -123,7 +128,7 @@ public class OpenRosaCompatibilityController {
         xml.append("</xforms>");
 
         return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_XML)
+                .contentType(MediaType.parseMediaType(OPENROSA_XML_MEDIA_TYPE))
                 .body(xml.toString());
     }
 
@@ -131,7 +136,7 @@ public class OpenRosaCompatibilityController {
      * GET /forms/{xmlFormId}.xml - Compatibility alias
      * Uses the authenticated app user's project context
      */
-    @GetMapping(value = "/forms/{xmlFormId}.xml", produces = MediaType.APPLICATION_XML_VALUE)
+    @GetMapping(value = "/forms/{xmlFormId}.xml", produces = OPENROSA_XML_MEDIA_TYPE)
     public ResponseEntity<String> compatibilityFormDownload(
             @PathVariable("xmlFormId") String xmlFormId,
             HttpServletRequest request,
@@ -172,7 +177,7 @@ public class OpenRosaCompatibilityController {
                         "compatibilityRoute", true));
 
         return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_XML)
+                .contentType(MediaType.parseMediaType(OPENROSA_XML_MEDIA_TYPE))
                 .body(version.getXmlContent());
     }
 
@@ -180,7 +185,7 @@ public class OpenRosaCompatibilityController {
      * GET /forms/{xmlFormId}/manifest - Compatibility alias
      * Uses the authenticated app user's project context
      */
-    @GetMapping(value = "/forms/{xmlFormId}/manifest", produces = MediaType.APPLICATION_XML_VALUE)
+    @GetMapping(value = "/forms/{xmlFormId}/manifest", produces = OPENROSA_XML_MEDIA_TYPE)
     public ResponseEntity<String> compatibilityManifest(
             @PathVariable("xmlFormId") String xmlFormId,
             HttpServletRequest request,
@@ -211,7 +216,7 @@ public class OpenRosaCompatibilityController {
         
         StringBuilder xml = new StringBuilder();
         xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-        xml.append("<manifest xmlns=\"http://openrosa.org/xforms/manifest\">\n");
+        xml.append("<manifest xmlns=\"http://openrosa.org/xforms/xformsManifest\">\n");
         xml.append("  <mediaFile>\n");
         xml.append("    <filename>").append(escapeXml(fv.getXmlns())).append(".xml</filename>\n");
         xml.append("    <hash>md5:").append(computeMd5(fv.getXmlContent())).append("</hash>\n");
@@ -219,7 +224,7 @@ public class OpenRosaCompatibilityController {
         xml.append("</manifest>");
 
         return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_XML)
+                .contentType(MediaType.parseMediaType(OPENROSA_XML_MEDIA_TYPE))
                 .body(xml.toString());
     }
 
@@ -246,7 +251,7 @@ public class OpenRosaCompatibilityController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
 
-        return ResponseEntity.ok().build();
+        return ResponseEntity.noContent().build();
     }
 
     /**
@@ -283,15 +288,15 @@ public class OpenRosaCompatibilityController {
             xml.append("</OpenRosaResponse>");
 
             return ResponseEntity.status(HttpStatus.CREATED)
-                    .contentType(MediaType.APPLICATION_XML)
+                    .contentType(MediaType.parseMediaType(OPENROSA_XML_MEDIA_TYPE))
                     .body(xml.toString());
         } catch (OpenRosaSubmissionService.IntakeException e) {
             return ResponseEntity.status(e.getStatus())
-                    .contentType(MediaType.APPLICATION_XML)
+                    .contentType(MediaType.parseMediaType(OPENROSA_XML_MEDIA_TYPE))
                     .body(buildErrorResponse(e.getMessage()));
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .contentType(MediaType.APPLICATION_XML)
+                    .contentType(MediaType.parseMediaType(OPENROSA_XML_MEDIA_TYPE))
                     .body(buildErrorResponse("Failed to process submission"));
         }
     }

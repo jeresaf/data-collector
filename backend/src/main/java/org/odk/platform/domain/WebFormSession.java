@@ -3,7 +3,9 @@ package org.odk.platform.domain;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.type.SqlTypes;
 
 import java.time.OffsetDateTime;
 import java.util.UUID;
@@ -52,6 +54,7 @@ public class WebFormSession {
     private String currentQuestionPath;
 
     @Column(name = "session_data", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
     private String sessionData = "{}";
 
     @Column(name = "started_at", nullable = false)

@@ -46,11 +46,13 @@ public class AuditLog {
     @Column(name = "resource_name", length = 255)
     private String resourceName;
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "old_values", columnDefinition = "JSONB")
-    private String oldValues;
+    private java.util.Map<String, Object> oldValues;
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "new_values", columnDefinition = "JSONB")
-    private String newValues;
+    private java.util.Map<String, Object> newValues;
 
     @Column(name = "ip_address", length = 45)
     private String ipAddress;

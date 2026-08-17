@@ -12,9 +12,13 @@ import {
 interface Props {
   group: GroupResponse | RepeatJunctureResponse
   event: number
+  fieldList?: boolean
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  fieldList: false,
+})
+
 const emit = defineEmits<{
   (event: 'descend', index: number): void
   (event: 'new-repeat'): void
@@ -49,7 +53,7 @@ const repeatPositionLabel = computed(() => {
   if (currentRepeatIndex.value === null) {
     return `${repeatCount.value} ${repeatCount.value === 1 ? 'entry' : 'entries'}`
   }
-  return `Instance ${currentRepeatIndex.value + 1} of ${repeatCount.value}`
+  return `Entry ${currentRepeatIndex.value + 1} of ${repeatCount.value}`
 })
 
 function handleDescend(index: number) {
@@ -64,7 +68,7 @@ function handleNewRepeat() {
 
 function handleDeleteRepeat() {
   if (!canDeleteRepeat.value) return
-  if (confirm('Are you sure you want to delete this repeat instance?')) {
+  if (confirm('Delete this repeat entry?')) {
     emit('delete-repeat')
   }
 }
@@ -78,14 +82,12 @@ function handleDeleteRepeat() {
       'group-standard': isGroup,
       'group-repeat': isRepeat,
       'group-juncture': isRepeatJuncture,
+      'group-field-list': fieldList,
     }"
   >
-    <div class="group-header">
+    <header class="group-header">
       <div class="group-title-block">
-        <h3 class="group-label">{{ group.label || (isRepeat ? 'Repeat' : 'Group') }}</h3>
-        <span v-if="(group.depth ?? 0) > 0" class="group-depth" aria-label="Nested section level">
-          Level {{ (group.depth ?? 0) + 1 }}
-        </span>
+        <h2 class="group-label">{{ group.label || (isRepeat ? 'Repeat' : 'Section') }}</h2>
         <span v-if="isRepeat || isRepeatJuncture" class="repeat-info">
           {{ repeatPositionLabel }}
         </span>
@@ -98,7 +100,7 @@ function handleDeleteRepeat() {
           class="btn-repeat btn-secondary"
           @click="handleDescend((currentRepeatIndex ?? 0) - 1)"
         >
-          Previous
+          Previous entry
         </button>
         <button
           v-if="canMoveNext"
@@ -106,7 +108,7 @@ function handleDeleteRepeat() {
           class="btn-repeat btn-secondary"
           @click="handleDescend((currentRepeatIndex ?? 0) + 1)"
         >
-          Next
+          Next entry
         </button>
         <button
           v-if="canAddRepeat"
@@ -114,7 +116,7 @@ function handleDeleteRepeat() {
           class="btn-repeat btn-primary"
           @click="handleNewRepeat"
         >
-          Add Another
+          Add another
         </button>
         <button
           v-if="canDeleteRepeat"
@@ -122,15 +124,15 @@ function handleDeleteRepeat() {
           class="btn-repeat btn-danger"
           @click="handleDeleteRepeat"
         >
-          Delete This
+          Delete entry
         </button>
       </div>
 
       <div v-else-if="isRepeatJuncture" class="repeat-juncture-controls">
         <p class="juncture-message">
           {{ repeatCount === 0
-            ? 'No entries yet.'
-            : `You have ${repeatCount} entr${repeatCount === 1 ? 'y' : 'ies'}.` }}
+            ? 'There are no entries yet.'
+            : `${repeatCount} entr${repeatCount === 1 ? 'y' : 'ies'} completed.` }}
         </p>
         <button
           v-if="canAddRepeat"
@@ -138,13 +140,13 @@ function handleDeleteRepeat() {
           class="btn-repeat btn-primary"
           @click="handleNewRepeat"
         >
-          {{ repeatCount === 0 ? 'Add First Entry' : 'Add Another Entry' }}
+          {{ repeatCount === 0 ? 'Add first entry' : 'Add another entry' }}
         </button>
       </div>
-    </div>
+    </header>
 
     <p v-if="repeatCountControlled" class="repeat-policy" role="status">
-      This repeat is controlled by the form definition. Entries are created automatically and cannot be added or deleted manually.
+      The number of entries is set automatically by this form.
     </p>
 
     <div class="group-content">
@@ -155,80 +157,70 @@ function handleDeleteRepeat() {
 
 <style scoped>
 .web-form-group {
-  margin-bottom: 1.5rem;
-  border: 1px solid #e5e7eb;
+  margin-bottom: 1.25rem;
+  border: 1px solid #dfe3e8;
   border-radius: 8px;
   overflow: hidden;
+  background: #fff;
 }
 
 .group-header {
-  padding: 1rem;
-  background: #f9fafb;
+  padding: 0.9rem 1rem;
+  background: #f8fafc;
   border-bottom: 1px solid #e5e7eb;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.75rem;
+}
+
+.group-field-list .group-header {
+  background: #f8fafc;
 }
 
 .group-title-block {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.7rem;
   flex-wrap: wrap;
 }
 
 .group-label {
   margin: 0;
-  font-size: 1.125rem;
-  font-weight: 600;
+  font-size: 1.08rem;
+  line-height: 1.35;
+  font-weight: 650;
   color: #1f2937;
 }
 
-.group-depth {
-  font-size: 0.75rem;
-  color: #4b5563;
-  background: #f3f4f6;
-  padding: 0.2rem 0.5rem;
-  border-radius: 9999px;
-}
-
-.web-form-group[data-depth="1"] {
-  margin-left: 0.5rem;
-}
-
-.web-form-group[data-depth="2"],
-.web-form-group[data-depth="3"] {
-  margin-left: 1rem;
-}
-
 .repeat-info {
-  font-size: 0.875rem;
-  color: #6b7280;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
   background: #fff;
-  padding: 0.25rem 0.75rem;
+  padding: 0.22rem 0.6rem;
   border-radius: 9999px;
-  border: 1px solid #d1d5db;
+  border: 1px solid #cbd5e1;
 }
 
 .repeat-controls,
 .repeat-juncture-controls {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
   flex-wrap: wrap;
 }
 
 .juncture-message {
   margin: 0;
   font-size: 0.875rem;
-  color: #6b7280;
+  color: #64748b;
 }
 
 .repeat-policy {
   margin: 0;
-  padding: 0.75rem 1rem;
+  padding: 0.65rem 1rem;
   border-bottom: 1px solid #fde68a;
   background: #fffbeb;
   color: #92400e;
@@ -236,54 +228,64 @@ function handleDeleteRepeat() {
 }
 
 .group-content {
-  padding: 1rem;
+  padding: 0.25rem 1rem 0.5rem;
+}
+
+.group-field-list .group-content {
+  padding-top: 0;
 }
 
 .btn-repeat {
-  padding: 0.5rem 1rem;
-  border: none;
+  padding: 0.48rem 0.75rem;
+  border: 1px solid transparent;
   border-radius: 6px;
-  font-size: 0.875rem;
-  font-weight: 500;
+  font-size: 0.82rem;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
   white-space: nowrap;
 }
 
 .btn-repeat.btn-primary {
-  background: #3b82f6;
+  background: #2563eb;
   color: white;
 }
 
-.btn-repeat.btn-primary:hover {
-  background: #2563eb;
-}
+.btn-repeat.btn-primary:hover { background: #1d4ed8; }
 
 .btn-repeat.btn-secondary {
-  background: #e5e7eb;
-  color: #374151;
+  border-color: #cbd5e1;
+  background: #fff;
+  color: #334155;
 }
 
-.btn-repeat.btn-secondary:hover {
-  background: #d1d5db;
-}
+.btn-repeat.btn-secondary:hover { background: #f8fafc; }
 
 .btn-repeat.btn-danger {
-  background: #fee2e2;
-  color: #dc2626;
+  border-color: #fecaca;
+  background: #fff;
+  color: #b91c1c;
 }
 
-.btn-repeat.btn-danger:hover {
-  background: #fecaca;
-}
+.btn-repeat.btn-danger:hover { background: #fef2f2; }
 
 .group-repeat .group-header {
-  background: #fef3c7;
+  background: #fffbeb;
   border-bottom-color: #fde68a;
 }
 
 .group-juncture .group-header {
   background: #f0fdf4;
   border-bottom-color: #bbf7d0;
+}
+
+@media (max-width: 640px) {
+  .group-header {
+    align-items: flex-start;
+  }
+
+  .repeat-controls,
+  .repeat-juncture-controls {
+    width: 100%;
+  }
 }
 </style>

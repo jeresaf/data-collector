@@ -11,6 +11,7 @@ const router = useRouter()
 const runtime = useWebFormStore()
 const workflow = useWebFormWorkflowStore()
 const validationMessage = ref<string | null>(null)
+const failedQuestionLabel = ref<string | null>(null)
 const validating = ref(false)
 
 const sessionId = computed(() => route.params.sessionId as string)
@@ -29,12 +30,15 @@ function displayValue(value: unknown) {
 async function validateAndContinue() {
   validating.value = true
   validationMessage.value = null
+  failedQuestionLabel.value = null
   try {
     const result = await runtime.validateForm(sessionId.value)
     if (!result.valid) {
-      validationMessage.value = result.failedPromptIndex
-        ? `Validation failed near ${result.failedPromptIndex}. Continue editing to correct the form.`
-        : 'The form still contains validation errors.'
+      failedQuestionLabel.value = result.failedQuestion?.label || result.failedQuestion?.name || null
+      validationMessage.value = result.message
+        || (failedQuestionLabel.value
+          ? `${failedQuestionLabel.value} needs attention before submission.`
+          : 'The form still contains validation errors.')
       return
     }
     await router.push({
@@ -107,9 +111,18 @@ onMounted(async () => {
         </div>
       </section>
 
-      <p v-if="validationMessage" class="notice error" role="alert">
-        {{ validationMessage }}
-      </p>
+      <div v-if="validationMessage" class="notice error" role="alert">
+        <strong>Form needs attention</strong>
+        <p>{{ validationMessage }}</p>
+        <button
+          v-if="failedQuestionLabel"
+          type="button"
+          class="fix-link"
+          @click="router.push({ name: 'app-session-fill', params: { sessionId } })"
+        >
+          Fix {{ failedQuestionLabel }}
+        </button>
+      </div>
 
       <footer class="actions">
         <button
@@ -149,6 +162,8 @@ button {
 button.secondary { background: #e5e7eb; color: #374151; }
 button:disabled { opacity: .6; cursor: not-allowed; }
 .error { color: #b91c1c; border-color: #fecaca; }
+.error p { margin: .35rem 0 .65rem; color: inherit; }
+.fix-link { background: #b91c1c; padding: .55rem .75rem; font-size: .875rem; }
 .empty { color: #6b7280; }
 @media (max-width: 600px) {
   .answer-row { flex-direction: column; }

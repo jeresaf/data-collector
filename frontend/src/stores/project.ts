@@ -5,10 +5,21 @@ import api from '@/services/api'
 export interface Project {
   id: string
   name: string
-  description: string
+  description: string | null
   isActive: boolean
   createdAt: string
   updatedAt: string
+}
+
+export interface ProjectPage {
+  content: Project[]
+  totalElements?: number
+  totalPages?: number
+  size?: number
+  number?: number
+  first?: boolean
+  last?: boolean
+  empty?: boolean
 }
 
 export interface CreateProjectRequest {
@@ -32,9 +43,15 @@ export const useProjectStore = defineStore('project', () => {
     loading.value = true
     error.value = null
     try {
-      const response = await api.get<Project[]>('/projects')
-      projects.value = response.data
-      return response.data
+      const response = await api.get<Project[] | ProjectPage>('/projects')
+      const result = Array.isArray(response.data)
+        ? response.data
+        : Array.isArray(response.data?.content)
+          ? response.data.content
+          : []
+
+      projects.value = result
+      return result
     } catch (err: any) {
       error.value = err.response?.data?.message || 'Failed to fetch projects'
       throw err

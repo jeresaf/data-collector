@@ -9,12 +9,18 @@ import org.odk.platform.domain.WebFormAnswer;
 import org.odk.platform.domain.WebFormAttachment;
 import org.odk.platform.domain.WebFormSession;
 import org.odk.platform.service.FormDefinition;
+import org.odk.platform.service.FormAttachmentService;
 import org.odk.platform.service.WebFormAccessService;
 import org.odk.platform.service.WebFormRuntimeService;
+import org.javarosa.core.model.Constants;
 import org.javarosa.core.model.FormIndex;
 import org.javarosa.form.api.FormEntryController;
 import org.javarosa.form.api.FormEntryPrompt;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -33,7 +39,41 @@ public class WebFormController {
 
     private final WebFormRuntimeService webFormRuntimeService;
     private final WebFormAccessService webFormAccessService;
+    private final FormAttachmentService formAttachmentService;
     private final AuditService auditService;
+
+    /**
+     * Serve prompt media referenced by the XForm (audio/image/video) through
+     * the authenticated browser API. The browser cannot attach the platform's
+     * bearer token to a raw <audio>/<img>/<video> URL, so the Vue client fetches
+     * this endpoint as a blob through the configured Axios instance.
+     */
+    @GetMapping("/forms/{formVersionId}/media/{fileName:.+}")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Resource> getPromptMedia(
+            @PathVariable UUID formVersionId,
+            @PathVariable String fileName) {
+        webFormAccessService.authorizeDefinition(formVersionId);
+
+        var attachment = formAttachmentService
+                .getAttachmentByFormVersionAndFileName(formVersionId, fileName)
+                .orElse(null);
+        if (attachment == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        byte[] content = formAttachmentService.downloadAttachment(attachment.getId());
+        String contentType = formAttachmentService.getAttachmentContentType(attachment.getId());
+        if (contentType == null || contentType.isBlank()) {
+            contentType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
+        }
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(contentType))
+                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=3600")
+                .contentLength(content.length)
+                .body(new ByteArrayResource(content));
+    }
 
     /**
      * Start a new web form session or resume an existing draft.
@@ -58,11 +98,20 @@ public class WebFormController {
                 identity.userId(),
                 identity.appUserId());
 
-        // Get form definition with session data to return initial state
-        FormDefinition formDef = webFormRuntimeService.getFormDefinitionWithInstance(session.getId());
-        
-        // Step to the first renderable screen and persist that position.
-        int event = formDef.stepToNextEvent();
+        // A new session starts before the first JavaRosa event. An existing
+        // draft already has a persisted JavaRosa position and must resume there
+        // rather than being reset to the beginning every time Fill Form opens.
+        boolean isNewSessionPosition = session.getCurrentScreen() == null
+                || session.getCurrentScreen().isBlank()
+                || "start".equals(session.getCurrentScreen());
+
+        FormDefinition formDef = isNewSessionPosition
+                ? webFormRuntimeService.getFormDefinitionWithInstance(session.getId())
+                : webFormRuntimeService.getFormDefinitionWithSessionState(session.getId());
+
+        int event = isNewSessionPosition
+                ? formDef.stepToNextScreenEvent()
+                : formDef.normalizeCurrentScreen(true);
         webFormRuntimeService.persistFormState(session.getId(), formDef);
         
         // Update session status to active if it was draft
@@ -123,8 +172,14 @@ public class WebFormController {
     public ResponseEntity<CurrentScreenResponse> getCurrentScreen(@PathVariable UUID sessionId) {
         webFormAccessService.authorizeSession(sessionId);
         FormDefinition formDef = webFormRuntimeService.getFormDefinitionWithSessionState(sessionId);
-        
-        int event = formDef.getCurrentEvent();
+
+        int originalEvent = formDef.getCurrentEvent();
+        int event = originalEvent == FormEntryController.EVENT_BEGINNING_OF_FORM
+                ? formDef.stepToNextScreenEvent()
+                : formDef.normalizeCurrentScreen(true);
+        if (event != originalEvent) {
+            webFormRuntimeService.persistFormState(sessionId, formDef);
+        }
         
         CurrentScreenResponse response = CurrentScreenResponse.builder()
                 .event(event)
@@ -142,6 +197,168 @@ public class WebFormController {
         }
 
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Get answer-based progress across the currently reachable form.
+     */
+    @GetMapping("/sessions/{sessionId}/progress")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ProgressResponse> getProgress(@PathVariable UUID sessionId) {
+        webFormAccessService.authorizeSession(sessionId);
+        WebFormRuntimeService.FormProgress progress = webFormRuntimeService.calculateProgress(sessionId);
+        return ResponseEntity.ok(ProgressResponse.builder()
+                .answeredQuestions(progress.answeredQuestions())
+                .totalQuestions(progress.totalQuestions())
+                .percent(progress.percent())
+                .build());
+    }
+
+    /**
+     * Return all currently reachable questions contained in an
+     * appearance=field-list group. The group is enumerated from a fresh
+     * JavaRosa runtime so building the page never changes the persisted session
+     * position and every question keeps JavaRosa's exact instance path.
+     */
+    @GetMapping("/sessions/{sessionId}/field-list")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<FieldListResponse> getFieldList(@PathVariable UUID sessionId) {
+        webFormAccessService.authorizeSession(sessionId);
+        FormDefinition groupForm = webFormRuntimeService.getFormDefinitionWithSessionState(sessionId);
+
+        if (!groupForm.isCurrentFieldListGroup()) {
+            return ResponseEntity.ok(FieldListResponse.builder()
+                    .groupPath(null)
+                    .groupInstancePath(null)
+                    .questions(List.of())
+                    .build());
+        }
+
+        String groupPath = groupForm.getCurrentFieldListPath();
+        String groupInstancePath = groupForm.getCurrentFieldListInstancePath();
+        List<QuestionResponse> questions = collectFieldListQuestions(sessionId, groupInstancePath);
+
+        return ResponseEntity.ok(FieldListResponse.builder()
+                .groupPath(groupPath)
+                .groupInstancePath(groupInstancePath)
+                .questions(questions)
+                .build());
+    }
+
+    /**
+     * Collect field-list questions by walking the live JavaRosa event stream.
+     * This deliberately avoids reconstructing instance paths from bind paths:
+     * JavaRosa instance references contain multiplicity predicates (including
+     * [1] on ordinary descendants), and predicting those paths was the reason
+     * valid field-list groups could render as empty.
+     */
+    private List<QuestionResponse> collectFieldListQuestions(
+            UUID sessionId,
+            String groupInstancePath) {
+
+        if (groupInstancePath == null || groupInstancePath.isBlank()) {
+            return List.of();
+        }
+
+        FormDefinition scan = webFormRuntimeService.getFormDefinitionWithInstance(sessionId);
+        List<QuestionResponse> questions = new java.util.ArrayList<>();
+        boolean enteredGroup = false;
+        int event = scan.getCurrentEvent();
+        int safetyCounter = 0;
+
+        while (safetyCounter++ < 10000) {
+            boolean insideGroup = scan.isCurrentEventWithinGroup(groupInstancePath);
+
+            if (insideGroup) {
+                enteredGroup = true;
+
+                if (event == FormEntryController.EVENT_QUESTION
+                        && scan.isIndexRelevant(scan.getCurrentFormIndex())
+                        && !isInsideNestedRepeat(scan, groupInstancePath)) {
+                    questions.add(buildQuestionResponse(scan));
+                }
+            } else if (enteredGroup) {
+                break;
+            }
+
+            if (event == FormEntryController.EVENT_END_OF_FORM) {
+                break;
+            }
+            event = scan.stepToNextEvent();
+        }
+
+        if (safetyCounter >= 10000) {
+            throw new IllegalStateException(
+                    "Unable to enumerate field-list group: " + groupInstancePath);
+        }
+
+        return questions;
+    }
+
+    private boolean isInsideNestedRepeat(
+            FormDefinition formDef,
+            String fieldListInstancePath) {
+        for (FormDefinition.GroupContext context : formDef.getCurrentGroupHierarchy()) {
+            if (!context.repeat() || context.instancePath() == null) {
+                continue;
+            }
+            if (context.instancePath().startsWith(fieldListInstancePath + "/")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @PostMapping("/sessions/{sessionId}/field-list/navigate/next")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<NavigationResponse> navigatePastFieldList(
+            @PathVariable UUID sessionId,
+            @RequestBody FieldListNavigateRequest request) {
+        webFormAccessService.authorizeSession(sessionId);
+        FormDefinition formDef = webFormRuntimeService.getFormDefinitionWithSessionState(sessionId);
+        int event = stepOutsideGroup(formDef, request.getGroupInstancePath(), true);
+        webFormRuntimeService.persistFormState(sessionId, formDef);
+        return buildNavigationResponse(formDef, event);
+    }
+
+    @PostMapping("/sessions/{sessionId}/field-list/navigate/previous")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<NavigationResponse> navigateBeforeFieldList(
+            @PathVariable UUID sessionId,
+            @RequestBody FieldListNavigateRequest request) {
+        webFormAccessService.authorizeSession(sessionId);
+        FormDefinition formDef = webFormRuntimeService.getFormDefinitionWithSessionState(sessionId);
+        int event = stepOutsideGroup(formDef, request.getGroupInstancePath(), false);
+        webFormRuntimeService.persistFormState(sessionId, formDef);
+        return buildNavigationResponse(formDef, event);
+    }
+
+    private int stepOutsideGroup(FormDefinition formDef, String groupInstancePath, boolean forward) {
+        if (groupInstancePath == null || groupInstancePath.isBlank()) {
+            throw new IllegalArgumentException("Field-list group path is required");
+        }
+
+        int event = formDef.getCurrentEvent();
+        int safetyCounter = 0;
+
+        // The session may currently be on the group event itself or on any child
+        // question because answer saves intentionally persist their exact
+        // JavaRosa position. Walk until the next event is outside this group.
+        while (safetyCounter++ < 10000) {
+            if (forward && event == FormEntryController.EVENT_END_OF_FORM) {
+                return event;
+            }
+            if (!forward && event == FormEntryController.EVENT_BEGINNING_OF_FORM) {
+                return event;
+            }
+
+            event = forward ? formDef.stepToNextEvent() : formDef.stepToPreviousEvent();
+            if (!formDef.isCurrentEventWithinGroup(groupInstancePath)) {
+                return formDef.normalizeCurrentScreen(forward);
+            }
+        }
+
+        throw new IllegalStateException("Unable to leave field-list group: " + groupInstancePath);
     }
 
     /**
@@ -203,7 +420,7 @@ public class WebFormController {
     public ResponseEntity<NavigationResponse> navigateNext(@PathVariable UUID sessionId) {
         webFormAccessService.authorizeSession(sessionId);
         FormDefinition formDef = webFormRuntimeService.getFormDefinitionWithSessionState(sessionId);
-        int event = formDef.stepToNextEvent();
+        int event = formDef.stepToNextScreenEvent();
         webFormRuntimeService.persistFormState(sessionId, formDef);
 
         return buildNavigationResponse(formDef, event);
@@ -217,7 +434,7 @@ public class WebFormController {
     public ResponseEntity<NavigationResponse> navigatePrevious(@PathVariable UUID sessionId) {
         webFormAccessService.authorizeSession(sessionId);
         FormDefinition formDef = webFormRuntimeService.getFormDefinitionWithSessionState(sessionId);
-        int event = formDef.stepToPreviousEvent();
+        int event = formDef.stepToPreviousScreenEvent();
         webFormRuntimeService.persistFormState(sessionId, formDef);
 
         return buildNavigationResponse(formDef, event);
@@ -296,6 +513,17 @@ public class WebFormController {
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<FinalizeResponse> finalizeSession(@PathVariable UUID sessionId) {
         webFormAccessService.authorizeSession(sessionId);
+
+        ValidationResponse validation = validateSession(sessionId);
+        if (!validation.isValid()) {
+            FinalizeResponse response = FinalizeResponse.builder()
+                    .success(false)
+                    .message(validation.getMessage())
+                    .validation(validation)
+                    .build();
+            return ResponseEntity.badRequest().body(response);
+        }
+
         try {
             var submission = webFormRuntimeService.finalizeSession(sessionId);
 
@@ -420,16 +648,61 @@ public class WebFormController {
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ValidationResponse> validateForm(@PathVariable UUID sessionId) {
         webFormAccessService.authorizeSession(sessionId);
+        return ResponseEntity.ok(validateSession(sessionId));
+    }
+
+    private ValidationResponse validateSession(UUID sessionId) {
         FormDefinition formDef = webFormRuntimeService.getFormDefinitionWithInstance(sessionId);
         FormDefinition.ValidationResult result = formDef.validate();
 
-        ValidationResponse response = ValidationResponse.builder()
+        QuestionResponse failedQuestion = null;
+        String message = null;
+
+        if (!result.isValid() && result.getFailedPrompt() != null) {
+            String failedPath = formDef.getApiPath(result.getFailedPrompt());
+            String failedInstancePath = formDef.getApiInstancePath(result.getFailedPrompt());
+            FormDefinition failedForm = webFormRuntimeService.getFormDefinitionWithInstance(sessionId);
+
+            if (failedForm.moveToQuestion(failedPath, failedInstancePath, null, null)) {
+                failedQuestion = buildQuestionResponse(failedForm);
+                message = validationMessage(result.getOutcomeCode(), failedQuestion);
+                // Keep the persisted runtime aligned with the field the user now
+                // needs to correct.
+                webFormRuntimeService.persistFormState(sessionId, failedForm);
+            }
+        }
+
+        if (!result.isValid() && message == null) {
+            message = "Please correct the highlighted form field before continuing.";
+        }
+
+        return ValidationResponse.builder()
                 .valid(result.isValid())
                 .failedPromptIndex(result.getFailedPrompt() != null ? result.getFailedPrompt().toString() : null)
                 .outcomeCode(result.getOutcomeCode())
+                .message(message)
+                .failedQuestion(failedQuestion)
                 .build();
+    }
 
-        return ResponseEntity.ok(response);
+    private String validationMessage(int outcomeCode, QuestionResponse question) {
+        String label = question.getLabel();
+        if (label == null || label.isBlank()) {
+            label = question.getName() != null && !question.getName().isBlank()
+                    ? question.getName()
+                    : question.getPath();
+        }
+
+        if (outcomeCode == FormEntryController.ANSWER_REQUIRED_BUT_EMPTY) {
+            return label + " is required.";
+        }
+        if (outcomeCode == FormEntryController.ANSWER_CONSTRAINT_VIOLATED) {
+            if (question.getConstraintText() != null && !question.getConstraintText().isBlank()) {
+                return question.getConstraintText();
+            }
+            return "Please enter a valid value for " + label + ".";
+        }
+        return "Please check " + label + ".";
     }
 
     /**
@@ -474,6 +747,50 @@ public class WebFormController {
         return ResponseEntity.ok(response);
     }
 
+    private String getCurrentQuestionType(FormDefinition formDef) {
+        int controlType = formDef.getCurrentControlType();
+        int dataType = formDef.getCurrentDataType();
+
+        if (controlType == Constants.CONTROL_LABEL) return "note";
+        // XLSForm compiles `note` rows as readonly string <input> controls.
+        // Expose those as semantic notes so the web client renders content,
+        // not a disabled answer box.
+        if (controlType == Constants.CONTROL_INPUT
+                && dataType == Constants.DATATYPE_TEXT
+                && formDef.isCurrentReadOnly()) {
+            return "note";
+        }
+        if (controlType == Constants.CONTROL_SELECT_ONE) return "select1";
+        if (controlType == Constants.CONTROL_SELECT_MULTI || controlType == Constants.CONTROL_RANK) return "select";
+
+        return switch (dataType) {
+            case Constants.DATATYPE_GEOPOINT -> "geopoint";
+            case Constants.DATATYPE_GEOSHAPE -> "geoshape";
+            case Constants.DATATYPE_GEOTRACE -> "geotrace";
+            case Constants.DATATYPE_BARCODE -> "barcode";
+            case Constants.DATATYPE_BINARY -> "binary";
+            case Constants.DATATYPE_DATE -> "date";
+            case Constants.DATATYPE_TIME -> "time";
+            case Constants.DATATYPE_DATE_TIME -> "datetime";
+            case Constants.DATATYPE_INTEGER -> "int";
+            case Constants.DATATYPE_LONG -> "long";
+            case Constants.DATATYPE_DECIMAL -> "decimal";
+            case Constants.DATATYPE_CHOICE -> "select1";
+            case Constants.DATATYPE_MULTIPLE_ITEMS -> "select";
+            case Constants.DATATYPE_TEXT -> "text";
+            default -> {
+                if (controlType == Constants.CONTROL_UPLOAD
+                        || controlType == Constants.CONTROL_IMAGE_CHOOSE
+                        || controlType == Constants.CONTROL_AUDIO_CAPTURE
+                        || controlType == Constants.CONTROL_VIDEO_CAPTURE
+                        || controlType == Constants.CONTROL_FILE_CAPTURE) {
+                    yield "binary";
+                }
+                yield "text";
+            }
+        };
+    }
+
     private QuestionResponse buildQuestionResponse(FormDefinition formDef) {
         FormEntryPrompt prompt = formDef.getCurrentPrompt();
         String questionName = null;
@@ -502,12 +819,16 @@ public class WebFormController {
                 .hint(formDef.getCurrentHint())
                 .dataType(formDef.getCurrentDataType())
                 .controlType(formDef.getCurrentControlType())
+                .questionType(getCurrentQuestionType(formDef))
                 .required(formDef.isCurrentRequired())
                 .readOnly(formDef.isCurrentReadOnly())
                 .constraintText(formDef.getCurrentConstraintText())
                 .appearanceHint(formDef.getCurrentAppearanceHint())
                 .mediaType(formDef.getCurrentMediaType())
-                .currentAnswer(formDef.getCurrentAnswerText())
+                .promptAudioFile(formDef.getCurrentPromptMediaFile("audio"))
+                .promptImageFile(formDef.getCurrentPromptMediaFile("image"))
+                .promptVideoFile(formDef.getCurrentPromptMediaFile("video"))
+                .currentAnswer(formDef.getCurrentAnswerValue())
                 .choices(formDef.getCurrentChoices())
                 .build();
     }
@@ -529,6 +850,7 @@ public class WebFormController {
                 .repeatCountControlled(formDef.isCurrentRepeatCountControlled())
                 .canAddRepeat(formDef.canAddCurrentRepeat())
                 .canDeleteRepeat(formDef.canDeleteCurrentRepeat())
+                .appearanceHint(formDef.getCurrentGroupAppearanceHint())
                 .build();
     }
 
@@ -560,6 +882,7 @@ public class WebFormController {
                         .repeat(context.repeat())
                         .repeatIndex(context.repeatIndex())
                         .depth(context.depth())
+                        .appearanceHint(context.appearanceHint())
                         .build())
                 .toList();
     }
@@ -723,6 +1046,7 @@ public class WebFormController {
         private UUID submissionId;
         private String instanceId;
         private String message;
+        private ValidationResponse validation;
     }
 
     @lombok.Data
@@ -755,10 +1079,22 @@ public class WebFormController {
     @lombok.Builder
     @lombok.NoArgsConstructor
     @lombok.AllArgsConstructor
+    public static class ProgressResponse {
+        private int answeredQuestions;
+        private int totalQuestions;
+        private int percent;
+    }
+
+    @lombok.Data
+    @lombok.Builder
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
     public static class ValidationResponse {
         private boolean valid;
         private String failedPromptIndex;
         private int outcomeCode;
+        private String message;
+        private QuestionResponse failedQuestion;
     }
 
     @lombok.Data
@@ -789,11 +1125,15 @@ public class WebFormController {
         private String hint;
         private int dataType;
         private int controlType;
+        private String questionType;
         private boolean required;
         private boolean readOnly;
         private String constraintText;
         private String appearanceHint;
         private String mediaType;
+        private String promptAudioFile;
+        private String promptImageFile;
+        private String promptVideoFile;
         private String currentAnswer;
         private List<FormDefinition.SelectChoice> choices;
     }
@@ -815,6 +1155,25 @@ public class WebFormController {
         private boolean repeatCountControlled;
         private boolean canAddRepeat;
         private boolean canDeleteRepeat;
+        private String appearanceHint;
+    }
+
+    @lombok.Data
+    @lombok.Builder
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    public static class FieldListResponse {
+        private String groupPath;
+        private String groupInstancePath;
+        private List<QuestionResponse> questions;
+    }
+
+    @lombok.Data
+    @lombok.Builder
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    public static class FieldListNavigateRequest {
+        private String groupInstancePath;
     }
 
     @lombok.Data
@@ -828,6 +1187,7 @@ public class WebFormController {
         private boolean repeat;
         private Integer repeatIndex;
         private int depth;
+        private String appearanceHint;
     }
 
     @lombok.Data

@@ -263,12 +263,46 @@ public class SubmissionController {
                 .status(submission.getStatus())
                 .source(submissionSource(submission))
                 .submittedAt(submission.getSubmittedAt())
-                .submittedById(submission.getSubmittedBy() != null ? submission.getSubmittedBy().getId() : null)
-                .submittedByName(submission.getSubmittedBy() != null ? submission.getSubmittedBy().getUsername() : null)
+                .submittedById(resolveSubmittedById(submission))
+                .submittedByName(resolveSubmittedByName(submission))
                 .reviewedAt(submission.getReviewedAt())
                 .reviewedById(submission.getReviewedBy() != null ? submission.getReviewedBy().getId() : null)
                 .attachmentCount(submission.getAttachmentsList() != null ? submission.getAttachmentsList().size() : 0)
                 .build();
+    }
+
+    private UUID resolveSubmittedById(Submission submission) {
+        if (submission.getSubmittedBy() != null) {
+            return submission.getSubmittedBy().getId();
+        }
+        if (submission.getMetadata() == null) return null;
+        Object value = submission.getMetadata().get("submittedById");
+        if (value instanceof UUID uuid) return uuid;
+        if (value == null) return null;
+        try {
+            return UUID.fromString(String.valueOf(value));
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    private String resolveSubmittedByName(Submission submission) {
+        if (submission.getSubmittedBy() != null) {
+            return submission.getSubmittedBy().getUsername();
+        }
+        if (submission.getMetadata() == null) return null;
+        Object displayName = submission.getMetadata().get("submittedByDisplayName");
+        if (displayName != null && !String.valueOf(displayName).isBlank()) {
+            return String.valueOf(displayName);
+        }
+        Object name = submission.getMetadata().get("submittedByName");
+        if (name != null && !String.valueOf(name).isBlank()) {
+            return String.valueOf(name);
+        }
+        Object username = submission.getMetadata().get("submittedByUsername");
+        return username == null || String.valueOf(username).isBlank()
+                ? null
+                : String.valueOf(username);
     }
 
     private String submissionSource(Submission submission) {
@@ -293,8 +327,8 @@ public class SubmissionController {
                 .status(submission.getStatus())
                 .metadata(submission.getMetadata())
                 .submittedAt(submission.getSubmittedAt())
-                .submittedById(submission.getSubmittedBy() != null ? submission.getSubmittedBy().getId() : null)
-                .submittedByName(submission.getSubmittedBy() != null ? submission.getSubmittedBy().getUsername() : null)
+                .submittedById(resolveSubmittedById(submission))
+                .submittedByName(resolveSubmittedByName(submission))
                 .reviewedAt(submission.getReviewedAt())
                 .reviewedById(submission.getReviewedBy() != null ? submission.getReviewedBy().getId() : null)
                 .reviewNotes(submission.getReviewNotes())

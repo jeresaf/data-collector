@@ -40,6 +40,7 @@ import org.javarosa.xpath.expr.XPathExpression;
 import org.javarosa.model.xform.XFormSerializingVisitor;
 import org.javarosa.model.xform.XFormsModule;
 import org.javarosa.xform.util.XFormAnswerDataParser;
+import org.javarosa.xform.util.XFormAnswerDataSerializer;
 import org.javarosa.xform.parse.XFormParser;
 import org.javarosa.core.model.instance.InstanceInitializationFactory;
 import org.javarosa.model.xform.XPathReference;
@@ -206,23 +207,51 @@ public class FormDefinition {
         return new ArrayList<>(warnings);
     }
     
+    /**
+     * JavaRosa's XFormParser protects parsing with a process-global, non-blocking
+     * lock. If two web requests parse at the same time, one parser immediately
+     * throws "Another XForm is being parsed!". The web UI intentionally loads
+     * progress and field-list data in parallel, so every application entry point
+     * must serialize JavaRosa parsing before entering XFormParser.parse().
+     *
+     * Synchronizing on XFormParser.class gives FormDefinition and
+     * JavaRosaFormLoader one shared application-owned monitor without changing
+     * JavaRosa itself. Do not replace this with a FormDefinition-local lock: the
+     * loader and web runtime must coordinate with each other as well.
+     */
     private static FormDef parseFormDef(String xformXml) {
-        try {
-            return new XFormParser(new StringReader(xformXml)).parse();
-        } catch (XFormParser.ParseException e) {
-            throw new IllegalArgumentException("Invalid ODK XForm XML", e);
-        } catch (RuntimeException e) {
-            throw new IllegalArgumentException("Invalid ODK XForm XML", e);
+        synchronized (XFormParser.class) {
+            try {
+                return new XFormParser(new StringReader(xformXml)).parse();
+            } catch (XFormParser.ParseException e) {
+                String detail = e.getMessage() == null ? "JavaRosa parse error" : e.getMessage();
+                log.warn("JavaRosa rejected XForm: {}", detail, e);
+                throw new IllegalArgumentException("Invalid ODK XForm XML: " + detail, e);
+            } catch (RuntimeException e) {
+                String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                log.warn("JavaRosa failed to parse XForm: {}", detail, e);
+                throw new IllegalArgumentException("Invalid ODK XForm XML: " + detail, e);
+            }
         }
     }
     
     private static FormDef parseFormDef(String xformXml, String instanceXml) {
-        try {
-            return new XFormParser(new StringReader(xformXml), new StringReader(instanceXml)).parse();
-        } catch (XFormParser.ParseException e) {
-            throw new IllegalArgumentException("Invalid ODK XForm XML or instance XML", e);
-        } catch (RuntimeException e) {
-            throw new IllegalArgumentException("Invalid ODK XForm XML or instance XML", e);
+        synchronized (XFormParser.class) {
+            try {
+                return new XFormParser(new StringReader(xformXml), new StringReader(instanceXml)).parse();
+            } catch (XFormParser.ParseException e) {
+                String detail = e.getMessage() == null ? "JavaRosa parse error" : e.getMessage();
+                log.warn("JavaRosa rejected saved XForm instance: {}", detail, e);
+                throw new IllegalArgumentException(
+                        "Invalid ODK XForm XML or instance XML: " + detail,
+                        e);
+            } catch (RuntimeException e) {
+                String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                log.warn("JavaRosa failed to restore saved XForm instance: {}", detail, e);
+                throw new IllegalArgumentException(
+                        "Invalid ODK XForm XML or instance XML: " + detail,
+                        e);
+            }
         }
     }
     
@@ -518,6 +547,76 @@ public class FormDefinition {
     public int stepToNextEvent() {
         return controller.stepToNextEvent();
     }
+
+    /**
+     * Move to the next screen a form filler should actually see. JavaRosa emits
+     * structural GROUP events as part of traversal. ODK Collect skips ordinary
+     * groups and only treats appearance=field-list groups as screens. Keep
+     * repeat events visible because this web client exposes repeat management
+     * controls there.
+     */
+    public int stepToNextScreenEvent() {
+        int event = getCurrentEvent();
+        int safetyCounter = 0;
+
+        while (safetyCounter++ < 10000) {
+            if (event == FormEntryController.EVENT_END_OF_FORM) {
+                return event;
+            }
+            event = stepToNextEvent();
+            if (isRenderableScreenEvent(event)) {
+                return event;
+            }
+        }
+
+        throw new IllegalStateException("Unable to find the next renderable form screen");
+    }
+
+    /**
+     * Move to the previous visible screen, skipping structural group events in
+     * the same way as forward navigation.
+     */
+    public int stepToPreviousScreenEvent() {
+        int event = getCurrentEvent();
+        int safetyCounter = 0;
+
+        while (safetyCounter++ < 10000) {
+            if (event == FormEntryController.EVENT_BEGINNING_OF_FORM) {
+                return event;
+            }
+            event = stepToPreviousEvent();
+            if (isRenderableScreenEvent(event)) {
+                return event;
+            }
+        }
+
+        throw new IllegalStateException("Unable to find the previous renderable form screen");
+    }
+
+    /**
+     * If raw JavaRosa traversal has just left a field-list on a structural
+     * group event, continue until the next/previous user-facing screen.
+     */
+    public int normalizeCurrentScreen(boolean forward) {
+        int event = getCurrentEvent();
+        if (isRenderableScreenEvent(event)) {
+            return event;
+        }
+        return forward ? stepToNextScreenEvent() : stepToPreviousScreenEvent();
+    }
+
+    private boolean isRenderableScreenEvent(int event) {
+        if (event == FormEntryController.EVENT_GROUP) {
+            return isCurrentFieldListGroup();
+        }
+
+        return event == FormEntryController.EVENT_QUESTION
+                || event == FormEntryController.EVENT_REPEAT
+                || event == FormEntryController.EVENT_REPEAT_JUNCTURE
+                || event == FormEntryController.EVENT_PROMPT_NEW_REPEAT
+                || event == FormEntryController.EVENT_BEGINNING_OF_FORM
+                || event == FormEntryController.EVENT_END_OF_FORM;
+    }
     
     /**
      * Move to the previous event.
@@ -755,7 +854,66 @@ public class FormDefinition {
     }
     
     /**
-     * Get the current answer value as a string.
+     * Return a prompt-media reference from JavaRosa itext, normalized to the
+     * attachment filename stored with the form version. Typical XForm values
+     * are jr://audio/file.wav, jr://images/file.png and jr://video/file.mp4.
+     */
+    public String getCurrentPromptMediaFile(String mediaForm) {
+        FormEntryPrompt prompt = model.getQuestionPrompt();
+        if (prompt == null || mediaForm == null || mediaForm.isBlank()) {
+            return null;
+        }
+
+        String reference = prompt.getSpecialFormQuestionText(mediaForm);
+        if (reference == null || reference.isBlank()) {
+            return null;
+        }
+
+        String normalized = reference.trim();
+        int queryIndex = normalized.indexOf('?');
+        if (queryIndex >= 0) {
+            normalized = normalized.substring(0, queryIndex);
+        }
+        int fragmentIndex = normalized.indexOf('#');
+        if (fragmentIndex >= 0) {
+            normalized = normalized.substring(0, fragmentIndex);
+        }
+        normalized = normalized.replace('\\', '/');
+        int slashIndex = normalized.lastIndexOf('/');
+        if (slashIndex >= 0 && slashIndex < normalized.length() - 1) {
+            normalized = normalized.substring(slashIndex + 1);
+        }
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    /**
+     * Return the current answer in canonical XForms storage format.
+     *
+     * FormEntryPrompt#getAnswerText() is intended for display and therefore
+     * converts select values to labels and dates/times to localized text. The
+     * web renderer needs the persisted value instead (for example a select
+     * value rather than its label, and yyyy-MM-dd rather than a localized
+     * date). Using JavaRosa's own XForm serializer keeps the browser and the
+     * mobile clients on the same representation.
+     */
+    public String getCurrentAnswerValue() {
+        FormEntryPrompt prompt = model.getQuestionPrompt();
+        if (prompt == null) {
+            return null;
+        }
+
+        IAnswerData answer = prompt.getAnswerValue();
+        if (answer == null) {
+            return null;
+        }
+
+        Object serialized = new XFormAnswerDataSerializer()
+                .serializeAnswerData(answer, prompt.getDataType());
+        return serialized == null ? null : serialized.toString();
+    }
+
+    /**
+     * Display-oriented answer text retained for review/diagnostic callers.
      */
     public String getCurrentAnswerText() {
         FormEntryPrompt prompt = model.getQuestionPrompt();
@@ -780,6 +938,29 @@ public class FormDefinition {
      */
     public FormIndex getCurrentFormIndex() {
         return model.getFormIndex();
+    }
+
+    /**
+     * Convert an arbitrary JavaRosa form index to the canonical API question
+     * path (root instance name removed). Used to turn validation failures into
+     * actionable field-level errors for the web renderer.
+     */
+    public String getApiPath(FormIndex index) {
+        if (index == null || index.getReference() == null) {
+            return null;
+        }
+        return referenceToApiPath(index.getReference());
+    }
+
+    /**
+     * Convert an arbitrary JavaRosa form index to an instance-specific API path
+     * that preserves repeat multiplicities.
+     */
+    public String getApiInstancePath(FormIndex index) {
+        if (index == null || index.getReference() == null) {
+            return null;
+        }
+        return referenceToApiInstancePath(index.getReference());
     }
 
     /**
@@ -896,7 +1077,8 @@ public class FormDefinition {
                     referenceToApiInstancePath(reference),
                     group.getRepeat(),
                     multiplicity,
-                    hierarchy.size()
+                    hierarchy.size(),
+                    group.getAppearanceAttr()
             ));
         }
 
@@ -909,6 +1091,190 @@ public class FormDefinition {
     public String getCurrentCaptionText() {
         FormEntryCaption caption = model.getCaptionPrompt();
         return caption != null ? caption.getLongText() : null;
+    }
+
+    /**
+     * Return the appearance assigned to the current group/repeat. JavaRosa
+     * exposes group appearances on IFormElement just like question appearances.
+     */
+    public String getCurrentGroupAppearanceHint() {
+        FormIndex index = model.getFormIndex();
+        if (index == null || !index.isInForm()) {
+            return null;
+        }
+        IFormElement element = formDef.getChild(index);
+        return element instanceof GroupDef ? element.getAppearanceAttr() : null;
+    }
+
+    public boolean isCurrentFieldListGroup() {
+        return getCurrentOrEnclosingFieldListContext() != null;
+    }
+
+    /**
+     * Return the path of the nearest enclosing appearance=field-list group.
+     * This works both while JavaRosa is positioned on the group event itself
+     * and while it is positioned on one of that group's child questions.
+     */
+    public String getCurrentFieldListPath() {
+        FieldListContext context = getCurrentOrEnclosingFieldListContext();
+        return context == null ? null : referenceToApiPath(context.index().getReference());
+    }
+
+    public String getCurrentFieldListInstancePath() {
+        FieldListContext context = getCurrentOrEnclosingFieldListContext();
+        return context == null ? null : referenceToApiInstancePath(context.index().getReference());
+    }
+
+    private FieldListContext getCurrentOrEnclosingFieldListContext() {
+        FormIndex currentIndex = model.getFormIndex();
+        if (currentIndex == null || !currentIndex.isInForm()) {
+            return null;
+        }
+
+        // When positioned directly on a group event, inspect that group first.
+        IFormElement currentElement = formDef.getChild(currentIndex);
+        if (currentElement instanceof GroupDef currentGroup
+                && hasAppearanceToken(currentGroup.getAppearanceAttr(), "field-list")) {
+            return new FieldListContext(currentIndex, currentGroup);
+        }
+
+        // Answer saves persist the exact child question position. A later page
+        // refresh therefore needs to recover the enclosing field-list group from
+        // JavaRosa's caption hierarchy instead of requiring the GROUP event.
+        FormEntryCaption[] captions = model.getCaptionHierarchy(currentIndex);
+        if (captions == null) {
+            return null;
+        }
+        for (int i = captions.length - 1; i >= 0; i--) {
+            FormIndex captionIndex = captions[i].getIndex();
+            if (captionIndex == null || !captionIndex.isInForm()) {
+                continue;
+            }
+            IFormElement element = formDef.getChild(captionIndex);
+            if (element instanceof GroupDef group
+                    && hasAppearanceToken(group.getAppearanceAttr(), "field-list")) {
+                return new FieldListContext(captionIndex, group);
+            }
+        }
+        return null;
+    }
+
+    private boolean hasAppearanceToken(String appearance, String expected) {
+        if (appearance == null || appearance.isBlank()) {
+            return false;
+        }
+        for (String token : appearance.toLowerCase(Locale.ROOT).trim().split("\\s+")) {
+            if (expected.equals(token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Return all non-repeat question targets contained by the current or
+     * enclosing appearance=field-list group. Nested non-repeat groups are
+     * flattened onto the same page; nested repeats remain separate navigation
+     * structures.
+     */
+    public List<FieldListQuestionTarget> getCurrentFieldListQuestionTargets() {
+        FieldListContext context = getCurrentOrEnclosingFieldListContext();
+        if (context == null || context.index().getReference() == null) {
+            return Collections.emptyList();
+        }
+
+        String groupPath = referenceToApiPath(context.index().getReference());
+        String groupInstancePath = referenceToApiInstancePath(context.index().getReference());
+        List<FieldListQuestionTarget> targets = new ArrayList<>();
+        collectFieldListQuestionTargets(
+                context.group().getChildren(),
+                groupPath,
+                groupInstancePath,
+                targets);
+        return Collections.unmodifiableList(targets);
+    }
+
+    private void collectFieldListQuestionTargets(
+            List<?> children,
+            String groupPath,
+            String groupInstancePath,
+            List<FieldListQuestionTarget> targets) {
+        if (children == null) {
+            return;
+        }
+
+        for (Object child : children) {
+            if (child instanceof QuestionDef question) {
+                if (question.getBind() == null || !(question.getBind().getReference() instanceof TreeReference reference)) {
+                    continue;
+                }
+                String questionPath = referenceToApiPath(reference);
+                String instancePath = fieldListInstancePath(groupPath, groupInstancePath, questionPath);
+                targets.add(new FieldListQuestionTarget(questionPath, instancePath));
+            } else if (child instanceof GroupDef nestedGroup) {
+                if (nestedGroup.getRepeat()) {
+                    // A repeated section has its own multiplicities and controls;
+                    // do not flatten it into its parent's field-list page.
+                    continue;
+                }
+                collectFieldListQuestionTargets(
+                        nestedGroup.getChildren(),
+                        groupPath,
+                        groupInstancePath,
+                        targets);
+            }
+        }
+    }
+
+    private String fieldListInstancePath(
+            String groupPath,
+            String groupInstancePath,
+            String questionPath) {
+        if (questionPath == null || questionPath.isBlank()) {
+            return questionPath;
+        }
+        if (groupPath == null || groupPath.isBlank()
+                || groupInstancePath == null || groupInstancePath.isBlank()) {
+            return questionPath;
+        }
+        if (questionPath.equals(groupPath)) {
+            return groupInstancePath;
+        }
+        if (questionPath.startsWith(groupPath + "/")) {
+            // TreeReference#toString(true), which is the canonical instance path
+            // used elsewhere in this runtime, includes a [1] multiplicity on
+            // every non-repeat descendant as well as repeat multiplicities. A
+            // bind path does not. Recreate those non-repeat multiplicities so a
+            // target assembled from the form definition can be resolved against
+            // a live JavaRosa instance.
+            String suffix = questionPath.substring(groupPath.length() + 1);
+            StringBuilder instanceSuffix = new StringBuilder();
+            for (String segment : suffix.split("/")) {
+                if (segment.isBlank()) {
+                    continue;
+                }
+                instanceSuffix.append('/').append(segment).append("[1]");
+            }
+            return groupInstancePath + instanceSuffix;
+        }
+        return questionPath;
+    }
+
+    /**
+     * Whether the current JavaRosa event is the group itself or a descendant of
+     * the supplied instance-specific group path.
+     */
+    public boolean isCurrentEventWithinGroup(String groupInstancePath) {
+        if (groupInstancePath == null || groupInstancePath.isBlank()) {
+            return false;
+        }
+        FormIndex index = model.getFormIndex();
+        if (index == null || !index.isInForm() || index.getReference() == null) {
+            return false;
+        }
+        String current = referenceToApiInstancePath(index.getReference());
+        return groupInstancePath.equals(current)
+                || (current != null && current.startsWith(groupInstancePath + "/"));
     }
     
     /**
@@ -1992,8 +2358,13 @@ public class FormDefinition {
             String instancePath,
             boolean repeat,
             Integer repeatIndex,
-            int depth) {
+            int depth,
+            String appearanceHint) {
     }
+
+    private record FieldListContext(FormIndex index, GroupDef group) {}
+
+    public record FieldListQuestionTarget(String path, String instancePath) {}
 
     public static class ValidationResult {
         private final boolean valid;

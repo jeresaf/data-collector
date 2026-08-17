@@ -42,6 +42,69 @@ describe('project store', () => {
     expect(store.currentProject?.name).toBe('Updated')
   })
 
+
+  it('unwraps projects from the Spring Page content array', async () => {
+    api.get.mockResolvedValue({
+      data: {
+        content: [project],
+        pageable: {
+          pageNumber: 0,
+          pageSize: 20,
+        },
+        totalElements: 1,
+        totalPages: 1,
+        size: 20,
+        number: 0,
+        first: true,
+        last: true,
+        numberOfElements: 1,
+        empty: false,
+        sort: {
+          empty: true,
+          sorted: false,
+          unsorted: true,
+        },
+      },
+    })
+
+    const store = useProjectStore()
+    const result = await store.fetchProjects()
+
+    expect(result).toEqual([project])
+    expect(store.projects).toEqual([project])
+  })
+
+  it('treats an empty Spring Page as an empty project list', async () => {
+    api.get.mockResolvedValue({
+      data: {
+        content: [],
+        pageable: {
+          pageNumber: 0,
+          pageSize: 20,
+        },
+        totalElements: 0,
+        totalPages: 0,
+        size: 20,
+        number: 0,
+        first: true,
+        last: true,
+        numberOfElements: 0,
+        empty: true,
+        sort: {
+          empty: true,
+          sorted: false,
+          unsorted: true,
+        },
+      },
+    })
+
+    const store = useProjectStore()
+    const result = await store.fetchProjects()
+
+    expect(result).toEqual([])
+    expect(store.projects).toEqual([])
+  })
+
   it('removes deleted projects from local state', async () => {
     api.get.mockResolvedValue({ data: [project] })
     api.delete.mockResolvedValue({})

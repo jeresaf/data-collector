@@ -24,6 +24,12 @@ const loading = ref(false)
 const activeTab = ref<'forms' | 'submissions' | 'reference' | 'reports' | 'audit' | 'access' | 'settings'>('forms')
 const showEditModal = ref(false)
 
+const projectId = computed(() => {
+  const value = route.params.id
+  if (Array.isArray(value)) return value[0] ?? ''
+  return typeof value === 'string' ? value : ''
+})
+
 interface Project {
   id: string
   name: string
@@ -34,15 +40,26 @@ interface Project {
 }
 
 async function loadProject() {
+  const id = projectId.value
+  if (!id) {
+    console.error('Cannot load project: route is missing a project id')
+    router.push('/')
+    return
+  }
+
   loading.value = true
   try {
-    project.value = await projectStore.fetchProject(route.params.id as string)
-    if (project.value) {
-      await Promise.all([
-        formStore.fetchForms(project.value.id),
-        submissionStore.fetchSubmissions({ projectId: project.value.id })
-      ])
-    }
+    const fetchedProject = await projectStore.fetchProject(id)
+
+    // The route identifies the project being viewed. Keep that ID authoritative so
+    // project-scoped requests never degrade into /projects/undefined/... even if a
+    // backend response is incomplete or changes shape.
+    project.value = { ...fetchedProject, id }
+
+    await Promise.all([
+      formStore.fetchForms(id),
+      submissionStore.fetchSubmissions({ projectId: id })
+    ])
   } catch (error) {
     console.error('Failed to load project:', error)
     router.push('/')
@@ -53,8 +70,8 @@ async function loadProject() {
 
 async function handleSave(projectData: Partial<Project>) {
   try {
-    await projectStore.updateProject(project.value!.id, projectData)
-    project.value = { ...project.value!, ...projectData }
+    const updatedProject = await projectStore.updateProject(projectId.value, projectData)
+    project.value = { ...project.value!, ...updatedProject, id: projectId.value }
     showEditModal.value = false
   } catch (error) {
     console.error('Failed to update project:', error)
@@ -64,7 +81,7 @@ async function handleSave(projectData: Partial<Project>) {
 async function handleArchive() {
   if (!confirm('Are you sure you want to archive this project?')) return
   try {
-    await projectStore.archiveProject(project.value!.id)
+    await projectStore.archiveProject(projectId.value)
     router.push('/')
   } catch (error) {
     console.error('Failed to archive project:', error)
@@ -74,7 +91,7 @@ async function handleArchive() {
 async function handleDelete() {
   if (!confirm('Are you sure you want to delete this project? This action cannot be undone.')) return
   try {
-    await projectStore.deleteProject(project.value!.id)
+    await projectStore.deleteProject(projectId.value)
     router.push('/')
   } catch (error) {
     console.error('Failed to delete project:', error)
@@ -170,13 +187,13 @@ onMounted(() => {
     </div>
 
     <div class="tab-content">
-      <FormList v-if="activeTab === 'forms'" :project-id="project.id" />
-      <SubmissionList v-else-if="activeTab === 'submissions'" :project-id="project.id" />
-      <ReferenceDataPanel v-else-if="activeTab === 'reference'" :project-id="project.id" />
-      <ReportBuilderPanel v-else-if="activeTab === 'reports'" :project-id="project.id" />
+      <FormList v-if="activeTab === 'forms'" :project-id="projectId" />
+      <SubmissionList v-else-if="activeTab === 'submissions'" :project-id="projectId" />
+      <ReferenceDataPanel v-else-if="activeTab === 'reference'" :project-id="projectId" />
+      <ReportBuilderPanel v-else-if="activeTab === 'reports'" :project-id="projectId" />
       <AuditTrailPanel v-else-if="activeTab === 'audit'" />
-      <ProjectMembersPanel v-else-if="activeTab === 'access'" :project-id="project.id" />
-      <ProjectSettingsPanel v-else :project-id="project.id" />
+      <ProjectMembersPanel v-else-if="activeTab === 'access'" :project-id="projectId" />
+      <ProjectSettingsPanel v-else :project-id="projectId" />
     </div>
 
     <ProjectFormModal

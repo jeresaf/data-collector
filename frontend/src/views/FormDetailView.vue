@@ -4,6 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useFormLifecycleStore, type FormVersionSummary } from '@/stores/formLifecycle'
 import FormAssignmentsPanel from '@/components/FormAssignmentsPanel.vue'
+import FormMediaPanel from '@/components/FormMediaPanel.vue'
+import FormExternalDataPanel from '@/components/FormExternalDataPanel.vue'
+import MobileFormAssignmentsPanel from '@/components/MobileFormAssignmentsPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -12,7 +15,7 @@ const lifecycle = useFormLifecycleStore()
 
 const projectId = computed(() => String(route.params.projectId || ''))
 const formId = computed(() => String(route.params.formId || ''))
-const activeTab = ref<'overview' | 'versions' | 'history' | 'access'>('overview')
+const activeTab = ref<'overview' | 'versions' | 'media' | 'external-data' | 'history' | 'mobile-access' | 'access'>('overview')
 const notice = ref('')
 
 const canManage = computed(() =>
@@ -117,7 +120,10 @@ onMounted(load)
       <nav class="tabs" aria-label="Form lifecycle sections">
         <button type="button" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">Overview</button>
         <button type="button" :class="{ active: activeTab === 'versions' }" @click="activeTab = 'versions'">Versions ({{ lifecycle.versions.length }})</button>
+        <button type="button" :class="{ active: activeTab === 'media' }" @click="activeTab = 'media'">Media</button>
+        <button type="button" :class="{ active: activeTab === 'external-data' }" @click="activeTab = 'external-data'">External Data</button>
         <button type="button" :class="{ active: activeTab === 'history' }" @click="activeTab = 'history'">Publish history ({{ lifecycle.history.length }})</button>
+        <button v-if="canManage" type="button" :class="{ active: activeTab === 'mobile-access' }" @click="activeTab = 'mobile-access'">Mobile assignments</button>
         <button type="button" :class="{ active: activeTab === 'access' }" @click="activeTab = 'access'">Web access</button>
       </nav>
 
@@ -169,6 +175,24 @@ onMounted(load)
         <div v-else class="empty">No stored versions were returned for this form.</div>
       </section>
 
+      <section v-else-if="activeTab === 'media'" class="panel">
+        <FormMediaPanel
+          :form-id="formId"
+          :versions="lifecycle.versions"
+          :current-version-id="lifecycle.form.formVersionId"
+          :can-manage="canManage"
+        />
+      </section>
+
+      <section v-else-if="activeTab === 'external-data'" class="panel">
+        <FormExternalDataPanel
+          :form-id="formId"
+          :versions="lifecycle.versions"
+          :current-version-id="lifecycle.form.formVersionId"
+          :can-manage="canManage"
+        />
+      </section>
+
       <section v-else-if="activeTab === 'history'" class="panel">
         <div class="section-heading">
           <div><h2>Publish history</h2><p>Trace publishing and archival lifecycle actions for this form.</p></div>
@@ -190,6 +214,10 @@ onMounted(load)
           </article>
         </div>
         <div v-else class="empty">No publish lifecycle actions have been recorded yet.</div>
+      </section>
+
+      <section v-else-if="activeTab === 'mobile-access'" class="panel">
+        <MobileFormAssignmentsPanel :project-id="projectId" :form-id="formId" />
       </section>
 
       <section v-else class="panel">

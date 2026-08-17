@@ -1,10 +1,26 @@
 <script setup lang="ts">
-import { onMounted, ref, watch, computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useWebFormStore, EVENT_QUESTION, EVENT_GROUP, EVENT_REPEAT, EVENT_REPEAT_JUNCTURE, EVENT_PROMPT_NEW_REPEAT, EVENT_END_OF_FORM, EVENT_BEGINNING_OF_FORM } from '@/stores/webForm'
+import {
+  useWebFormStore,
+  type QuestionResponse,
+  type ValidationResponse,
+  EVENT_QUESTION,
+  EVENT_GROUP,
+  EVENT_REPEAT,
+  EVENT_REPEAT_JUNCTURE,
+  EVENT_PROMPT_NEW_REPEAT,
+  EVENT_END_OF_FORM,
+  EVENT_BEGINNING_OF_FORM,
+} from '@/stores/webForm'
 import WebFormQuestion from '@/components/WebFormQuestion.vue'
 import WebFormGroup from '@/components/WebFormGroup.vue'
 import { buildSaveAnswerRequest } from '@/utils/webFormRuntime'
+
+interface QuestionControlHandle {
+  flush: (validate?: boolean) => boolean
+  focusInput?: () => void
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -17,23 +33,142 @@ const isAppWorkflow = computed(() => String(route.path || '').startsWith('/app/'
 const isLoading = ref(false)
 const showSubmitConfirm = ref(false)
 const validationErrors = ref<string[]>([])
+const fieldErrors = ref<Record<string, string>>({})
+const fieldListQuestions = ref<QuestionResponse[]>([])
+const fieldListLoading = ref(false)
+const fieldListLoadError = ref<string | null>(null)
+const statusMessage = ref<string | null>(null)
+const currentQuestionRef = ref<QuestionControlHandle | null>(null)
+const fieldQuestionRefs = new Map<string, QuestionControlHandle>()
+let answerSaveChain: Promise<void> = Promise.resolve()
+
+function questionKey(question: QuestionResponse): string {
+  return question.instancePath || question.path || question.name || String(question.index)
+}
+
+function hasFieldListAppearance(appearance: string | null | undefined): boolean {
+  return (appearance || '').toLowerCase().split(/\s+/).includes('field-list')
+}
+
+function currentFieldListContext() {
+  const screen = webFormStore.currentScreen
+  if (!screen) return null
+
+  if (screen.group && hasFieldListAppearance(screen.group.appearanceHint)) {
+    return {
+      path: screen.group.path,
+      instancePath: screen.group.instancePath,
+      label: screen.group.label,
+    }
+  }
+
+  const hierarchy = screen.question?.groupHierarchy
+    || screen.group?.hierarchy
+    || screen.repeatJuncture?.hierarchy
+    || []
+  for (let index = hierarchy.length - 1; index >= 0; index -= 1) {
+    const context = hierarchy[index]
+    if (hasFieldListAppearance(context.appearanceHint)) {
+      return context
+    }
+  }
+  return null
+}
+
+function groupIsFieldList(): boolean {
+  return currentFieldListContext() !== null
+}
+
+function currentFieldListInstancePath(): string | null {
+  const context = currentFieldListContext()
+  return context ? (context.instancePath || context.path || null) : null
+}
+
+function setFieldQuestionRef(question: QuestionResponse, element: unknown) {
+  const key = questionKey(question)
+  if (element) {
+    fieldQuestionRefs.set(key, element as QuestionControlHandle)
+  } else {
+    fieldQuestionRefs.delete(key)
+  }
+}
+
+function setFieldError(question: QuestionResponse, message: string | null) {
+  const key = questionKey(question)
+  if (message) {
+    fieldErrors.value[key] = message
+  } else {
+    delete fieldErrors.value[key]
+  }
+}
+
+function getApiErrorMessage(error: any): string {
+  return error?.response?.data?.error
+    || error?.response?.data?.message
+    || error?.message
+    || 'The answer could not be saved.'
+}
+
+async function awaitPendingAnswer() {
+  await answerSaveChain
+}
+
+async function refreshProgress() {
+  const id = webFormStore.currentSession?.id
+  if (!id) return
+  try {
+    await webFormStore.getProgress(id)
+  } catch {
+    // Progress is secondary UI state; form filling remains usable if it cannot load.
+  }
+}
+
+async function refreshFieldList() {
+  fieldQuestionRefs.clear()
+  fieldListLoadError.value = null
+
+  if (!groupIsFieldList() || !webFormStore.currentSession) {
+    fieldListQuestions.value = []
+    fieldListLoading.value = false
+    return
+  }
+
+  fieldListLoading.value = true
+  try {
+    const result = await webFormStore.getFieldList(webFormStore.currentSession.id)
+    fieldListQuestions.value = result.questions || []
+  } catch (error) {
+    console.error('Failed to load field-list questions:', error)
+    fieldListQuestions.value = []
+    fieldListLoadError.value = 'This section could not be loaded. Please retry or refresh the form.'
+  } finally {
+    fieldListLoading.value = false
+  }
+}
+
+async function refreshScreenAuxiliaryState() {
+  await Promise.all([refreshProgress(), refreshFieldList()])
+}
 
 async function initializeForm() {
   isLoading.value = true
+  validationErrors.value = []
+  fieldErrors.value = {}
+  fieldListQuestions.value = []
+  fieldListLoadError.value = null
+  statusMessage.value = null
   try {
     if (sessionId.value) {
-      // User-facing /app sessions intentionally carry only the session id.
-      // Resolve the exact persisted form version from the authorized session.
       const session = await webFormStore.getSession(sessionId.value)
       await webFormStore.getFormDefinition(session.formVersionId)
       await webFormStore.getCurrentScreen(sessionId.value)
     } else if (formVersionId.value) {
-      // Compatibility path for existing technical form-version links.
       await webFormStore.getFormDefinition(formVersionId.value)
       await webFormStore.startSession(formVersionId.value)
     } else {
       throw new Error('A form version or existing session is required')
     }
+    await refreshScreenAuxiliaryState()
   } catch (err) {
     console.error('Failed to initialize form:', err)
     router.push({ name: String(route.path || '').startsWith('/app/') ? 'app-forms' : 'projects' })
@@ -42,37 +177,116 @@ async function initializeForm() {
   }
 }
 
+async function handleAnswerForQuestion(question: QuestionResponse, value: any) {
+  const session = webFormStore.currentSession
+  if (!session) return
+
+  const request = buildSaveAnswerRequest(question, value)
+  setFieldError(question, null)
+  validationErrors.value = []
+  statusMessage.value = null
+
+  // Serialize answer saves. Select-multiple controls can emit several quick
+  // changes and text controls can emit during the same click that presses Next.
+  // A single ordered queue prevents those requests from racing navigation.
+  answerSaveChain = answerSaveChain
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        await webFormStore.saveAnswer(session.id, request)
+        setFieldError(question, null)
+        await refreshProgress()
+
+        // Rebuild a field-list after every committed answer. This mirrors the
+        // mobile clients: relevance and dynamic itemsets inside the same screen
+        // can change immediately when an earlier answer changes.
+        if (groupIsFieldList()) {
+          await refreshFieldList()
+        }
+      } catch (error) {
+        const message = getApiErrorMessage(error)
+        setFieldError(question, message)
+        throw error
+      }
+    })
+    .catch((error) => {
+      console.error('Failed to save answer:', error)
+    })
+
+  await answerSaveChain
+}
+
 async function handleAnswer(value: any) {
-  if (!webFormStore.currentSession) return
-  
   const question = webFormStore.currentScreen?.question
   if (!question) return
+  await handleAnswerForQuestion(question, value)
+}
 
-  try {
-    await webFormStore.saveAnswer(
-      webFormStore.currentSession.id,
-      buildSaveAnswerRequest(question, value),
-    )
-  } catch (err) {
-    console.error('Failed to save answer:', err)
+async function flushVisibleQuestions(validate = true): Promise<boolean> {
+  let locallyValid = true
+
+  if (groupIsFieldList()) {
+    for (const question of fieldListQuestions.value) {
+      const handle = fieldQuestionRefs.get(questionKey(question))
+      if (handle && handle.flush(validate) === false) {
+        locallyValid = false
+      }
+    }
+  } else if (webFormStore.currentScreen?.question && currentQuestionRef.value) {
+    locallyValid = currentQuestionRef.value.flush(validate) !== false
   }
+
+  await awaitPendingAnswer()
+
+  const visibleQuestions = groupIsFieldList()
+    ? fieldListQuestions.value
+    : (webFormStore.currentScreen?.question ? [webFormStore.currentScreen.question] : [])
+  const hasServerError = visibleQuestions.some((question) => !!fieldErrors.value[questionKey(question)])
+
+  if (!locallyValid || hasServerError) {
+    validationErrors.value = ['Please correct the highlighted field(s) before continuing.']
+    return false
+  }
+  return true
 }
 
 async function handleNavigateNext() {
-  if (!webFormStore.currentSession) return
-  
+  const session = webFormStore.currentSession
+  if (!session) return
+
   try {
-    await webFormStore.navigateNext(webFormStore.currentSession.id)
+    if (!(await flushVisibleQuestions(true))) return
+
+    const fieldListPath = currentFieldListInstancePath()
+    if (fieldListPath) {
+      await webFormStore.navigateFieldListNext(session.id, fieldListPath)
+    } else {
+      await webFormStore.navigateNext(session.id)
+    }
+    validationErrors.value = []
+    await refreshScreenAuxiliaryState()
   } catch (err) {
     console.error('Failed to navigate next:', err)
   }
 }
 
 async function handleNavigatePrevious() {
-  if (!webFormStore.currentSession) return
-  
+  const session = webFormStore.currentSession
+  if (!session) return
+
   try {
-    await webFormStore.navigatePrevious(webFormStore.currentSession.id)
+    // Back should preserve a partially-entered draft but should not force the
+    // user to satisfy a required field merely to return to an earlier screen.
+    await flushVisibleQuestions(false)
+
+    const fieldListPath = currentFieldListInstancePath()
+    if (fieldListPath) {
+      await webFormStore.navigateFieldListPrevious(session.id, fieldListPath)
+    } else {
+      await webFormStore.navigatePrevious(session.id)
+    }
+    validationErrors.value = []
+    await refreshScreenAuxiliaryState()
   } catch (err) {
     console.error('Failed to navigate previous:', err)
   }
@@ -80,9 +294,10 @@ async function handleNavigatePrevious() {
 
 async function handleDescendIntoRepeat(index: number) {
   if (!webFormStore.currentSession) return
-  
   try {
+    await flushVisibleQuestions(false)
     await webFormStore.descendIntoRepeat(webFormStore.currentSession.id, index)
+    await refreshScreenAuxiliaryState()
   } catch (err) {
     console.error('Failed to descend into repeat:', err)
   }
@@ -90,9 +305,10 @@ async function handleDescendIntoRepeat(index: number) {
 
 async function handleNewRepeat() {
   if (!webFormStore.currentSession) return
-  
   try {
+    await flushVisibleQuestions(false)
     await webFormStore.createNewRepeat(webFormStore.currentSession.id)
+    await refreshScreenAuxiliaryState()
   } catch (err) {
     console.error('Failed to create new repeat:', err)
   }
@@ -100,9 +316,10 @@ async function handleNewRepeat() {
 
 async function handleDeleteRepeat() {
   if (!webFormStore.currentSession) return
-  
   try {
+    await flushVisibleQuestions(false)
     await webFormStore.deleteRepeat(webFormStore.currentSession.id)
+    await refreshScreenAuxiliaryState()
   } catch (err) {
     console.error('Failed to delete repeat:', err)
   }
@@ -110,61 +327,116 @@ async function handleDeleteRepeat() {
 
 async function handleSaveDraft() {
   if (!webFormStore.currentSession) return
-  
   try {
+    await flushVisibleQuestions(false)
     await webFormStore.saveDraft(webFormStore.currentSession.id)
-    alert('Draft saved successfully')
+    statusMessage.value = 'Draft saved.'
   } catch (err) {
     console.error('Failed to save draft:', err)
-    alert('Failed to save draft')
+    validationErrors.value = ['The draft could not be saved. Please try again.']
   }
 }
 
-async function handleValidate() {
-  if (!webFormStore.currentSession) return
-  
-  try {
-    const result = await webFormStore.validateForm(webFormStore.currentSession.id)
-    if (result.valid) {
-      alert('Form is valid!')
-    } else {
-      validationErrors.value = [`Validation failed at: ${result.failedPromptIndex}`]
+async function applyValidationResult(result: ValidationResponse): Promise<boolean> {
+  if (result.valid) {
+    validationErrors.value = []
+    return true
+  }
+
+  const message = result.message || 'Please correct the highlighted field before continuing.'
+  validationErrors.value = [message]
+
+  if (result.failedQuestion) {
+    const question = result.failedQuestion
+    fieldErrors.value = { [questionKey(question)]: message }
+    fieldListQuestions.value = []
+    webFormStore.currentScreen = {
+      event: EVENT_QUESTION,
+      isAtBeginning: false,
+      isAtEnd: false,
+      question,
+      group: null,
+      repeatJuncture: null,
     }
+
+    // A failed question may belong to an appearance=field-list group. In that
+    // case rebuild the whole page and focus the exact field within it instead
+    // of degrading the group to a single-question screen.
+    await refreshFieldList()
+    await nextTick()
+    const fieldListHandle = fieldQuestionRefs.get(questionKey(question))
+    ;(fieldListHandle || currentQuestionRef.value)?.focusInput?.()
+  }
+
+  return false
+}
+
+async function validateCurrentForm(showSuccess = true): Promise<boolean> {
+  const session = webFormStore.currentSession
+  if (!session) return false
+
+  await flushVisibleQuestions(false)
+  const result = await webFormStore.validateForm(session.id)
+  const valid = await applyValidationResult(result)
+  if (valid && showSuccess) statusMessage.value = 'All currently required answers are valid.'
+  return valid
+}
+
+async function handleValidate() {
+  try {
+    await validateCurrentForm(true)
   } catch (err) {
     console.error('Failed to validate form:', err)
+    validationErrors.value = ['The form could not be validated. Please try again.']
   }
 }
 
 async function handleSubmit() {
   if (!webFormStore.currentSession) return
 
-  if (isAppWorkflow.value) {
-    // New user-facing workflow: review persisted answers before finalization.
-    await router.push({
-      name: 'app-session-review',
-      params: { sessionId: webFormStore.currentSession.id },
-    })
-    return
-  }
+  try {
+    if (!(await validateCurrentForm(false))) return
 
-  // Compatibility behavior for existing technical links and certified E2E.
-  showSubmitConfirm.value = true
+    if (isAppWorkflow.value) {
+      await router.push({
+        name: 'app-session-review',
+        params: { sessionId: webFormStore.currentSession.id },
+      })
+      return
+    }
+
+    showSubmitConfirm.value = true
+  } catch (err) {
+    console.error('Failed to prepare form for submission:', err)
+    validationErrors.value = ['The form could not be prepared for submission. Please try again.']
+  }
 }
 
 async function confirmSubmit() {
-  if (!webFormStore.currentSession) return
+  const session = webFormStore.currentSession
+  if (!session) return
 
   try {
-    const result = await webFormStore.finalizeSession(webFormStore.currentSession.id)
+    if (!(await validateCurrentForm(false))) {
+      showSubmitConfirm.value = false
+      return
+    }
+
+    const result = await webFormStore.finalizeSession(session.id)
     if (result.success) {
-      alert('Form submitted successfully!')
+      statusMessage.value = 'Form submitted successfully.'
       router.push({ name: 'submissions' })
+      return
+    }
+
+    if (result.validation) {
+      await applyValidationResult(result.validation)
     } else {
-      alert(`Submission failed: ${result.message}`)
+      validationErrors.value = [result.message || 'The form could not be submitted.']
     }
   } catch (err) {
     console.error('Failed to submit form:', err)
-    alert('Failed to submit form')
+    validationErrors.value = [getApiErrorMessage(err)]
   } finally {
     showSubmitConfirm.value = false
   }
@@ -182,18 +454,28 @@ const canGoPrevious = computed(() => {
   return !screen.isAtBeginning
 })
 
-const currentEvent = computed(() => {
-  return webFormStore.currentScreen?.event ?? 0
-})
+const currentEvent = computed(() => webFormStore.currentScreen?.event ?? 0)
 
 const currentGroupHierarchy = computed(() => {
   const screen = webFormStore.currentScreen
   if (!screen) return []
-
   if (screen.question?.groupHierarchy) return screen.question.groupHierarchy
   if (screen.group?.hierarchy) return screen.group.hierarchy
   if (screen.repeatJuncture?.hierarchy) return screen.repeatJuncture.hierarchy
   return []
+})
+
+const visibleGroupHierarchy = computed(() => {
+  const hierarchy = currentGroupHierarchy.value
+  const fieldList = currentFieldListContext()
+  if (!fieldList || hierarchy.length === 0) return hierarchy
+
+  // The field-list section itself is rendered as a heading below. Keep only
+  // its parents here so the same title is not shown twice.
+  const fieldListKey = fieldList.instancePath || fieldList.path
+  return hierarchy.filter((context) =>
+    (context.instancePath || context.path) !== fieldListKey,
+  )
 })
 
 const currentRepeatContexts = computed(() =>
@@ -202,24 +484,14 @@ const currentRepeatContexts = computed(() =>
   ),
 )
 
-const progressPercent = computed(() => {
-  // Simple progress based on question index
-  const question = webFormStore.currentScreen?.question
-  if (question) {
-    return Math.min((question.index / 20) * 100, 100) // Rough estimate
-  }
-  return 0
-})
-
-onMounted(() => {
-  initializeForm()
-})
+const progressPercent = computed(() => webFormStore.progress?.percent ?? 0)
+const answeredQuestions = computed(() => webFormStore.progress?.answeredQuestions ?? 0)
+const totalQuestions = computed(() => webFormStore.progress?.totalQuestions ?? 0)
 
 watch(
   () => [route.params.formVersionId, route.params.sessionId],
-  () => {
-    initializeForm()
-  },
+  () => { initializeForm() },
+  { immediate: true },
 )
 </script>
 
@@ -243,7 +515,7 @@ watch(
           <div class="progress-bar" role="progressbar" :aria-valuenow="progressPercent" aria-valuemin="0" aria-valuemax="100">
             <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
           </div>
-          <span class="progress-text">{{ Math.round(progressPercent) }}%</span>
+          <span class="progress-text">{{ answeredQuestions }}/{{ totalQuestions }} · {{ Math.round(progressPercent) }}%</span>
         </div>
       </header>
 
@@ -278,15 +550,20 @@ watch(
         <button @click="validationErrors = []" class="btn-close" aria-label="Dismiss errors">×</button>
       </div>
 
+      <div v-if="statusMessage" class="status-banner" role="status">
+        <span>{{ statusMessage }}</span>
+        <button @click="statusMessage = null" class="btn-close btn-close-neutral" aria-label="Dismiss message">×</button>
+      </div>
+
       <!-- Form Body -->
       <main class="form-body">
         <!-- Nested group/repeat context -->
         <nav
-          v-if="currentGroupHierarchy.length > 0"
+          v-if="visibleGroupHierarchy.length > 0"
           class="group-breadcrumbs"
           aria-label="Form section"
         >
-          <template v-for="(context, index) in currentGroupHierarchy" :key="context.instancePath || `${context.path}-${index}`">
+          <template v-for="(context, index) in visibleGroupHierarchy" :key="context.instancePath || `${context.path}-${index}`">
             <span v-if="index > 0" class="group-breadcrumb-separator" aria-hidden="true">›</span>
             <span class="group-breadcrumb" :class="{ 'group-breadcrumb-repeat': context.repeat }">
               {{ context.label || context.path || 'Section' }}
@@ -304,14 +581,64 @@ watch(
           role="status"
         >
           <span class="repeat-context-label">{{ context.label || 'Repeat' }} · entry {{ (context.repeatIndex ?? 0) + 1 }}</span>
-          <span class="repeat-context-path">{{ context.path }}</span>
         </div>
+
+        <!-- appearance=field-list: render the whole enclosing group as one page,
+             even when a resumed JavaRosa session is currently positioned on a
+             child question rather than on the GROUP event itself. -->
+        <WebFormGroup
+          v-if="groupIsFieldList()"
+          :group="webFormStore.currentScreen?.group || {
+            label: currentFieldListContext()?.label || 'Section',
+            path: currentFieldListContext()?.path || null,
+            instancePath: currentFieldListContext()?.instancePath || null,
+            depth: currentGroupHierarchy.length ? currentGroupHierarchy.length - 1 : 0,
+            hierarchy: currentGroupHierarchy,
+            isRepeat: false,
+            repeatCount: 0,
+            currentRepeatIndex: null,
+            repeatTargetCount: null,
+            repeatCountControlled: false,
+            canAddRepeat: false,
+            canDeleteRepeat: false,
+            appearanceHint: 'field-list',
+          }"
+          :event="webFormStore.currentScreen?.group ? currentEvent : EVENT_GROUP"
+          :field-list="true"
+        >
+          <div class="field-list-questions">
+            <div v-if="fieldListLoading" class="field-list-loading" role="status">
+              <span class="inline-spinner" aria-hidden="true"></span>
+              Loading section…
+            </div>
+            <WebFormQuestion
+              v-for="question in fieldListQuestions"
+              :key="questionKey(question)"
+              :ref="(element) => setFieldQuestionRef(question, element)"
+              :question="question"
+              :value="question.currentAnswer"
+              :external-error="fieldErrors[questionKey(question)] || null"
+              @answer="(value) => handleAnswerForQuestion(question, value)"
+            />
+            <p v-if="fieldListLoadError" class="field-list-error" role="alert">
+              {{ fieldListLoadError }}
+            </p>
+            <p
+              v-else-if="!fieldListLoading && fieldListQuestions.length === 0"
+              class="field-list-empty"
+            >
+              There are no questions to answer in this section right now.
+            </p>
+          </div>
+        </WebFormGroup>
 
         <!-- Question -->
         <WebFormQuestion
-          v-if="currentEvent === EVENT_QUESTION && webFormStore.currentScreen?.question"
+          v-else-if="currentEvent === EVENT_QUESTION && webFormStore.currentScreen?.question"
+          ref="currentQuestionRef"
           :question="webFormStore.currentScreen.question"
           :value="webFormStore.currentScreen.question.currentAnswer"
+          :external-error="fieldErrors[questionKey(webFormStore.currentScreen.question)] || null"
           @answer="handleAnswer"
         />
 
@@ -323,15 +650,7 @@ watch(
           @descend="handleDescendIntoRepeat"
           @new-repeat="handleNewRepeat"
           @delete-repeat="handleDeleteRepeat"
-        >
-          <!-- Group content - questions inside group -->
-          <WebFormQuestion
-            v-if="webFormStore.currentScreen?.question"
-            :question="webFormStore.currentScreen.question"
-            :value="webFormStore.currentScreen.question.currentAnswer"
-            @answer="handleAnswer"
-          />
-        </WebFormGroup>
+        />
 
         <!-- Repeat Juncture -->
         <WebFormGroup
@@ -500,7 +819,8 @@ watch(
 
 .error-banner,
 .validation-banner,
-.compatibility-banner {
+.compatibility-banner,
+.status-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -509,6 +829,18 @@ watch(
   border-bottom: 1px solid #fecaca;
   color: #dc2626;
   font-size: 0.875rem;
+}
+
+.compatibility-banner {
+  background: #fff7ed;
+  border-bottom-color: #fed7aa;
+  color: #9a3412;
+}
+
+.status-banner {
+  background: #f0fdf4;
+  border-bottom-color: #bbf7d0;
+  color: #166534;
 }
 
 .btn-close {
@@ -525,6 +857,14 @@ watch(
   color: #991b1b;
 }
 
+.btn-close-neutral {
+  color: #166534;
+}
+
+.btn-close-neutral:hover {
+  color: #14532d;
+}
+
 .validation-banner ul,
 .compatibility-banner ul {
   margin: 0;
@@ -533,7 +873,7 @@ watch(
 
 .form-body {
   flex: 1;
-  padding: 1.5rem;
+  padding: 1.25rem 1.5rem 2rem;
   overflow-y: auto;
 }
 
@@ -569,7 +909,7 @@ watch(
 .repeat-context {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
   padding: 0.625rem 0.75rem;
@@ -584,9 +924,34 @@ watch(
   font-weight: 600;
 }
 
-.repeat-context-path {
-  overflow-wrap: anywhere;
-  color: #a16207;
+.field-list-questions {
+  display: flex;
+  flex-direction: column;
+}
+
+.field-list-loading,
+.field-list-empty,
+.field-list-error {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 1rem 0;
+  color: #64748b;
+  font-size: 0.875rem;
+}
+
+.field-list-error {
+  color: #b91c1c;
+}
+
+.inline-spinner {
+  width: 0.95rem;
+  height: 0.95rem;
+  border: 2px solid #cbd5e1;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 .form-complete,
@@ -655,12 +1020,12 @@ watch(
 }
 
 .btn-primary {
-  background: #3b82f6;
+  background: #2563eb;
   color: white;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #2563eb;
+  background: #1d4ed8;
 }
 
 .btn-primary:disabled {

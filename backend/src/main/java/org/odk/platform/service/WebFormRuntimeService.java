@@ -22,6 +22,7 @@ import org.odk.platform.repository.SubmissionRepository;
 import org.odk.platform.repository.SubmissionAttachmentRepository;
 import org.odk.platform.service.FormDefinition;
 import org.odk.platform.service.storage.StorageService;
+import org.javarosa.core.model.Constants;
 import org.javarosa.core.model.QuestionDef;
 import org.javarosa.core.model.FormIndex;
 import org.javarosa.core.model.instance.TreeElement;
@@ -499,20 +500,25 @@ public class WebFormRuntimeService {
      * Set answer value based on type.
      */
     private void setAnswerValue(WebFormAnswer answer, Object value, String type) {
+        // A WebFormAnswer has several typed storage columns. Always clear the
+        // previous representation first so editing/re-answering cannot leave a
+        // stale value in another column.
+        answer.setValueText(null);
+        answer.setValueNumber(null);
+        answer.setValueDate(null);
+        answer.setValueBoolean(null);
+        answer.setValueJson(null);
+
         if (value == null) {
-            answer.setValueText(null);
-            answer.setValueNumber(null);
-            answer.setValueDate(null);
-            answer.setValueBoolean(null);
-            answer.setValueJson(null);
             return;
         }
 
-        switch (type) {
+        String normalizedType = type == null ? "" : type;
+        switch (normalizedType) {
             case "string", "text", "note", "select1", "select" -> answer.setValueText(value.toString());
             case "int", "integer" -> answer.setValueNumber(new java.math.BigDecimal(value.toString()));
             case "decimal", "double" -> answer.setValueNumber(new java.math.BigDecimal(value.toString()));
-            case "date", "dateTime", "time" -> {
+            case "date", "dateTime", "datetime", "time" -> {
                 if (value instanceof OffsetDateTime) {
                     answer.setValueDate((OffsetDateTime) value);
                 } else {
@@ -520,7 +526,15 @@ public class WebFormRuntimeService {
                 }
             }
             case "boolean" -> answer.setValueBoolean(Boolean.valueOf(value.toString()));
-            case "geopoint", "geoshape", "geotrace", "binary" -> answer.setValueJson(value.toString());
+
+            // ODK geographic answers are lexical XForm strings, for example:
+            //   geopoint: 0.3476 32.5825 0 5
+            //   geotrace: point;point;point
+            // They are NOT JSON. Writing these strings to a jsonb column makes
+            // PostgreSQL reject them with SQLSTATE 22P02. Binary answers are
+            // likewise represented by their filename/reference string.
+            case "geopoint", "geoshape", "geotrace", "binary" ->
+                    answer.setValueText(value.toString());
             default -> answer.setValueText(value.toString());
         }
     }
@@ -683,6 +697,53 @@ public class WebFormRuntimeService {
     }
 
     /**
+     * Calculate progress from the persisted JavaRosa instance. Only currently
+     * reachable, answerable questions are counted. Notes/labels are excluded.
+     */
+    @Transactional(readOnly = true)
+    public FormProgress calculateProgress(UUID sessionId) {
+        getSession(sessionId);
+        FormDefinition formDef = getFormDefinitionWithInstance(sessionId);
+
+        int answered = 0;
+        int total = 0;
+        int safetyCounter = 0;
+
+        while (safetyCounter++ < 10000) {
+            int event = formDef.getCurrentEvent();
+
+            if (event == FormEntryController.EVENT_QUESTION) {
+                int controlType = formDef.getCurrentControlType();
+                boolean answerable = controlType != Constants.CONTROL_LABEL
+                        && controlType != 9 // CONTROL_HIDDEN in JavaRosa 4.3.x
+                        && !formDef.isCurrentReadOnly();
+                if (answerable) {
+                    total++;
+                    String answer = formDef.getCurrentAnswerValue();
+                    if (answer != null && !answer.isBlank()) {
+                        answered++;
+                    }
+                }
+            }
+
+            if (event == FormEntryController.EVENT_END_OF_FORM) {
+                break;
+            }
+
+            formDef.stepToNextEvent();
+        }
+
+        if (safetyCounter >= 10000) {
+            throw new IllegalStateException("Unable to calculate form progress: navigation did not terminate");
+        }
+
+        int percent = total == 0 ? 0 : (int) Math.round((answered * 100.0d) / total);
+        return new FormProgress(answered, total, Math.max(0, Math.min(100, percent)));
+    }
+
+    public record FormProgress(int answeredQuestions, int totalQuestions, int percent) {}
+
+    /**
      * Finalize session and create submission.
      */
     public Submission finalizeSession(UUID sessionId) {
@@ -720,6 +781,23 @@ public class WebFormRuntimeService {
         // Create and persist the Submission before linking it to the session.
         // WebFormSession.submission is a normal entity association, so pointing it
         // at a transient Submission causes Hibernate to fail on the next flush.
+        // `Submission.submittedBy` is the historical AppUser relationship used
+        // by Collect/KoboCollect submissions. Web forms are normally filled by
+        // platform Users, so preserve that actor in metadata as well. This
+        // avoids a schema migration while keeping both submitter types visible
+        // in the common submissions list/detail API.
+        Map<String, Object> submitterMetadata = new LinkedHashMap<>();
+        if (session.getAppUser() != null) {
+            submitterMetadata.put("submittedByType", "APP_USER");
+            submitterMetadata.put("submittedById", session.getAppUser().getId().toString());
+            submitterMetadata.put("submittedByName", session.getAppUser().getUsername());
+        } else if (session.getUser() != null) {
+            submitterMetadata.put("submittedByType", "USER");
+            submitterMetadata.put("submittedById", session.getUser().getId().toString());
+            submitterMetadata.put("submittedByName", session.getUser().getUsername());
+            submitterMetadata.put("submittedByDisplayName", session.getUser().getFullName());
+        }
+
         Submission submission = Submission.builder()
                 .form(session.getFormVersion().getForm())
                 .formVersion(session.getFormVersion())
@@ -727,6 +805,7 @@ public class WebFormRuntimeService {
                 .jsonContent(processed.getJsonContent().toString())
                 .instanceId(processed.getInstanceId())
                 .submittedBy(session.getAppUser())
+                .metadata(submitterMetadata)
                 .submittedAt(Instant.now())
                 .status("submitted")
                 .build();
@@ -736,6 +815,9 @@ public class WebFormRuntimeService {
         Map<String, Object> submissionEventDetails = new LinkedHashMap<>();
         submissionEventDetails.put("formVersionId", session.getFormVersion().getId().toString());
         submissionEventDetails.put("sessionId", session.getId().toString());
+        if (!submitterMetadata.isEmpty()) {
+            submissionEventDetails.putAll(submitterMetadata);
+        }
         submission = submissionPersistenceService.persistProcessedData(
                 submission,
                 processed,

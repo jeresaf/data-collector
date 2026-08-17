@@ -1,5 +1,6 @@
 package org.odk.platform.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.javarosa.core.model.FormDef;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,7 +31,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -164,7 +167,18 @@ class ProjectControllerAuditTest {
         when(formVersionService.findByFormIdOrderByVersionDesc(formId)).thenReturn(List.of(version));
         when(xFormService.save(any(XForm.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        assertEquals(200, controller.publishForm(projectId, formId, versionId).getStatusCode().value());
+        var publishResponse = controller.publishForm(projectId, formId, versionId);
+        assertEquals(200, publishResponse.getStatusCode().value());
+
+        ProjectController.PublishFormResponse publishBody = publishResponse.getBody();
+        assertNotNull(publishBody);
+        assertEquals(formId, publishBody.getFormId());
+        assertEquals(versionId, publishBody.getFormVersionId());
+        assertEquals("1", publishBody.getVersion());
+        assertEquals(true, publishBody.isPublished());
+        assertEquals(true, publishBody.isLatest());
+        assertDoesNotThrow(() -> new ObjectMapper().findAndRegisterModules().writeValueAsString(publishBody));
+
         verify(formPublishHistoryService).recordPublish(eq(version), eq(admin), contains("Published version 1"));
         verify(auditService).log(eq(AuditActions.FORM_PUBLISHED), eq("FORM"), eq(formId), eq("Audit Form"), anyMap());
 

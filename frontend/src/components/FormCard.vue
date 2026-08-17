@@ -7,6 +7,7 @@ interface Props {
 }
 
 interface Emits {
+  (e: 'manage', formId: string): void
   (e: 'edit', form: Form): void
   (e: 'delete', formId: string): void
   (e: 'publish', formId: string): void
@@ -62,6 +63,9 @@ function handleFillForm() {
     </div>
 
     <div class="card-actions">
+      <button class="btn btn-primary btn-sm" @click="$emit('manage', form.id)">
+        Manage
+      </button>
       <button class="btn btn-secondary btn-sm" @click="$emit('edit', form)">
         Edit
       </button>

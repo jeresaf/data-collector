@@ -1,6 +1,5 @@
 package org.odk.platform.security;
 
-import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -54,7 +53,7 @@ public class SecurityConfig {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/auth/**").permitAll()
-                .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                .requestMatchers("/actuator/health", "/actuator/info", "/error").permitAll()
                 .requestMatchers("/v1/**").authenticated() // OpenRosa v1 endpoints require auth
                 .requestMatchers("/formList", "/submission").authenticated() // OpenRosa compatibility endpoints
                 .requestMatchers("/forms/**").authenticated() // OpenRosa form download/manifest endpoints
@@ -62,10 +61,21 @@ public class SecurityConfig {
             )
             .exceptionHandling(exceptions -> exceptions
                 .authenticationEntryPoint((request, response, authException) -> {
+                    // IMPORTANT: do not use response.sendError(401) here. Tomcat/Spring
+                    // performs an ERROR dispatch to /error for sendError(), which can
+                    // replace or obscure the authentication challenge Collect needs.
+                    // Return the 401 challenge directly instead.
+                    response.resetBuffer();
+                    response.setStatus(401);
+
                     if (isOpenRosaRequest(request.getRequestURI())) {
                         response.setHeader("X-OpenRosa-Version", "1.0");
+                        response.setHeader("WWW-Authenticate", "Basic realm=\"ODK Platform\"");
+                        response.setContentType("text/plain;charset=UTF-8");
+                        response.getWriter().write("Authentication required");
                     }
-                    response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
+
+                    response.flushBuffer();
                 })
             )
             .addFilterBefore(openRosaBasicAuthFilter, UsernamePasswordAuthenticationFilter.class)

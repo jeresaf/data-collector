@@ -34,7 +34,6 @@ import org.springframework.util.StringUtils;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -99,6 +98,13 @@ public class OpenRosaController {
     private static final Logger log = LoggerFactory.getLogger(OpenRosaController.class);
 
     private static final String OPEN_ROSA_VERSION = "1.0";
+    /**
+     * ODK Collect deliberately requests and validates text/xml for OpenRosa
+     * XML resources. application/xml is valid XML generally, but Collect's
+     * OpenRosa client rejects it for form lists/manifests before parsing.
+     */
+    private static final String OPENROSA_XML_MEDIA_TYPE = "text/xml;charset=UTF-8";
+    private static final MediaType OPENROSA_XML = MediaType.parseMediaType(OPENROSA_XML_MEDIA_TYPE);
     private static final long MAX_CONTENT_LENGTH = 104857600L; // 100MB
 
     /**
@@ -106,7 +112,7 @@ public class OpenRosaController {
      * Returns a list of published forms for the project in OpenRosa XML format
      * Filters forms based on app user assignments if authenticated as an app user
      */
-    @GetMapping(value = "/formList", produces = MediaType.APPLICATION_XML_VALUE)
+    @GetMapping(value = "/formList", produces = OPENROSA_XML_MEDIA_TYPE)
     public ResponseEntity<String> formList(
             @PathVariable("projectId") UUID projectId,
             HttpServletRequest request,
@@ -151,9 +157,12 @@ public class OpenRosaController {
             if (latestVersion.isPresent()) {
                 FormVersion fv = latestVersion.get();
                 xml.append("  <xform>\n");
+                // formID is the canonical OpenRosa/XForms identifier expected by
+                // ODK Collect. Keep xmlns as an additional compatibility field,
+                // but do not substitute it for the required formID element.
+                xml.append("    <formID>").append(escapeXml(fv.getXmlns())).append("</formID>\n");
                 xml.append("    <name>").append(escapeXml(form.getTitle())).append("</name>\n");
                 xml.append("    <version>").append(escapeXml(fv.getVersion())).append("</version>\n");
-                xml.append("    <xmlns>").append(escapeXml(fv.getXmlns())).append("</xmlns>\n");
                 xml.append("    <hash>md5:").append(computeMd5(fv.getXmlContent())).append("</hash>\n");
                 xml.append("    <downloadUrl>").append(buildUrl(request, "/v1/projects/").append(projectId).append("/forms/").append(fv.getXmlns()).append(".xml")).append("</downloadUrl>\n");
                 xml.append("    <manifestUrl>").append(buildUrl(request, "/v1/projects/").append(projectId).append("/forms/").append(fv.getXmlns()).append("/manifest")).append("</manifestUrl>\n");
@@ -164,7 +173,7 @@ public class OpenRosaController {
         xml.append("</xforms>");
 
         return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_XML)
+                .contentType(OPENROSA_XML)
                 .body(xml.toString());
     }
 
@@ -173,7 +182,7 @@ public class OpenRosaController {
      * Returns the form XML for the given form ID
      * Filters by app user assignments if authenticated as an app user
      */
-    @GetMapping(value = "/forms/{xmlFormId}.xml", produces = MediaType.APPLICATION_XML_VALUE)
+    @GetMapping(value = "/forms/{xmlFormId}.xml", produces = OPENROSA_XML_MEDIA_TYPE)
     public ResponseEntity<String> formDownload(
             @PathVariable("projectId") UUID projectId,
             @PathVariable("xmlFormId") String xmlFormId,
@@ -221,7 +230,7 @@ public class OpenRosaController {
                         "version", fv.getVersion()));
 
         return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_XML)
+                .contentType(OPENROSA_XML)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fv.getXmlns() + ".xml\"")
                 .body(fv.getXmlContent());
     }
@@ -231,7 +240,7 @@ public class OpenRosaController {
      * Returns the form manifest (list of media files and external datasets)
      * Includes download URLs for media files
      */
-    @GetMapping(value = "/forms/{xmlFormId}/manifest", produces = MediaType.APPLICATION_XML_VALUE)
+    @GetMapping(value = "/forms/{xmlFormId}/manifest", produces = OPENROSA_XML_MEDIA_TYPE)
     public ResponseEntity<String> formManifest(
             @PathVariable("projectId") UUID projectId,
             @PathVariable("xmlFormId") String xmlFormId,
@@ -267,133 +276,95 @@ public class OpenRosaController {
 
         FormVersion fv = latestVersion.get();
 
-        // Build base URL for download links
-        String baseUrl = ServletUriComponentsBuilder.fromRequestUri(request)
-                .replacePath(null)
-                .build()
-                .toUriString();
+        // Build URLs from the externally visible request. When the application
+        // is behind Cloudflare/Caddy/Nginx, buildBaseUrl() honours forwarded
+        // protocol/host headers so Collect receives HTTPS links, not the
+        // backend container's internal HTTP scheme.
+        String baseUrl = buildBaseUrl(request);
 
         StringBuilder xml = new StringBuilder();
         xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-        xml.append("<manifest xmlns=\"http://openrosa.org/xforms/manifest\">\n");
-        xml.append("  <mediaFile>\n");
-        xml.append("    <filename>").append(escapeXml(fv.getXmlns())).append(".xml</filename>\n");
-        xml.append("    <hash>md5:").append(computeMd5(fv.getXmlContent())).append("</hash>\n");
-        xml.append("  </mediaFile>\n");
+        xml.append("<manifest xmlns=\"http://openrosa.org/xforms/xformsManifest\">\n");
 
-        // Add media files from form version metadata with download URLs
-        addMediaFilesToManifest(xml, fv, baseUrl, projectId, xmlFormId);
-
-        // Add external datasets from form version metadata
-        addExternalDatasetsToManifest(xml, fv);
+        // OpenRosa manifests contain supporting files only. Every mediaFile
+        // must include filename, hash and downloadUrl. Use the actual uploaded
+        // files for this form version rather than metadata placeholders.
+        addAvailableFormFilesToManifest(xml, fv, baseUrl, projectId, xmlFormId);
 
         xml.append("</manifest>");
 
         return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_XML)
+                .contentType(OPENROSA_XML)
                 .body(xml.toString());
     }
 
     /**
-     * Add media files from FormVersion metadata to the manifest XML
-     * Includes download URLs for media files
+     * Add all supporting files that are actually available for this form
+     * version. ODK Collect expects each manifest entry to have a filename, an
+     * md5 hash and a downloadable URL.
      */
-    private void addMediaFilesToManifest(StringBuilder xml, FormVersion formVersion, String baseUrl, UUID projectId, String xmlFormId) {
-        Map<String, Object> metadata = formVersion.getMetadata();
-        if (metadata == null || metadata.isEmpty()) {
-            return;
-        }
+    private void addAvailableFormFilesToManifest(
+            StringBuilder xml,
+            FormVersion formVersion,
+            String baseUrl,
+            UUID projectId,
+            String xmlFormId) {
 
-        // Get media references from metadata
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> mediaReferences = (List<Map<String, Object>>) metadata.get("media");
-        if (mediaReferences == null || mediaReferences.isEmpty()) {
-            return;
-        }
-
-        // Get form attachments to find MD5 hashes
-        List<FormAttachment> attachments = formAttachmentRepository.findByFormVersionId(formVersion.getId());
-        Map<String, String> attachmentHashes = new HashMap<>();
-        for (FormAttachment attachment : attachments) {
-            if (attachment.getContentHash() != null) {
-                attachmentHashes.put(attachment.getFileName(), attachment.getContentHash());
-            }
-        }
-
-        // Track unique filenames to avoid duplicates
         Set<String> addedFilenames = new HashSet<>();
 
-        for (Map<String, Object> mediaRef : mediaReferences) {
-            String filename = (String) mediaRef.get("filename");
-            if (filename == null || filename.isBlank() || addedFilenames.contains(filename)) {
+        for (FormAttachment attachment : formAttachmentRepository.findByFormVersionId(formVersion.getId())) {
+            String filename = attachment.getFileName();
+            if (filename == null || filename.isBlank() || !addedFilenames.add(filename)) {
                 continue;
             }
 
-            String hash = attachmentHashes.get(filename);
-            if (hash == null) {
-                // If no attachment found, compute hash from filename as fallback
-                // In production, this should be the actual file hash
-                hash = computeMd5(filename);
+            String hash = attachment.getContentHash();
+            if (hash == null || hash.isBlank()) {
+                continue;
             }
 
-            // Build download URL for the media file
-            String downloadUrl = baseUrl + "/v1/projects/" + projectId + "/forms/" + xmlFormId + "/attachments/" + filename;
+            appendManifestFile(xml, filename, hash,
+                    baseUrl + "/v1/projects/" + projectId + "/forms/"
+                            + xmlFormId + "/attachments/" + encodePathSegment(filename));
+        }
 
-            xml.append("  <mediaFile>\n");
-            xml.append("    <filename>").append(escapeXml(filename)).append("</filename>\n");
-            xml.append("    <hash>md5:").append(hash).append("</hash>\n");
-            xml.append("    <downloadUrl>").append(escapeXml(downloadUrl)).append("</downloadUrl>\n");
-            xml.append("  </mediaFile>\n");
+        for (FormExternalDataset dataset :
+                formExternalDatasetRepository.findByFormVersionIdAndIsActiveTrue(formVersion.getId())) {
+            String filename = dataset.getDatasetId();
+            if (filename == null || filename.isBlank() || !addedFilenames.add(filename)) {
+                continue;
+            }
 
-            addedFilenames.add(filename);
+            String hash = dataset.getContentHash();
+            if (hash == null || hash.isBlank()) {
+                continue;
+            }
+
+            appendManifestFile(xml, filename, hash,
+                    baseUrl + "/v1/projects/" + projectId + "/forms/"
+                            + xmlFormId + "/attachments/" + encodePathSegment(filename));
         }
     }
 
-    /**
-     * Add external datasets from FormVersion metadata to the manifest XML
-     */
-    private void addExternalDatasetsToManifest(StringBuilder xml, FormVersion formVersion) {
-        Map<String, Object> metadata = formVersion.getMetadata();
-        if (metadata == null || metadata.isEmpty()) {
-            return;
-        }
+    private void appendManifestFile(StringBuilder xml, String filename, String hash, String downloadUrl) {
+        xml.append("  <mediaFile>\n");
+        xml.append("    <filename>").append(escapeXml(filename)).append("</filename>\n");
+        xml.append("    <hash>md5:").append(escapeXml(stripMd5Prefix(hash))).append("</hash>\n");
+        xml.append("    <downloadUrl>").append(escapeXml(downloadUrl)).append("</downloadUrl>\n");
+        xml.append("  </mediaFile>\n");
+    }
 
-        // Get external dataset references from metadata
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> externalDatasets = (List<Map<String, Object>>) metadata.get("externalDatasets");
-        if (externalDatasets == null || externalDatasets.isEmpty()) {
-            return;
-        }
+    private String stripMd5Prefix(String hash) {
+        return hash != null && hash.regionMatches(true, 0, "md5:", 0, 4)
+                ? hash.substring(4)
+                : hash;
+    }
 
-        // Get form external datasets to find content hashes
-        List<FormExternalDataset> datasets = formExternalDatasetRepository.findByFormVersionId(formVersion.getId());
-        Map<String, String> datasetHashes = new HashMap<>();
-        for (FormExternalDataset dataset : datasets) {
-            if (dataset.getContentHash() != null) {
-                datasetHashes.put(dataset.getDatasetId(), dataset.getContentHash());
-            }
-        }
-
-        for (Map<String, Object> datasetRef : externalDatasets) {
-            String datasetId = (String) datasetRef.get("datasetId");
-            if (datasetId == null || datasetId.isBlank()) {
-                // Try to get from nodeset or other fields
-                datasetId = (String) datasetRef.get("nodeset");
-            }
-            if (datasetId == null || datasetId.isBlank()) {
-                continue;
-            }
-
-            String hash = datasetHashes.get(datasetId);
-            if (hash == null) {
-                // Fallback hash
-                hash = computeMd5(datasetId);
-            }
-
-            xml.append("  <mediaFile>\n");
-            xml.append("    <filename>").append(escapeXml(datasetId)).append("</filename>\n");
-            xml.append("    <hash>md5:").append(hash).append("</hash>\n");
-            xml.append("  </mediaFile>\n");
+    private String encodePathSegment(String value) {
+        try {
+            return java.net.URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
+        } catch (Exception e) {
+            return value;
         }
     }
 
@@ -447,37 +418,71 @@ public class OpenRosaController {
         FormVersion fv = latestVersion.get();
 
         // Find the attachment by filename
-        Optional<FormAttachment> attachmentOpt = formAttachmentRepository.findByFormVersionIdAndFileName(fv.getId(), filename);
-        if (attachmentOpt.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        Optional<FormAttachment> attachmentOpt =
+                formAttachmentRepository.findByFormVersionIdAndFileName(fv.getId(), filename);
+
+        // Ordinary form media.
+        if (attachmentOpt.isPresent()) {
+            FormAttachment attachment = attachmentOpt.get();
+            try {
+                StorageService storageService = storageServiceFactory.getStorageService(attachment.getStorageDriver());
+                Resource resource = storageService.loadAsResource(attachment.getStoragePath());
+
+                if (resource == null || !resource.exists()) {
+                    return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+                }
+
+                String contentType = attachment.getContentType();
+                if (contentType == null || contentType.isBlank()) {
+                    contentType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
+                }
+
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.CONTENT_DISPOSITION,
+                                "attachment; filename=\"" + attachment.getFileName() + "\"")
+                        .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(attachment.getFileSize()))
+                        .body(resource);
+            } catch (Exception e) {
+                log.error("Failed to serve attachment {}: {}", filename, e.getMessage(), e);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            }
         }
 
-        FormAttachment attachment = attachmentOpt.get();
+        // External CSV/XML datasets are also OpenRosa form attachments from
+        // Collect's perspective. Serve active datasets through the same URL
+        // shape used by the manifest.
+        Optional<FormExternalDataset> datasetOpt =
+                formExternalDatasetRepository.findByFormVersionIdAndDatasetId(fv.getId(), filename);
+        if (datasetOpt.isPresent() && Boolean.TRUE.equals(datasetOpt.get().getIsActive())) {
+            FormExternalDataset dataset = datasetOpt.get();
+            try {
+                StorageService storageService = storageServiceFactory.getStorageService(dataset.getStorageDriver());
+                Resource resource = storageService.loadAsResource(dataset.getStoragePath());
+                if (resource == null || !resource.exists()) {
+                    return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+                }
 
-        // Serve the file from storage
-        try {
-            StorageService storageService = storageServiceFactory.getStorageService(attachment.getStorageDriver());
-            Resource resource = storageService.loadAsResource(attachment.getStoragePath());
+                String contentType = dataset.getContentType();
+                if (contentType == null || contentType.isBlank()) {
+                    contentType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
+                }
 
-            if (resource == null || !resource.exists()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+                ResponseEntity.BodyBuilder builder = ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.CONTENT_DISPOSITION,
+                                "attachment; filename=\"" + dataset.getDatasetId() + "\"");
+                if (dataset.getFileSize() != null) {
+                    builder.header(HttpHeaders.CONTENT_LENGTH, String.valueOf(dataset.getFileSize()));
+                }
+                return builder.body(resource);
+            } catch (Exception e) {
+                log.error("Failed to serve external dataset {}: {}", filename, e.getMessage(), e);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
             }
-
-            String contentType = attachment.getContentType();
-            if (contentType == null) {
-                contentType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
-            }
-
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType(contentType))
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + attachment.getFileName() + "\"")
-                    .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(attachment.getFileSize()))
-                    .body(resource);
-
-        } catch (Exception e) {
-            log.error("Failed to serve attachment {}: {}", filename, e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
+
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
     }
 
     /**
@@ -493,17 +498,16 @@ public class OpenRosaController {
         setOpenRosaHeaders(response);
         response.setHeader("X-OpenRosa-Accept-Content-Length", String.valueOf(MAX_CONTENT_LENGTH));
 
-        // HEAD has no response body. Keep the OpenRosa-specific header above
-        // as the accepted upload-size limit, and advertise the actual response
-        // body length separately.
-        response.setContentLength(0);
-
         Optional<Project> projectOpt = projectRepository.findById(projectId);
         if (projectOpt.isEmpty() || !projectOpt.get().getIsActive()) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
 
-        return ResponseEntity.ok().build();
+        // ODK Collect uses HEAD /submission as an OpenRosa capability probe.
+        // A compliant submission endpoint must answer this probe with 204 No Content.
+        // Collect intentionally rejects other 2xx responses (including 200) and will
+        // not attempt the multipart POST when the probe returns the wrong status.
+        return ResponseEntity.noContent().build();
     }
 
     /**
@@ -535,16 +539,16 @@ public class OpenRosaController {
             xml.append("</OpenRosaResponse>");
 
             return ResponseEntity.status(HttpStatus.CREATED)
-                    .contentType(MediaType.APPLICATION_XML)
+                    .contentType(OPENROSA_XML)
                     .body(xml.toString());
         } catch (OpenRosaSubmissionService.IntakeException e) {
             return ResponseEntity.status(e.getStatus())
-                    .contentType(MediaType.APPLICATION_XML)
+                    .contentType(OPENROSA_XML)
                     .body(buildErrorResponse(e.getMessage()));
         } catch (RuntimeException e) {
             log.error("Unexpected OpenRosa submission failure", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .contentType(MediaType.APPLICATION_XML)
+                    .contentType(OPENROSA_XML)
                     .body(buildErrorResponse("Failed to process submission"));
         }
     }
@@ -569,22 +573,58 @@ public class OpenRosaController {
 
     private void setOpenRosaHeaders(HttpServletResponse response) {
         response.setHeader("X-OpenRosa-Version", OPEN_ROSA_VERSION);
+        response.setContentType(OPENROSA_XML_MEDIA_TYPE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setHeader("X-OpenRosa-Accept-Content-Length", String.valueOf(MAX_CONTENT_LENGTH));
     }
 
     private StringBuilder buildUrl(HttpServletRequest request, String path) {
-        StringBuilder url = new StringBuilder();
-        String scheme = request.getScheme();
-        String serverName = request.getServerName();
-        int serverPort = request.getServerPort();
-        String contextPath = request.getContextPath();
+        return new StringBuilder(buildBaseUrl(request)).append(path);
+    }
 
-        url.append(scheme).append("://").append(serverName);
-        if ((scheme.equals("http") && serverPort != 80) || (scheme.equals("https") && serverPort != 443)) {
-            url.append(":").append(serverPort);
+    /**
+     * Resolve the public origin of a request that may have passed through a TLS
+     * terminating reverse proxy such as Cloudflare Tunnel, Caddy or Nginx.
+     * Spring's ForwardedHeaderFilter (enabled in application.yml) normally
+     * rewrites these servlet values for us; the X-Forwarded fallbacks below
+     * make OpenRosa URL generation resilient during development as well.
+     */
+    private String buildBaseUrl(HttpServletRequest request) {
+        String scheme = firstForwardedValue(request.getHeader("X-Forwarded-Proto"));
+        if (!StringUtils.hasText(scheme)) {
+            scheme = request.getScheme();
         }
-        url.append(contextPath).append(path);
-        return url;
+
+        String forwardedHost = firstForwardedValue(request.getHeader("X-Forwarded-Host"));
+        String host;
+        if (StringUtils.hasText(forwardedHost)) {
+            host = forwardedHost;
+        } else {
+            host = request.getServerName();
+            int port = request.getServerPort();
+            String forwardedPort = firstForwardedValue(request.getHeader("X-Forwarded-Port"));
+            if (StringUtils.hasText(forwardedPort)) {
+                try {
+                    port = Integer.parseInt(forwardedPort);
+                } catch (NumberFormatException ignored) {
+                    // Keep servlet port.
+                }
+            }
+            if (("http".equalsIgnoreCase(scheme) && port != 80)
+                    || ("https".equalsIgnoreCase(scheme) && port != 443)) {
+                host = host + ":" + port;
+            }
+        }
+
+        return scheme + "://" + host + request.getContextPath();
+    }
+
+    private String firstForwardedValue(String header) {
+        if (!StringUtils.hasText(header)) {
+            return null;
+        }
+        int comma = header.indexOf(',');
+        return (comma >= 0 ? header.substring(0, comma) : header).trim();
     }
 
     private String escapeXml(String input) {

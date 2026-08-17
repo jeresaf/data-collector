@@ -169,8 +169,8 @@ public interface SubmissionRepository extends JpaRepository<Submission, UUID> {
            "AND (:formVersionId IS NULL OR fv.id = :formVersionId) " +
            "AND (:status IS NULL OR s.status = :status) " +
            "AND (:submittedById IS NULL OR sb.id = :submittedById) " +
-           "AND (:dateFrom IS NULL OR s.submittedAt >= :dateFrom) " +
-           "AND (:dateTo IS NULL OR s.submittedAt <= :dateTo) " +
+           "AND s.submittedAt >= COALESCE(:dateFrom, s.submittedAt) " +
+           "AND s.submittedAt <= COALESCE(:dateTo, s.submittedAt) " +
            "ORDER BY s.submittedAt DESC",
            countQuery = "SELECT COUNT(s) FROM Submission s " +
            "JOIN s.form f " +
@@ -181,8 +181,8 @@ public interface SubmissionRepository extends JpaRepository<Submission, UUID> {
            "AND (:formVersionId IS NULL OR fv.id = :formVersionId) " +
            "AND (:status IS NULL OR s.status = :status) " +
            "AND (:submittedById IS NULL OR sb.id = :submittedById) " +
-           "AND (:dateFrom IS NULL OR s.submittedAt >= :dateFrom) " +
-           "AND (:dateTo IS NULL OR s.submittedAt <= :dateTo)")
+           "AND s.submittedAt >= COALESCE(:dateFrom, s.submittedAt) " +
+           "AND s.submittedAt <= COALESCE(:dateTo, s.submittedAt)")
     Page<Submission> findSubmissionsBase(
             @Param("projectId") UUID projectId,
             @Param("formId") UUID formId,
@@ -202,8 +202,8 @@ public interface SubmissionRepository extends JpaRepository<Submission, UUID> {
            "AND (:formVersionId IS NULL OR fv.id = :formVersionId) " +
            "AND (:status IS NULL OR s.status = :status) " +
            "AND (:submittedById IS NULL OR sb.id = :submittedById) " +
-           "AND (:dateFrom IS NULL OR s.submittedAt >= :dateFrom) " +
-           "AND (:dateTo IS NULL OR s.submittedAt <= :dateTo)")
+           "AND s.submittedAt >= COALESCE(:dateFrom, s.submittedAt) " +
+           "AND s.submittedAt <= COALESCE(:dateTo, s.submittedAt)")
     long countSubmissionsBase(
             @Param("projectId") UUID projectId,
             @Param("formId") UUID formId,

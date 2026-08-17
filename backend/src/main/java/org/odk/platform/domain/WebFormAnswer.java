@@ -3,7 +3,9 @@ package org.odk.platform.domain;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -63,6 +65,7 @@ public class WebFormAnswer {
     private Boolean valueBoolean;
 
     @Column(name = "value_json", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
     private String valueJson;
 
     @Column(name = "repeat_path", length = 500)

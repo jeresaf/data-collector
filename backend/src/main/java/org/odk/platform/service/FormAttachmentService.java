@@ -23,8 +23,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -44,13 +42,10 @@ public class FormAttachmentService {
     private final StorageServiceFactory storageServiceFactory;
     private final CurrentUserService currentUserService;
 
-    @Value("${app.storage.local.base-path:/var/lib/odk/attachments}")
-    private String localStorageBasePath;
-
     @Value("${app.storage.max-file-size:104857600}")
     private long maxFileSize;
 
-    @Value("${app.storage.allowed-extensions:xml,xlsx,xls,csv,json,geojson,png,jpg,jpeg,gif,mp3,mp4,3gp,amr}")
+    @Value("${app.storage.allowed-extensions:xml,xlsx,xls,csv,json,geojson,png,jpg,jpeg,gif,wav,mp3,mp4,3gp,amr}")
     private List<String> allowedExtensions;
 
     public FormAttachmentService(FormAttachmentRepository attachmentRepository,
@@ -274,7 +269,7 @@ public class FormAttachmentService {
 
     private String generateStoragePath(UUID formVersionId, String fileName) {
         String datePath = Instant.now().toString().substring(0, 10).replace("-", "/");
-        return Paths.get(localStorageBasePath, formVersionId.toString(), datePath, fileName).toString();
+        return Paths.get("attachments", formVersionId.toString(), datePath, fileName).toString();
     }
 
     private FormAttachmentDto toDto(FormAttachment attachment) {

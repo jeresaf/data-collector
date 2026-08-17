@@ -100,3 +100,64 @@ describe('WebFormQuestion barcode control', () => {
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
   })
 })
+
+describe('WebFormQuestion Collect-style appearances', () => {
+  it('renders ordinary select-one questions as visible radio choices', () => {
+    const wrapper = mountQuestion(uploadQuestion({
+      name: 'gender',
+      path: 'gender',
+      instancePath: 'gender[1]',
+      label: 'Gender',
+      questionType: 'select1',
+      dataType: 1,
+      controlType: 2,
+      mediaType: null,
+      appearanceHint: '',
+      choices: [
+        { value: 'female', label: 'Female' },
+        { value: 'male', label: 'Male' },
+      ],
+    }))
+
+    expect(wrapper.findAll('input[type="radio"]')).toHaveLength(2)
+    expect(wrapper.find('select').exists()).toBe(false)
+  })
+
+  it('keeps appearance=minimal select-one questions compact', () => {
+    const wrapper = mountQuestion(uploadQuestion({
+      name: 'district',
+      path: 'district',
+      instancePath: 'district[1]',
+      label: 'District',
+      questionType: 'select1',
+      dataType: 1,
+      controlType: 2,
+      mediaType: null,
+      appearanceHint: 'minimal',
+      choices: [
+        { value: 'wakiso', label: 'Wakiso' },
+        { value: 'mukono', label: 'Mukono' },
+      ],
+    }))
+
+    expect(wrapper.find('select').exists()).toBe(true)
+    expect(wrapper.findAll('input[type="radio"]')).toHaveLength(0)
+  })
+
+  it('renders text appearance=multiline as a textarea', () => {
+    const wrapper = mountQuestion(uploadQuestion({
+      name: 'notes',
+      path: 'notes',
+      instancePath: 'notes[1]',
+      label: 'Notes',
+      questionType: 'text',
+      dataType: 1,
+      controlType: 1,
+      mediaType: null,
+      appearanceHint: 'multiline',
+    }))
+
+    expect(wrapper.find('textarea.form-textarea').exists()).toBe(true)
+    expect(wrapper.find('input.form-input').exists()).toBe(false)
+  })
+})

@@ -416,10 +416,10 @@ class OpenRosaBasicAuthIntegrationTest {
         // Act & Assert
         mockMvc.perform(get("/v1/projects/00000000-0000-0000-0000-000000000001/forms/sample_form/manifest")
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"))
-                .andExpect(header().string("Content-Type", "application/xml"))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_XML))
                 .andExpect(content().string(containsString("<manifest")));
     }
 
@@ -428,7 +428,7 @@ class OpenRosaBasicAuthIntegrationTest {
         // Act & Assert
         mockMvc.perform(get("/v1/projects/00000000-0000-0000-0000-000000000001/forms/sample_form/manifest")
                         .header("Authorization", invalidCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -450,11 +450,11 @@ class OpenRosaBasicAuthIntegrationTest {
     }
 
     @Test
-    void submissionHeadEndpoint_WithValidBasicAuth_ReturnsOk() throws Exception {
+    void submissionHeadEndpoint_WithValidBasicAuth_ReturnsNoContent() throws Exception {
         // Act & Assert
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head("/v1/projects/00000000-0000-0000-0000-000000000001/submission")
                         .header("Authorization", validCredentials))
-                .andExpect(status().isOk())
+                .andExpect(status().isNoContent())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"))
                 .andExpect(header().string("X-OpenRosa-Accept-Content-Length", "104857600"));
     }
@@ -544,7 +544,7 @@ class OpenRosaBasicAuthIntegrationTest {
         // Test the compatibility alias /formList
         mockMvc.perform(get("/formList")
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"))
                 .andExpect(content().string(containsString("<xforms")))
@@ -556,7 +556,7 @@ class OpenRosaBasicAuthIntegrationTest {
         // Test the compatibility alias /forms/{xmlFormId}.xml
         mockMvc.perform(get("/forms/sample_form.xml")
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"));
     }
@@ -566,18 +566,18 @@ class OpenRosaBasicAuthIntegrationTest {
         // Test the compatibility alias /forms/{xmlFormId}/manifest
         mockMvc.perform(get("/forms/sample_form/manifest")
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"))
                 .andExpect(content().string(containsString("<manifest")));
     }
 
     @Test
-    void compatibilitySubmissionHeadEndpoint_WithValidBasicAuth_ReturnsOk() throws Exception {
+    void compatibilitySubmissionHeadEndpoint_WithValidBasicAuth_ReturnsNoContent() throws Exception {
         // Test the compatibility alias HEAD /submission
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head("/submission")
                         .header("Authorization", validCredentials))
-                .andExpect(status().isOk())
+                .andExpect(status().isNoContent())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"))
                 .andExpect(header().string("X-OpenRosa-Accept-Content-Length", "104857600"));
     }
@@ -622,7 +622,7 @@ class OpenRosaBasicAuthIntegrationTest {
         for (String endpoint : endpoints) {
             MvcResult result = mockMvc.perform(get(endpoint)
                             .header("Authorization", validCredentials)
-                            .accept(MediaType.APPLICATION_XML))
+                            .accept(MediaType.TEXT_XML))
                     .andExpect(status().isOk())
                     .andExpect(header().string("X-OpenRosa-Version", "1.0"))
                     .andReturn();
@@ -647,7 +647,7 @@ class OpenRosaBasicAuthIntegrationTest {
         for (String endpoint : endpoints) {
             mockMvc.perform(get(endpoint)
                             .header("Authorization", validCredentials)
-                            .accept(MediaType.APPLICATION_XML))
+                            .accept(MediaType.TEXT_XML))
                     .andExpect(status().isOk())
                     .andExpect(header().string("X-OpenRosa-Version", "1.0"));
         }
@@ -664,7 +664,7 @@ class OpenRosaBasicAuthIntegrationTest {
         for (String endpoint : endpoints) {
             mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head(endpoint)
                             .header("Authorization", validCredentials))
-                    .andExpect(status().isOk())
+                    .andExpect(status().isNoContent())
                     .andExpect(header().string("X-OpenRosa-Accept-Content-Length", "104857600"));
         }
     }
@@ -675,7 +675,7 @@ class OpenRosaBasicAuthIntegrationTest {
         mockMvc.perform(get("/v1/projects/00000000-0000-0000-0000-000000000001/formList")
                         .header("Authorization", validCredentials)
                         .header("X-Forwarded-For", "192.168.1.100, 10.0.0.1")
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk());
     }
 
@@ -685,7 +685,7 @@ class OpenRosaBasicAuthIntegrationTest {
         mockMvc.perform(get("/v1/projects/00000000-0000-0000-0000-000000000001/formList")
                         .header("Authorization", validCredentials)
                         .header("User-Agent", "ODK Collect v2023.1.0")
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk());
     }
 }

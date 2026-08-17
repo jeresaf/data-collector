@@ -46,10 +46,10 @@ describe('WebFormGroup repeat controls', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('Instance 1 of 2')
-    expect(wrapper.text()).toContain('controlled by the form definition')
-    expect(wrapper.text()).not.toContain('Add Another')
-    expect(wrapper.text()).not.toContain('Delete This')
+    expect(wrapper.text()).toContain('Entry 1 of 2')
+    expect(wrapper.text()).toContain('set automatically')
+    expect(wrapper.text()).not.toContain('Add another')
+    expect(wrapper.text()).not.toContain('Delete entry')
   })
 
   it('emits navigation using the backend repeat multiplicities', async () => {
@@ -64,8 +64,8 @@ describe('WebFormGroup repeat controls', () => {
     })
 
     const buttons = wrapper.findAll('button')
-    await buttons.find((button) => button.text() === 'Previous')!.trigger('click')
-    await buttons.find((button) => button.text() === 'Next')!.trigger('click')
+    await buttons.find((button) => button.text() === 'Previous entry')!.trigger('click')
+    await buttons.find((button) => button.text() === 'Next entry')!.trigger('click')
 
     expect(wrapper.emitted('descend')).toEqual([[0], [2]])
   })
@@ -81,14 +81,14 @@ describe('WebFormGroup repeat controls', () => {
     })
 
     const buttons = wrapper.findAll('button')
-    await buttons.find((button) => button.text() === 'Add Another')!.trigger('click')
-    await buttons.find((button) => button.text() === 'Delete This')!.trigger('click')
+    await buttons.find((button) => button.text() === 'Add another')!.trigger('click')
+    await buttons.find((button) => button.text() === 'Delete entry')!.trigger('click')
 
     expect(wrapper.emitted('new-repeat')).toHaveLength(1)
     expect(wrapper.emitted('delete-repeat')).toHaveLength(1)
   })
 
-  it('renders nested group depth for structured group navigation', () => {
+  it('keeps nested depth as structural metadata without exposing technical level badges', () => {
     const wrapper = mount(WebFormGroup, {
       props: {
         event: EVENT_REPEAT,
@@ -117,7 +117,7 @@ describe('WebFormGroup repeat controls', () => {
     })
 
     expect(wrapper.attributes('data-depth')).toBe('2')
-    expect(wrapper.text()).toContain('Level 3')
+    expect(wrapper.text()).not.toContain('Level 3')
   })
 
   it('handles JavaRosa new-repeat prompts as repeat junctures', async () => {
@@ -142,8 +142,8 @@ describe('WebFormGroup repeat controls', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('No entries yet')
-    const addButton = wrapper.findAll('button').find((button) => button.text() === 'Add First Entry')
+    expect(wrapper.text()).toContain('There are no entries yet')
+    const addButton = wrapper.findAll('button').find((button) => button.text() === 'Add first entry')
     expect(addButton).toBeDefined()
 
     await addButton!.trigger('click')

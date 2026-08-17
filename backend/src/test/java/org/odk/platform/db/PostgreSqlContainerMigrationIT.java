@@ -1,6 +1,8 @@
 package org.odk.platform.db;
 
 import org.junit.jupiter.api.Test;
+import org.odk.platform.repository.SubmissionRepository;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -38,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
                 "spring.flyway.baseline-on-migrate=true",
                 "spring.flyway.validate-on-migrate=true",
                 "app.audit.async=false",
+"app.jwt.secret=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
                 "app.storage.local.path=${java.io.tmpdir}/odk-platform-postgres-it"
         }
 )
@@ -66,6 +69,9 @@ class PostgreSqlContainerMigrationIT {
 
     @Autowired
     JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    SubmissionRepository submissionRepository;
 
     @Test
     void productionFlywayChainBuildsCurrentSchemaOnRealPostgreSql() {
@@ -148,6 +154,19 @@ class PostgreSqlContainerMigrationIT {
         assertColumnType("audit_logs", "user_agent", "character varying");
         assertColumnType("refresh_tokens", "ip_address", "character varying");
         assertColumnType("refresh_tokens", "user_agent", "character varying");
+    }
+
+
+    @Test
+    void submissionQueriesAcceptNullOptionalDateFiltersOnRealPostgreSql() {
+        assertThat(submissionRepository.findSubmissions(
+                null, null, null, null, null, null, null, null,
+                PageRequest.of(0, 20)))
+                .isNotNull();
+
+        assertThat(submissionRepository.countSubmissions(
+                null, null, null, null, null, null, null, null))
+                .isGreaterThanOrEqualTo(0L);
     }
 
     @Test

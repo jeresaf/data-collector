@@ -61,9 +61,7 @@ class ProjectControllerIntegrationTest {
                 .andExpect(jsonPath("$.id").exists())
                 .andExpect(jsonPath("$.name").value("Test Project"))
                 .andExpect(jsonPath("$.description").value("Test Description"))
-                .andExpect(jsonPath("$.isActive").value(true))
-                .andExpect(jsonPath("$.owner").exists())
-                .andExpect(jsonPath("$.createdBy").exists());
+                .andExpect(jsonPath("$.isActive").value(true));
     }
 
     @Test

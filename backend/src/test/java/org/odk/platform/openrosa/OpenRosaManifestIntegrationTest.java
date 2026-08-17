@@ -272,6 +272,57 @@ class OpenRosaManifestIntegrationTest {
         entityManager.clear();
     }
 
+    private void addExternalDataset(
+            UUID projectId,
+            String xmlFormId,
+            String datasetId) {
+
+        entityManager.flush();
+
+        UUID formVersionId = jdbcTemplate.queryForObject(
+                """
+                SELECT current_version_id
+                FROM xforms
+                WHERE project_id = ? AND xmlns = ?
+                """,
+                UUID.class,
+                projectId,
+                xmlFormId);
+
+        if (formVersionId == null) {
+            throw new IllegalStateException(
+                    "Published form has no current FormVersion: " + xmlFormId);
+        }
+
+        jdbcTemplate.update(
+                """
+                INSERT INTO form_external_datasets (
+                    id,
+                    form_version_id,
+                    dataset_id,
+                    title,
+                    content_type,
+                    storage_path,
+                    storage_driver,
+                    content_hash,
+                    file_size,
+                    is_active,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, 'text/csv', ?, 'local',
+                        '098f6bcd4621d373cade4e832627b4f6',
+                        4, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                UUID.randomUUID(),
+                formVersionId,
+                datasetId,
+                datasetId,
+                "test-data/" + datasetId);
+
+        entityManager.clear();
+    }
+
     private void uploadTestFormWithMedia() throws Exception {
         // XForm XML with media references (images, audio, video, CSV)
         String xformXml = """
@@ -342,45 +393,50 @@ class OpenRosaManifestIntegrationTest {
     void manifestEndpoint_ReturnsValidXmlStructure() throws Exception {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
-                .andExpect(header().string("Content-Type", "application/xml"))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_XML))
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"))
                 .andExpect(content().string(containsString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")))
-                .andExpect(content().string(containsString("<manifest xmlns=\"http://openrosa.org/xforms/manifest\">")))
+                .andExpect(content().string(containsString("<manifest xmlns=\"http://openrosa.org/xforms/xformsManifest\">")))
                 .andExpect(content().string(containsString("</manifest>")));
     }
 
     @Test
-    void manifestEndpoint_IncludesFormXmlInManifest() throws Exception {
-        mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
-                .andExpect(status().isOk())
-                .andExpect(content().string(containsString("<mediaFile>")))
-                .andExpect(content().string(containsString("<filename>test_manifest_form.xml</filename>")))
-                .andExpect(content().string(containsString("<hash>md5:")))
-                .andExpect(content().string(containsString("</mediaFile>")));
-    }
-
-    @Test
-    void manifestEndpoint_IncludesMediaFilesWithHashes() throws Exception {
-        MvcResult result = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+    void manifestEndpoint_DoesNotIncludeFormXmlInManifest() throws Exception {
+        MvcResult result = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andReturn();
 
         String xml = result.getResponse().getContentAsString();
-        
-        // Should contain media files for photo, audio, video, csv
+
+        // The XForm itself is downloaded through formList/downloadUrl.
+        // OpenRosa manifests contain only supporting files.
+        assert !xml.contains("<filename>test_manifest_form.xml</filename>")
+                : "Manifest must not duplicate the XForm XML";
+    }
+
+    @Test
+    void manifestEndpoint_IncludesMediaFilesWithHashes() throws Exception {
+        addStaticMediaAttachment(testProjectId, testFormXmlns, "photo.jpg");
+
+        MvcResult result = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String xml = result.getResponse().getContentAsString();
+
         assert xml.contains("<mediaFile>") : "Should contain mediaFile elements";
-        assert xml.contains("<filename>") : "Should contain filename elements";
-        assert xml.contains("<hash>md5:") : "Should contain MD5 hashes";
-        
-        // Count mediaFile elements - should have at least form XML + 4 media references
-        int mediaFileElements = (xml.split("<mediaFile>").length - 1);
-        assert mediaFileElements >= 1 : "Should have at least the form XML media file";
+        assert xml.contains("<filename>photo.jpg</filename>") : "Should contain uploaded media filename";
+        assert xml.contains("<hash>md5:098f6bcd4621d373cade4e832627b4f6</hash>")
+                : "Should contain uploaded media MD5 hash";
+        assert xml.contains("<downloadUrl>") : "Should contain a download URL";
     }
 
     @Test
@@ -389,7 +445,7 @@ class OpenRosaManifestIntegrationTest {
 
         MvcResult result = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andReturn();
 
@@ -405,7 +461,6 @@ class OpenRosaManifestIntegrationTest {
 
     @Test
     void manifestEndpoint_IncludesExternalDatasets() throws Exception {
-        // Upload a form with external dataset references
         String xformWithExternal = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <h:html xmlns:h="http://www.w3.org/1999/xhtml" xmlns:orx="http://openrosa.org/xforms" xmlns="http://www.w3.org/2002/xforms">
@@ -431,7 +486,7 @@ class OpenRosaManifestIntegrationTest {
                 """;
 
         UUID projectId = createTestProject();
-        
+
         MockMultipartFile file = new MockMultipartFile(
                 "file", "external_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithExternal.getBytes());
 
@@ -444,18 +499,28 @@ class OpenRosaManifestIntegrationTest {
 
         publishAndAssignUploadedForm(projectId, uploadResult);
 
-        String xmlns = objectMapper.readTree(uploadResult.getResponse().getContentAsString()).get("xmlns").asText();
+        String xmlns = objectMapper.readTree(
+                uploadResult.getResponse().getContentAsString()).get("xmlns").asText();
 
-        // Check manifest includes external dataset
-        MvcResult manifestResult = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+        // A reference in the XForm is not enough: the actual active dataset
+        // must exist for Collect to be given a downloadable manifest entry.
+        addExternalDataset(projectId, xmlns, "cities.csv");
+
+        MvcResult manifestResult = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andReturn();
 
         String manifestXml = manifestResult.getResponse().getContentAsString();
-        // External datasets should appear in manifest
         assert manifestXml.contains("<mediaFile>") : "Should contain mediaFile elements";
+        assert manifestXml.contains("<filename>cities.csv</filename>")
+                : "Should contain the active external dataset";
+        assert manifestXml.contains("<hash>md5:098f6bcd4621d373cade4e832627b4f6</hash>")
+                : "Should contain the dataset MD5 hash";
+        assert manifestXml.contains("/attachments/cities.csv")
+                : "Should expose the dataset through the OpenRosa attachment URL";
     }
 
     // ==================== Authentication Tests ====================
@@ -464,7 +529,7 @@ class OpenRosaManifestIntegrationTest {
     void manifestEndpoint_WithValidBasicAuth_ReturnsOk() throws Exception {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"));
     }
@@ -473,14 +538,14 @@ class OpenRosaManifestIntegrationTest {
     void manifestEndpoint_WithInvalidBasicAuth_ReturnsUnauthorized() throws Exception {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", invalidCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isUnauthorized());
     }
 
     @Test
     void manifestEndpoint_WithoutAuth_ReturnsUnauthorized() throws Exception {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -488,7 +553,7 @@ class OpenRosaManifestIntegrationTest {
     void manifestEndpoint_WithMalformedAuth_ReturnsUnauthorized() throws Exception {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", "Basic notvalidbase64!")
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -506,7 +571,7 @@ class OpenRosaManifestIntegrationTest {
         
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", unassignedCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isNotFound());
     }
 
@@ -515,7 +580,7 @@ class OpenRosaManifestIntegrationTest {
         // The fixture explicitly assigns appuser to this project/form.
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk());
     }
 
@@ -523,7 +588,7 @@ class OpenRosaManifestIntegrationTest {
     void manifestEndpoint_ForNonExistentForm_ReturnsNotFound() throws Exception {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, "nonexistent_form")
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isNotFound());
     }
 
@@ -532,7 +597,7 @@ class OpenRosaManifestIntegrationTest {
         UUID nonExistentProject = UUID.randomUUID();
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", nonExistentProject, testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isNotFound());
     }
 
@@ -574,7 +639,7 @@ class OpenRosaManifestIntegrationTest {
         // Try to access manifest for unpublished form - should return 404
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isNotFound());
     }
 
@@ -584,7 +649,7 @@ class OpenRosaManifestIntegrationTest {
     void compatibilityManifestEndpoint_WithValidAuth_ReturnsManifest() throws Exception {
         mockMvc.perform(get("/forms/{xmlFormId}/manifest", testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"))
                 .andExpect(content().string(containsString("<manifest")));
@@ -594,7 +659,7 @@ class OpenRosaManifestIntegrationTest {
     void compatibilityManifestEndpoint_WithInvalidAuth_ReturnsUnauthorized() throws Exception {
         mockMvc.perform(get("/forms/{xmlFormId}/manifest", testFormXmlns)
                         .header("Authorization", invalidCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -643,42 +708,41 @@ class OpenRosaManifestIntegrationTest {
 
     @Test
     void manifestXml_HasCorrectNamespace() throws Exception {
-        MvcResult result = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+        MvcResult result = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andReturn();
 
         String xml = result.getResponse().getContentAsString();
-        assert xml.contains("xmlns=\"http://openrosa.org/xforms/manifest\"") : "Should have OpenRosa manifest namespace";
+        assert xml.contains("xmlns=\"http://openrosa.org/xforms/xformsManifest\"")
+                : "Should have the OpenRosa xformsManifest namespace";
     }
 
     @Test
-    void manifestXml_FormXmlHashIsMd5() throws Exception {
-        MvcResult result = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+    void manifestXml_AttachmentHashIsMd5() throws Exception {
+        addStaticMediaAttachment(testProjectId, testFormXmlns, "photo.jpg");
+
+        MvcResult result = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andReturn();
 
         String xml = result.getResponse().getContentAsString();
-        
-        // Find the form XML media file entry and verify hash format
-        assert xml.contains("<filename>test_manifest_form.xml</filename>") : "Should contain form XML filename";
-        assert xml.contains("<hash>md5:") : "Should contain MD5 hash prefix";
-        
-        // Extract hash and verify it's 32 hex characters
-        int hashStart = xml.indexOf("<hash>md5:") + "<hash>md5:".length();
-        int hashEnd = xml.indexOf("</hash>", hashStart);
-        String hash = xml.substring(hashStart, hashEnd);
-        assert hash.matches("[a-f0-9]{32}") : "MD5 hash should be 32 hex characters: " + hash;
+        assert xml.contains("<filename>photo.jpg</filename>")
+                : "Should contain uploaded attachment filename";
+        assert xml.contains("<hash>md5:098f6bcd4621d373cade4e832627b4f6</hash>")
+                : "Attachment hash should use the md5: prefix";
     }
 
     @Test
     void manifestXml_MediaFilesHaveUniqueFilenames() throws Exception {
         MvcResult result = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andReturn();
 
@@ -705,7 +769,7 @@ class OpenRosaManifestIntegrationTest {
     void manifestXml_DownloadUrlsAreAbsolute() throws Exception {
         MvcResult result = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andReturn();
 
@@ -730,7 +794,7 @@ class OpenRosaManifestIntegrationTest {
     void manifestEndpoint_ReturnsOpenRosaVersionHeader() throws Exception {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"));
     }
@@ -739,7 +803,7 @@ class OpenRosaManifestIntegrationTest {
     void manifestEndpoint_ReturnsOpenRosaVersionOnCompatibilityEndpoint() throws Exception {
         mockMvc.perform(get("/forms/{xmlFormId}/manifest", testFormXmlns)
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"));
     }
@@ -748,7 +812,7 @@ class OpenRosaManifestIntegrationTest {
     void manifestEndpoint_ReturnsOpenRosaVersionEvenOnNotFound() throws Exception {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, "nonexistent")
                         .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isNotFound())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"));
     }
@@ -757,7 +821,7 @@ class OpenRosaManifestIntegrationTest {
     void manifestEndpoint_ReturnsOpenRosaVersionEvenOnUnauthorized() throws Exception {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", invalidCredentials)
-                        .accept(MediaType.APPLICATION_XML))
+                        .accept(MediaType.TEXT_XML))
                 .andExpect(status().isUnauthorized())
                 .andExpect(header().string("X-OpenRosa-Version", "1.0"));
     }
@@ -766,7 +830,6 @@ class OpenRosaManifestIntegrationTest {
 
     @Test
     void manifestIncludesImageFiles() throws Exception {
-        // Upload form with image reference
         String xformWithImage = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <h:html xmlns:h="http://www.w3.org/1999/xhtml" xmlns:orx="http://openrosa.org/xforms" xmlns="http://www.w3.org/2002/xforms">
@@ -788,7 +851,8 @@ class OpenRosaManifestIntegrationTest {
                 """;
 
         UUID projectId = createTestProject();
-        MockMultipartFile file = new MockMultipartFile("file", "image_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithImage.getBytes());
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "image_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithImage.getBytes());
 
         MvcResult uploadResult = mockMvc.perform(multipart("/api/projects/{projectId}/forms/upload", projectId)
                         .file(file).with(user("admin").roles("ADMIN"))
@@ -796,17 +860,18 @@ class OpenRosaManifestIntegrationTest {
                 .andExpect(status().isOk()).andReturn();
 
         publishAndAssignUploadedForm(projectId, uploadResult);
-
         String xmlns = objectMapper.readTree(uploadResult.getResponse().getContentAsString()).get("xmlns").asText();
+        addStaticMediaAttachment(projectId, xmlns, "prompt.jpg");
 
-        MvcResult manifestResult = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
-                .andExpect(status().isOk()).andReturn();
+        String manifestXml = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
 
-        String manifestXml = manifestResult.getResponse().getContentAsString();
-        // Should include the form XML at minimum
-        assert manifestXml.contains("<filename>image_form.xml</filename>") : "Should include form XML in manifest";
+        assert manifestXml.contains("<filename>prompt.jpg</filename>")
+                : "Should include uploaded image media";
     }
 
     @Test
@@ -832,7 +897,8 @@ class OpenRosaManifestIntegrationTest {
                 """;
 
         UUID projectId = createTestProject();
-        MockMultipartFile file = new MockMultipartFile("file", "audio_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithAudio.getBytes());
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "audio_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithAudio.getBytes());
 
         MvcResult uploadResult = mockMvc.perform(multipart("/api/projects/{projectId}/forms/upload", projectId)
                         .file(file).with(user("admin").roles("ADMIN"))
@@ -840,16 +906,18 @@ class OpenRosaManifestIntegrationTest {
                 .andExpect(status().isOk()).andReturn();
 
         publishAndAssignUploadedForm(projectId, uploadResult);
-
         String xmlns = objectMapper.readTree(uploadResult.getResponse().getContentAsString()).get("xmlns").asText();
+        addStaticMediaAttachment(projectId, xmlns, "prompt.wav");
 
-        MvcResult manifestResult = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
-                .andExpect(status().isOk()).andReturn();
+        String manifestXml = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
 
-        String manifestXml = manifestResult.getResponse().getContentAsString();
-        assert manifestXml.contains("<filename>audio_form.xml</filename>") : "Should include form XML in manifest";
+        assert manifestXml.contains("<filename>prompt.wav</filename>")
+                : "Should include uploaded audio media";
     }
 
     @Test
@@ -875,7 +943,8 @@ class OpenRosaManifestIntegrationTest {
                 """;
 
         UUID projectId = createTestProject();
-        MockMultipartFile file = new MockMultipartFile("file", "video_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithVideo.getBytes());
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "video_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithVideo.getBytes());
 
         MvcResult uploadResult = mockMvc.perform(multipart("/api/projects/{projectId}/forms/upload", projectId)
                         .file(file).with(user("admin").roles("ADMIN"))
@@ -883,16 +952,18 @@ class OpenRosaManifestIntegrationTest {
                 .andExpect(status().isOk()).andReturn();
 
         publishAndAssignUploadedForm(projectId, uploadResult);
-
         String xmlns = objectMapper.readTree(uploadResult.getResponse().getContentAsString()).get("xmlns").asText();
+        addStaticMediaAttachment(projectId, xmlns, "prompt.mp4");
 
-        MvcResult manifestResult = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
-                .andExpect(status().isOk()).andReturn();
+        String manifestXml = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
 
-        String manifestXml = manifestResult.getResponse().getContentAsString();
-        assert manifestXml.contains("<filename>video_form.xml</filename>") : "Should include form XML in manifest";
+        assert manifestXml.contains("<filename>prompt.mp4</filename>")
+                : "Should include uploaded video media";
     }
 
     @Test
@@ -919,7 +990,8 @@ class OpenRosaManifestIntegrationTest {
                 """;
 
         UUID projectId = createTestProject();
-        MockMultipartFile file = new MockMultipartFile("file", "csv_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithCsv.getBytes());
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "csv_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithCsv.getBytes());
 
         MvcResult uploadResult = mockMvc.perform(multipart("/api/projects/{projectId}/forms/upload", projectId)
                         .file(file).with(user("admin").roles("ADMIN"))
@@ -927,23 +999,24 @@ class OpenRosaManifestIntegrationTest {
                 .andExpect(status().isOk()).andReturn();
 
         publishAndAssignUploadedForm(projectId, uploadResult);
-
         String xmlns = objectMapper.readTree(uploadResult.getResponse().getContentAsString()).get("xmlns").asText();
+        addExternalDataset(projectId, xmlns, "items.csv");
 
-        MvcResult manifestResult = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
-                .andExpect(status().isOk()).andReturn();
+        String manifestXml = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
 
-        String manifestXml = manifestResult.getResponse().getContentAsString();
-        assert manifestXml.contains("<filename>csv_form.xml</filename>") : "Should include form XML in manifest";
+        assert manifestXml.contains("<filename>items.csv</filename>")
+                : "Should include active CSV external dataset";
     }
 
     // ==================== Edge Cases ====================
 
     @Test
-    void manifestEndpoint_WithEmptyMediaReferences_ReturnsOnlyFormXml() throws Exception {
-        // Form with no media references
+    void manifestEndpoint_WithEmptyMediaReferences_ReturnsEmptyManifest() throws Exception {
         String simpleForm = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <h:html xmlns:h="http://www.w3.org/1999/xhtml" xmlns:orx="http://openrosa.org/xforms" xmlns="http://www.w3.org/2002/xforms">
@@ -965,7 +1038,8 @@ class OpenRosaManifestIntegrationTest {
                 """;
 
         UUID projectId = createTestProject();
-        MockMultipartFile file = new MockMultipartFile("file", "simple_form.xml", MediaType.APPLICATION_XML_VALUE, simpleForm.getBytes());
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "simple_form.xml", MediaType.APPLICATION_XML_VALUE, simpleForm.getBytes());
 
         MvcResult uploadResult = mockMvc.perform(multipart("/api/projects/{projectId}/forms/upload", projectId)
                         .file(file).with(user("admin").roles("ADMIN"))
@@ -973,47 +1047,43 @@ class OpenRosaManifestIntegrationTest {
                 .andExpect(status().isOk()).andReturn();
 
         publishAndAssignUploadedForm(projectId, uploadResult);
-
         String xmlns = objectMapper.readTree(uploadResult.getResponse().getContentAsString()).get("xmlns").asText();
 
-        MvcResult manifestResult = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
-                .andExpect(status().isOk()).andReturn();
+        String manifestXml = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
 
-        String manifestXml = manifestResult.getResponse().getContentAsString();
-        
-        // Should only have the form XML media file
-        int mediaFileCount = (manifestXml.split("<mediaFile>").length - 1);
-        assert mediaFileCount == 1 : "Should only have form XML media file, found: " + mediaFileCount;
-        assert manifestXml.contains("<filename>simple_form.xml</filename>") : "Should include form XML filename";
+        int mediaFileCount = manifestXml.split("<mediaFile>").length - 1;
+        assert mediaFileCount == 0 : "Form with no supporting files should have an empty manifest";
+        assert !manifestXml.contains("<filename>simple_form.xml</filename>")
+                : "The form XML belongs in formList/downloadUrl, not the manifest";
     }
 
     @Test
     void manifestEndpoint_HandlesSpecialCharactersInFilename() throws Exception {
-        // Filenames with special characters should be properly escaped in XML
-        String xformWithSpecialChars = """
+        UUID projectId = createTestProject();
+
+        String simpleForm = """
                 <?xml version="1.0" encoding="UTF-8"?>
-                <h:html xmlns:h="http://www.w3.org/1999/xhtml" xmlns:orx="http://openrosa.org/xforms" xmlns="http://www.w3.org/2002/xforms">
+                <h:html xmlns:h="http://www.w3.org/1999/xhtml" xmlns="http://www.w3.org/2002/xforms">
                     <h:head>
                         <h:title>Special Chars Form</h:title>
                         <model>
                             <instance>
-                                <data id="special_form" version="1.0" xmlns:jr="http://openrosa.org/javarosa" xmlns:orx="http://openrosa.org/xforms">
-                                    <file/><meta><instanceID/></meta>
-                                </data>
+                                <data id="special_form" version="1.0"><name/><meta><instanceID/></meta></data>
                             </instance>
-                            <bind nodeset="/data/file" type="binary"/>
+                            <bind nodeset="/data/name" type="string"/>
                         </model>
                     </h:head>
-                    <h:body>
-                        <upload ref="/data/file" mediatype="*/*"><label>File</label></upload>
-                    </h:body>
+                    <h:body><input ref="/data/name"><label>Name</label></input></h:body>
                 </h:html>
                 """;
 
-        UUID projectId = createTestProject();
-        MockMultipartFile file = new MockMultipartFile("file", "special_form.xml", MediaType.APPLICATION_XML_VALUE, xformWithSpecialChars.getBytes());
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "special_form.xml", MediaType.APPLICATION_XML_VALUE, simpleForm.getBytes());
 
         MvcResult uploadResult = mockMvc.perform(multipart("/api/projects/{projectId}/forms/upload", projectId)
                         .file(file).with(user("admin").roles("ADMIN"))
@@ -1021,19 +1091,21 @@ class OpenRosaManifestIntegrationTest {
                 .andExpect(status().isOk()).andReturn();
 
         publishAndAssignUploadedForm(projectId, uploadResult);
-
         String xmlns = objectMapper.readTree(uploadResult.getResponse().getContentAsString()).get("xmlns").asText();
 
-        MvcResult manifestResult = mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
-                        .header("Authorization", validCredentials)
-                        .accept(MediaType.APPLICATION_XML))
-                .andExpect(status().isOk()).andReturn();
+        addStaticMediaAttachment(projectId, xmlns, "photo & notes.jpg");
 
-        String manifestXml = manifestResult.getResponse().getContentAsString();
-        // XML should be well-formed with proper escaping
-        assert manifestXml.contains("<filename>special_form.xml</filename>") : "Should include form XML filename";
-        // Verify XML is well-formed (no unescaped special chars in XML structure)
-        assert !manifestXml.contains("&") || manifestXml.contains("&amp;") : "XML should be properly escaped";
+        String manifestXml = mockMvc.perform(
+                        get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", projectId, xmlns)
+                                .header("Authorization", validCredentials)
+                                .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assert manifestXml.contains("<filename>photo &amp; notes.jpg</filename>")
+                : "Filename must be XML escaped";
+        assert manifestXml.contains("photo%20%26%20notes.jpg")
+                : "Download URL path segment must be URL encoded";
     }
 
     @Test
@@ -1041,6 +1113,6 @@ class OpenRosaManifestIntegrationTest {
         mockMvc.perform(get("/v1/projects/{projectId}/forms/{xmlFormId}/manifest", testProjectId, testFormXmlns)
                         .header("Authorization", validCredentials))
                 .andExpect(status().isOk())
-                .andExpect(header().string("Content-Type", "application/xml"));
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_XML));
     }
 }

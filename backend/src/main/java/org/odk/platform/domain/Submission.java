@@ -53,6 +53,7 @@ public class Submission {
     private String xmlContent;
 
     @Column(name = "json_content", columnDefinition = "JSONB")
+    @JdbcTypeCode(SqlTypes.JSON)
     private String jsonContent;
 
     @Column(name = "status", nullable = false, length = 20)
