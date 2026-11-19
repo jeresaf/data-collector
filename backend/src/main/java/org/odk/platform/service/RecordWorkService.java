@@ -61,6 +61,14 @@ public class RecordWorkService {
             String targetFormId, String targetFormVersion,
             boolean mappingApprovalRequired, String submissionSemantics) { }
 
+    /**
+     * The authorized target-version catalog is read-only. The client must not
+     * guess target version IDs or use unassigned/draft questionnaires.
+     */
+    public record TargetVersion(
+            UUID targetFormVersionId, UUID formId, String formTitle,
+            String version, boolean latest, boolean sameFormAsSource) { }
+
     public record RecordSummary(
             UUID submissionId, String instanceId, UUID formId,
             UUID formVersionId, Instant submittedAt) { }
@@ -231,6 +239,56 @@ public class RecordWorkService {
                 work.workType() == WorkType.AMENDMENT
                   ? "Use a NEW instanceID and deprecatedID referencing sourceInstanceId; review all mappings"
                   : "Use a NEW instanceID WITHOUT deprecatedID; this is a separate visit");
+    }
+
+    /**
+     * Enumerates only published, active and form-assigned versions within the
+     * source record's project. An amendment can only use the same form;
+     * follow-up visits may use another assigned questionnaire.
+     *
+     * Ownership is checked on every call. The catalog contains no XML,
+     * credentials, attachments or historical answer values.
+     */
+    @Transactional(readOnly = true)
+    public List<TargetVersion> targetVersions(
+            UUID projectId, UUID sourceSubmissionId, WorkType workType) {
+        AppUser actor = currentAppUser();
+        requireActiveProject(projectId);
+        if (workType == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Work type required");
+        }
+        Submission source = accessibleSource(actor, projectId, sourceSubmissionId);
+        UUID sourceFormId = source.getForm().getId();
+
+        return jdbc.query("""
+                SELECT fv.id AS target_form_version_id, f.id AS form_id,
+                       f.title AS form_title, fv.version AS form_version,
+                       fv.is_latest AS is_latest
+                FROM form_versions fv
+                JOIN xforms f ON f.id = fv.form_id
+                WHERE f.project_id = ?
+                  AND f.is_active = true AND f.is_published = true
+                  AND fv.is_published = true
+                  AND fv.xml_content IS NOT NULL AND LENGTH(TRIM(fv.xml_content)) > 0
+                  AND (? = 'FOLLOW_UP' OR f.id = ?)
+                  AND EXISTS (
+                      SELECT 1 FROM app_user_projects aup
+                      WHERE aup.app_user_id = ? AND aup.project_id = ?
+                        AND aup.form_id = f.id AND aup.status = 'ACTIVE'
+                  )
+                ORDER BY f.title ASC, fv.is_latest DESC, fv.created_at DESC
+                LIMIT 100
+                """, (rs, row) -> {
+                    UUID formId = rs.getObject("form_id", UUID.class);
+                    return new TargetVersion(
+                            rs.getObject("target_form_version_id", UUID.class),
+                            formId,
+                            rs.getString("form_title"),
+                            rs.getString("form_version"),
+                            rs.getBoolean("is_latest"),
+                            sourceFormId.equals(formId));
+                }, projectId, workType.name(), sourceFormId,
+                actor.getId(), projectId);
     }
 
     @Transactional(readOnly = true)
