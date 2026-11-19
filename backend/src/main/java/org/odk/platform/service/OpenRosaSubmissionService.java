@@ -16,6 +16,7 @@ import org.odk.platform.repository.SubmissionRepository;
 import org.odk.platform.repository.XFormRepository;
 import org.odk.platform.security.CurrentUserService;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.MultiValueMap;
@@ -52,6 +53,7 @@ public class OpenRosaSubmissionService {
     private final SubmissionPersistenceService persistenceService;
     private final SubmissionAttachmentService attachmentService;
     private final SubmissionReplacementService replacementService;
+    private final RecordWorkService recordWorkService;
     private final AuditService auditService;
 
     @Transactional
@@ -192,6 +194,19 @@ public class OpenRosaSubmissionService {
 
         storeAttachments(saved, multipartFiles, xmlContent);
 
+        // An explicit server-owned work ID links a NEW follow-up observation to
+        // its source, or records an amendment against a newer form version.
+        // The entire intake transaction rolls back if the work ID/permission or
+        // source/target semantics are invalid. Legacy OpenRosa submissions remain
+        // supported when this optional header is absent.
+        try {
+            recordWorkService.completeIfPresent(projectId, appUser, original, saved,
+                    formVersion, request.getHeader("X-DataCollector-Work-Item-Id"));
+        } catch (ResponseStatusException ex) {
+            throw new IntakeException(HttpStatus.valueOf(ex.getStatusCode().value()),
+                    ex.getReason() == null ? "Invalid work item" : ex.getReason());
+        }
+
         auditService.log(
                 replacement ? AuditActions.SUBMISSION_REPLACED : AuditActions.SUBMISSION_RECEIVED,
                 "SUBMISSION",
@@ -204,9 +219,12 @@ public class OpenRosaSubmissionService {
 
     private FormVersion resolveFormVersion(XForm form, String submittedVersion) {
         if (submittedVersion != null && !submittedVersion.isBlank()) {
-            Optional<FormVersion> exact = formVersionRepository
-                    .findByFormIdAndVersion(form.getId(), submittedVersion);
-            if (exact.isPresent()) return exact.get();
+            // A named but unknown version MUST NOT be silently parsed with the
+            // latest questionnaire: doing so can corrupt historical answers.
+            return formVersionRepository
+                    .findByFormIdAndVersion(form.getId(), submittedVersion)
+                    .orElseThrow(() -> new IntakeException(
+                            HttpStatus.BAD_REQUEST, "Unknown form version"));
         }
         return formVersionRepository.findLatestByFormId(form.getId())
                 .orElseThrow(() -> new IntakeException(
