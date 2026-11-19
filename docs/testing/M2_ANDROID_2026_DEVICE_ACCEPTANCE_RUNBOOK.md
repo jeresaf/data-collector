@@ -1,7 +1,7 @@
 # M2 — Android-to-Data Collector Device Acceptance
 
 **Prepared:** 19 November 2026  
-**Gate:** Device-level qualification **NOT RUN**; do not claim mobile/server integration solely from automated HTTP tests.  
+**Gate:** Device-level qualification **DEFERRED BY OWNER DECISION (2026-11-19), NOT RUN**; do not claim mobile/server integration solely from automated HTTP tests. Deferral allows M3 development and isolated CI but DOES NOT grant production release approval.  
 **Android build:** `jeresaf/collect` `codex/odk-2026-app-identity`, stacked on `codex/odk-2026-url-bootstrap`.  
 **Server tests:** `jeresaf/data-collector` `codex/m2-odk2026-integration-gate`.
 
@@ -86,3 +86,12 @@ Use parameterized queries in tools; never copy credentials or actual personal da
 ## Release decision
 
 Android/server integrated certification is **BLOCKED** until D01–D12 evidence is reviewed at the exact Android and backend commits. A successful debug APK, mocked Playwright test or HTTP-only smoke may never be described as field acceptance.
+
+## Approved deferral and continuation boundary (2026-11-19)
+
+The project owner explicitly deferred physical Android acceptance to a later date. This is a **schedule decision**, not a technical waiver or acceptance result.
+
+- **Permitted to continue:** branch-isolated implementation, unit/integration tests, disposable PostgreSQL and Spring Boot HTTP qualification, OpenRosa compatibility, backend security remediation, the generic remote-record correction design, and advanced form-builder work using synthetic/approved form fixtures.
+- **Still blocked:** production APK signing and field rollout, replacing installed PDMIS/Kobo clients, claims of native-device compatibility, migration of live local instance databases, any production deployment using seeded development-admin credentials, and final release certification.
+- **Required future evidence:** all D01–D12 checks (including offline restart, local data preservation, media, retry, project revoke and multi-version behavior), exact APK/server hashes and reviewer acceptance. Reopen the device gate before any deployment.
+- **Next engineering package:** M3 remote record listing, authorization, historical XForm retrieval, edit/correction audit and lossless storage. Implement only after API and threat-model review; never copy the legacy unsafe `finally`-deletion behavior into ODK 2026.
