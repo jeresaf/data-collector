@@ -5,15 +5,12 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Reuses the complete synthetic M2 loopback HTTP scenario against PostgreSQL 15,
  * including the production Flyway schema and normalized submission persistence.
  * The container and credentials exist only for this disposable CI execution.
  */
-@Testcontainers
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = {
@@ -33,12 +30,18 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @ActiveProfiles(value = "postgres-it", inheritProfiles = false)
 class OpenRosaRealHttpPostgresIT extends OpenRosaRealHttpIntegrationTest {
 
-    @Container
     static final PostgreSQLContainer<?> POSTGRES =
         new PostgreSQLContainer<>("postgres:15-alpine")
             .withDatabaseName("m2_openrosa_smoke")
             .withUsername("m2_smoke")
             .withPassword("ephemeral-only-smoke-password");
+
+    // DynamicPropertySource may be resolved while Spring initializes the context,
+    // before JUnit Testcontainers extensions run. Start explicitly so JDBC port is
+    // available deterministically and keep the container isolated to this JVM.
+    static {
+        POSTGRES.start();
+    }
 
     @DynamicPropertySource
     static void postgresProperties(DynamicPropertyRegistry registry) {
