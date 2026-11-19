@@ -77,6 +77,11 @@ class OpenRosaBasicAuthIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        // Each OpenRosa request must authenticate independently. Tests elsewhere can
+        // leave a MockMvc security context populated on this test thread; if that
+        // happens the Basic-auth filter intentionally skips re-authentication.
+        org.springframework.security.test.context.TestSecurityContextHolder.clearContext();
+        org.springframework.security.core.context.SecurityContextHolder.clearContext();
         ensureOpenRosaFixture();
 
         String credentials = "appuser:password123";
