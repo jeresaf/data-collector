@@ -773,4 +773,15 @@ class OpenRosaRealHttpIntegrationTest {
             jdbcTemplate.queryForObject("SELECT form_id FROM submissions WHERE instance_id = ?",
                 UUID.class, newInstance));
     }
+
+    @Test
+    void m3UnknownFormVersionNeverFallsBackToLatest() throws Exception {
+        String instance = "uuid:" + UUID.randomUUID();
+        var response = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("9999", instance, null, "Never coerce form version")), null);
+        assertEquals(400, response.statusCode(), response.body());
+        assertEquals(0, jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM submissions WHERE instance_id = ?",
+            Integer.class, instance));
+    }
 }
