@@ -30,6 +30,12 @@ public class RecordWorkController {
         return service.ownedRecords(projectId);
     }
 
+    @GetMapping("/records/{sourceSubmissionId}/timeline")
+    public List<RecordWorkService.RelatedRecord> timeline(
+            @PathVariable UUID projectId, @PathVariable UUID sourceSubmissionId) {
+        return service.timeline(projectId, sourceSubmissionId);
+    }
+
     @GetMapping("/record-work-items")
     public List<WorkView> pending(@PathVariable UUID projectId) {
         return service.pending(projectId);
