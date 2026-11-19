@@ -75,6 +75,14 @@ test('mobile-first web form can answer, finish and submit', async ({ page }) => 
     repeatJuncture: null
   }))
 
+  // Submission requires successful server validation before the confirmation opens.
+  // The production UI now validates both at the initial submit click and at confirmation.
+  await page.route('**/api/web/sessions/session-1/validate', route => json(route, {
+    valid: true,
+    message: 'All answers are valid',
+    failedQuestion: null
+  }))
+
   await page.route('**/api/web/sessions/session-1/finalize', route => json(route, {
     success: true,
     submissionId: 'submission-web-1',
