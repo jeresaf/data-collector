@@ -1,0 +1,64 @@
+name: M3B Target Version Catalog Qualification
+
+on:
+  push:
+    branches:
+      - codex/m3b-target-version-catalog
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m3b-target-versions-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  catalog-h2:
+    name: Owner-scope/version catalog HTTP on H2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpIntegrationTest,SubmissionReplacementServiceTest test
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3b-h2-evidence
+          path: backend/target/surefire-reports/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  catalog-postgres:
+    name: Owner-scope/version catalog HTTP on PostgreSQL 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - run: docker info
+      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpPostgresIT test
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3b-postgres-evidence
+          path: backend/target/surefire-reports/
+          retention-days: 14
+          if-no-files-found: ignore
