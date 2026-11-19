@@ -67,19 +67,21 @@ public class SubmissionReplacementService {
                     version_number,
                     xml_content,
                     instance_id,
+                    source_form_version_id,
                     deprecated_id,
                     status,
                     submitted_by_id,
                     submitted_at,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 UUID.randomUUID(),
                 original.getId(),
                 nextVersion,
                 original.getXmlContent(),
                 original.getInstanceId(),
+                original.getFormVersion() == null ? null : original.getFormVersion().getId(),
                 deprecatedId,
                 original.getStatus() != null ? original.getStatus() : "SUBMITTED",
                 submittedById,
