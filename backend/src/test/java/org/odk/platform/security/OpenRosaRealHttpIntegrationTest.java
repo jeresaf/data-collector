@@ -775,6 +775,90 @@ class OpenRosaRealHttpIntegrationTest {
     }
 
     @Test
+    void m3bCatalogLimitsAmendmentsToSourceFormAndVisitsToAssignedForms() throws Exception {
+        UUID newerVersion = m3VersionTwo();
+        UUID followUpVersion = m3SeparateFollowUpForm();
+        String instance = "uuid:" + UUID.randomUUID();
+        var initial = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", instance, null, "Version catalog owner")), null);
+        assertEquals(201, initial.statusCode(), initial.body());
+        UUID original = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, instance);
+
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var amendment = sendM3("GET", projectBase + "/records/" + original
+            + "/target-versions?workType=AMENDMENT", null, null);
+        assertEquals(200, amendment.statusCode(), amendment.body());
+        var amendmentArray = mapper.readTree(amendment.body());
+        assertTrue(amendmentArray.isArray());
+        assertTrue(amendmentArray.size() >= 2, amendment.body());
+        boolean foundV2 = false;
+        for (var item : amendmentArray) {
+            assertTrue(item.get("sameFormAsSource").asBoolean());
+            assertNotEquals(followUpVersion.toString(),
+                item.get("targetFormVersionId").asText());
+            assertNotNull(item.get("formTitle"));
+            assertFalse(item.has("xmlContent"),
+                "The catalog must never expose full XForm or submitted answers");
+            if (newerVersion.toString().equals(item.get("targetFormVersionId").asText())) {
+                foundV2 = true;
+            }
+        }
+        assertTrue(foundV2, "Published newer version must be selectable for amendment");
+
+        var followUp = sendM3("GET", projectBase + "/records/" + original
+            + "/target-versions?workType=FOLLOW_UP", null, null);
+        assertEquals(200, followUp.statusCode(), followUp.body());
+        boolean foundOtherForm = false;
+        for (var item : mapper.readTree(followUp.body())) {
+            if (followUpVersion.toString().equals(item.get("targetFormVersionId").asText())) {
+                foundOtherForm = true;
+                assertFalse(item.get("sameFormAsSource").asBoolean());
+            }
+        }
+        assertTrue(foundOtherForm, "Assigned alternate questionnaire is a valid follow-up");
+
+        var noType = sendM3("GET", projectBase + "/records/" + original
+            + "/target-versions", null, null);
+        assertEquals(400, noType.statusCode(), noType.body());
+
+        UUID otherUser = ensureAppUser("m3b_catalog_other", "synthetic-catalog-only");
+        UUID form = jdbcTemplate.queryForObject(
+            "SELECT form_id FROM submissions WHERE id = ?", UUID.class, original);
+        ensureAppUserAssignment(otherUser, ensureFixtureOwner(), form);
+        String otherAuth = "Basic " + Base64.getEncoder().encodeToString(
+            "m3b_catalog_other:synthetic-catalog-only".getBytes(StandardCharsets.UTF_8));
+        HttpRequest request = HttpRequest.newBuilder(localUri(projectBase + "/records/"
+                + original + "/target-versions?workType=AMENDMENT"))
+            .header("Authorization", otherAuth).GET().build();
+        var denied = client.send(request, HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, denied.statusCode(),
+            "An enumerator may not enumerate another user's eligible versions");
+
+        // Revoking a target form assignment must remove its entries from this list.
+        UUID appUser = jdbcTemplate.queryForObject(
+            "SELECT id FROM app_users WHERE username = 'm2_synthetic_appuser'", UUID.class);
+        UUID alternateForm = jdbcTemplate.queryForObject(
+            "SELECT form_id FROM form_versions WHERE id = ?", UUID.class, followUpVersion);
+        jdbcTemplate.update("""
+            UPDATE app_user_projects SET status = 'INACTIVE'
+            WHERE app_user_id = ? AND project_id = ? AND form_id = ?
+            """, appUser, TEST_PROJECT_ID, alternateForm);
+        try {
+            var revoked = sendM3("GET", projectBase + "/records/" + original
+                + "/target-versions?workType=FOLLOW_UP", null, null);
+            assertEquals(200, revoked.statusCode(), revoked.body());
+            assertFalse(revoked.body().contains(followUpVersion.toString()),
+                "Unassigned target must disappear from candidate catalog");
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE app_user_projects SET status = 'ACTIVE'
+                WHERE app_user_id = ? AND project_id = ? AND form_id = ?
+                """, appUser, TEST_PROJECT_ID, alternateForm);
+        }
+    }
+
+    @Test
     void m3UnknownFormVersionNeverFallsBackToLatest() throws Exception {
         String instance = "uuid:" + UUID.randomUUID();
         var response = sendM3("POST", projectBase + "/submission",
