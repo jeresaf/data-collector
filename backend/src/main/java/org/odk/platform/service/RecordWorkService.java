@@ -59,7 +59,10 @@ public class RecordWorkService {
     public record Preparation(
             WorkView work, String sourceXml, String targetXFormXml,
             String targetFormId, String targetFormVersion,
-            boolean mappingApprovalRequired, String submissionSemantics) { }
+            boolean mappingApprovalRequired, String submissionSemantics,
+            // Historical, exact persisted XForm. Null means unmappable legacy
+            // record: callers MUST NOT infer its schema from the target version.
+            String sourceXFormXml) { }
 
     /**
      * The authorized target-version catalog is read-only. The client must not
@@ -233,12 +236,32 @@ public class RecordWorkService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Source record changed");
         }
         FormVersion target = targetVersion(actor, projectId, work.targetFormVersionId());
+        // A historical source version is not necessarily the current version.
+        // Never substitute the target XML or current XForm for a missing source
+        // schema: that could silently reinterpret legacy answers.
+        String originalFormXml = null;
+        UUID originalVersionId = source.getFormVersion() == null
+                ? null : source.getFormVersion().getId();
+        if (originalVersionId != null) {
+            FormVersion original = formVersionRepository.findByIdWithFormFetch(originalVersionId)
+                    .orElse(null);
+            if (original != null &&
+                    source.getForm().getId().equals(original.getForm().getId()) &&
+                    original.getForm().getProject() != null &&
+                    projectId.equals(original.getForm().getProject().getId()) &&
+                    original.getXmlContent() != null && !original.getXmlContent().isBlank()) {
+                // Reading historical definitions is allowed even if archived,
+                // but only after proving the source record is owned/assigned.
+                originalFormXml = original.getXmlContent();
+            }
+        }
         return new Preparation(
                 work, source.getXmlContent(), target.getXmlContent(),
                 target.getForm().getXmlns(), target.getVersion(), true,
                 work.workType() == WorkType.AMENDMENT
                   ? "Use a NEW instanceID and deprecatedID referencing sourceInstanceId; review all mappings"
-                  : "Use a NEW instanceID WITHOUT deprecatedID; this is a separate visit");
+                  : "Use a NEW instanceID WITHOUT deprecatedID; this is a separate visit",
+                originalFormXml);
     }
 
     /**
