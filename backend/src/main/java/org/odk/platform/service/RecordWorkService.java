@@ -65,6 +65,11 @@ public class RecordWorkService {
             UUID submissionId, String instanceId, UUID formId,
             UUID formVersionId, Instant submittedAt) { }
 
+    public record RelatedRecord(
+            UUID submissionId, String instanceId, UUID formId,
+            UUID formVersionId, WorkType relationship,
+            String visitKey, Instant submittedAt) { }
+
     private AppUser currentAppUser() {
         var principal = currentUserService.getCurrentUser().orElse(null);
         if (!(principal instanceof AppUser user) ||
@@ -270,6 +275,32 @@ public class RecordWorkService {
                     rs.getObject("form_version_id", UUID.class),
                     at == null ? null : at.toInstant());
         }, projectId, actor.getId());
+    }
+
+    @Transactional(readOnly = true)
+    public List<RelatedRecord> timeline(UUID projectId, UUID sourceSubmissionId) {
+        AppUser actor = currentAppUser();
+        requireActiveProject(projectId);
+        accessibleSource(actor, projectId, sourceSubmissionId);
+        return jdbc.query("""
+                SELECT child.id, child.instance_id, child.form_id,
+                       child.form_version_id, child.submitted_at,
+                       link.link_type, link.visit_key
+                FROM record_links link
+                JOIN submissions child ON child.id = link.child_submission_id
+                WHERE link.project_id = ? AND link.source_submission_id = ?
+                ORDER BY child.submitted_at ASC
+                """, (rs, row) -> {
+            var timestamp = rs.getTimestamp("submitted_at");
+            return new RelatedRecord(
+                    rs.getObject("id", UUID.class),
+                    rs.getString("instance_id"),
+                    rs.getObject("form_id", UUID.class),
+                    rs.getObject("form_version_id", UUID.class),
+                    WorkType.valueOf(rs.getString("link_type")),
+                    rs.getString("visit_key"),
+                    timestamp == null ? null : timestamp.toInstant());
+        }, projectId, sourceSubmissionId);
     }
 
     /**
