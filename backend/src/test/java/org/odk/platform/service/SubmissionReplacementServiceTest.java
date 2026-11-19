@@ -18,11 +18,16 @@ class SubmissionReplacementServiceTest {
         SubmissionRepository repository = mock(SubmissionRepository.class);
         SubmissionReplacementService service = new SubmissionReplacementService(jdbc, repository);
         Submission original = Submission.builder().id(UUID.randomUUID()).instanceId("uuid:old").xmlContent("<old/>").build();
+        org.odk.platform.domain.FormVersion sourceVersion =
+                org.odk.platform.domain.FormVersion.builder().id(UUID.randomUUID()).build();
+        original.setFormVersion(sourceVersion);
         Submission replacement = Submission.builder().id(UUID.randomUUID()).instanceId("uuid:new").build();
         when(jdbc.queryForObject(anyString(), eq(Integer.class), eq(original.getId()))).thenReturn(2);
         when(repository.saveAndFlush(replacement)).thenReturn(replacement);
         assertSame(replacement, service.createReplacement(original, replacement, "uuid:old"));
-        verify(jdbc).update(anyString(), any(), eq(original.getId()), eq(2), eq("<old/>"), eq("uuid:old"), eq("uuid:old"), eq("SUBMITTED"), any(), any());
+        verify(jdbc).update(anyString(), any(), eq(original.getId()), eq(2),
+                eq("<old/>"), eq("uuid:old"), eq(sourceVersion.getId()),
+                eq("uuid:old"), eq("SUBMITTED"), isNull(), any(java.sql.Timestamp.class));
         verify(repository).saveAndFlush(replacement);
     }
 
