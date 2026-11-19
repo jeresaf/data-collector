@@ -17,6 +17,7 @@ CREATE TABLE record_work_items (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_record_work_idempotency UNIQUE(project_id, assigned_app_user_id, client_request_id),
+    CONSTRAINT uq_record_visit UNIQUE(project_id, source_submission_id, work_type, visit_key),
     CONSTRAINT ck_record_work_completed CHECK
         ((state = 'COMPLETED' AND completed_submission_id IS NOT NULL)
           OR (state <> 'COMPLETED' AND completed_submission_id IS NULL))
