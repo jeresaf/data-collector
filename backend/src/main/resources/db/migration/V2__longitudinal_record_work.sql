@@ -1,3 +1,8 @@
+-- Preserve the original questionnaire version in the revision snapshot; do not
+-- assume a correction uses the same version as its source submission.
+ALTER TABLE submission_versions
+    ADD COLUMN source_form_version_id UUID REFERENCES form_versions(id);
+
 -- M3 additive schema: record corrections and periodic visits are DIFFERENT workflows.
 -- No alteration/deletion of historical submission rows; existing Flyway V1 remains immutable.
 CREATE TABLE record_work_items (
