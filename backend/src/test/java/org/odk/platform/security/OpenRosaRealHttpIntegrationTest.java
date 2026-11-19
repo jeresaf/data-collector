@@ -613,6 +613,14 @@ class OpenRosaRealHttpIntegrationTest {
         assertTrue(preparation.body().contains("WITHOUT deprecatedID"));
         assertTrue(preparation.body().contains("mappingApprovalRequired"));
         assertTrue(preparation.body().contains("version=\\\"2\\\""));
+        var preparedJson = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(preparation.body());
+        assertEquals(SAMPLE_XFORM_XML, preparedJson.get("sourceXFormXml").asText(),
+            "Historic source version must be the exact version-one XForm");
+        assertNotEquals(preparedJson.get("sourceXFormXml").asText(),
+            preparedJson.get("targetXFormXml").asText(),
+            "Never substitute the current/target schema for the original");
+
 
         String secondInstance = "uuid:" + UUID.randomUUID();
         var second = sendM3("POST", projectBase + "/submission",
@@ -856,6 +864,38 @@ class OpenRosaRealHttpIntegrationTest {
                 WHERE app_user_id = ? AND project_id = ? AND form_id = ?
                 """, appUser, TEST_PROJECT_ID, alternateForm);
         }
+    }
+
+    @Test
+    void m3cMissingLegacySourceSchemaIsExplicitNullWithoutLatestFallback() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String instanceId = "uuid:" + UUID.randomUUID();
+        var submission = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", instanceId, null, "Synthetic legacy orphan")), null);
+        assertEquals(201, submission.statusCode(), submission.body());
+        UUID original = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, instanceId);
+
+        // Simulate an imported legacy Kobo record whose historic form-version
+        // association was unavailable. The source remains owned and readable.
+        jdbcTemplate.update(
+            "UPDATE submissions SET form_version_id = NULL WHERE id = ?", original);
+        var created = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(original, targetVersion, "AMENDMENT", null,
+                "m3c-legacy-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode(), created.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(created.body()).get("id").asText();
+
+        var prep = sendM3("GET", projectBase + "/record-work-items/" + workId
+            + "/prepare", null, null);
+        assertEquals(200, prep.statusCode(), prep.body());
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().readTree(prep.body());
+        assertTrue(json.get("sourceXFormXml").isNull(),
+            "Unknown historic schema must be null, never replaced with target XForm");
+        assertTrue(json.get("targetXFormXml").asText().contains("version=\\\"2\\\""));
+        assertTrue(json.get("mappingApprovalRequired").asBoolean());
+        assertEquals(instanceId, json.get("work").get("sourceInstanceId").asText());
     }
 
     @Test
