@@ -893,7 +893,7 @@ class OpenRosaRealHttpIntegrationTest {
         var json = new com.fasterxml.jackson.databind.ObjectMapper().readTree(prep.body());
         assertTrue(json.get("sourceXFormXml").isNull(),
             "Unknown historic schema must be null, never replaced with target XForm");
-        assertTrue(json.get("targetXFormXml").asText().contains("version=\\\"2\\\""));
+        assertTrue(json.get("targetXFormXml").asText().contains("version=\"2\""));
         assertTrue(json.get("mappingApprovalRequired").asBoolean());
         assertEquals(instanceId, json.get("work").get("sourceInstanceId").asText());
     }
