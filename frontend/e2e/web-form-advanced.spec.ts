@@ -81,20 +81,20 @@ test('web form repeat flow adds JavaRosa repeat instances through browser contro
   await page.goto('/forms/fv-advanced/web')
 
   await expect(page.getByRole('heading', { name: 'Repeat Acceptance' })).toBeVisible()
-  await expect(page.getByText('Instance 1 of 1')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Add Another' })).toBeVisible()
+  await expect(page.getByText('Entry 1 of 1')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add another' })).toBeVisible()
 
   const repeatRequest = page.waitForRequest(request =>
     request.url().endsWith('/api/web/sessions/repeat-session/repeats/new')
       && request.method() === 'POST'
   )
 
-  await page.getByRole('button', { name: 'Add Another' }).click()
+  await page.getByRole('button', { name: 'Add another' }).click()
   await repeatRequest
 
-  await expect(page.getByText('Instance 2 of 2')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Previous' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Delete This' })).toBeVisible()
+  await expect(page.getByText('Entry 2 of 2')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Previous entry' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Delete entry' })).toBeVisible()
   expect(repeatCount).toBe(2)
 })
 
