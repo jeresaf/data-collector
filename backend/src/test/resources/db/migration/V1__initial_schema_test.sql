@@ -1027,6 +1027,9 @@ CREATE INDEX idx_web_form_assignments_active
     ON web_form_assignments(project_id, form_id, is_active);
 
 
+ALTER TABLE submission_versions
+    ADD COLUMN source_form_version_id UUID REFERENCES form_versions(id);
+
 -- M3 H2 test equivalent of production V2__longitudinal_record_work.sql.
 CREATE TABLE record_work_items (
   id UUID PRIMARY KEY,
