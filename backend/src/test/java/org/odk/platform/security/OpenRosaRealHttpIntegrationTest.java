@@ -628,6 +628,13 @@ class OpenRosaRealHttpIntegrationTest {
             "SELECT COUNT(*) FROM submission_versions WHERE submission_id = ?",
             Integer.class, sourceId));
 
+        var timeline = sendM3("GET", projectBase + "/records/" + sourceId + "/timeline",
+            null, null);
+        assertEquals(200, timeline.statusCode(), timeline.body());
+        assertTrue(timeline.body().contains(secondInstance));
+        assertTrue(timeline.body().contains(visitKey));
+        assertTrue(timeline.body().contains("FOLLOW_UP"));
+
         // A malicious second completion with a different instance ID must roll
         // the new submission back, not create another linked visit.
         String invalidInstance = "uuid:" + UUID.randomUUID();
