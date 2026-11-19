@@ -233,9 +233,20 @@ public class RecordWorkService {
         AppUser actor = currentAppUser();
         requireActiveProject(projectId);
         return jdbc.query("""
-                SELECT * FROM record_work_items
-                WHERE project_id = ? AND assigned_app_user_id = ? AND state = 'READY'
-                ORDER BY created_at DESC LIMIT 100
+                SELECT rw.* FROM record_work_items rw
+                JOIN submissions src ON src.id = rw.source_submission_id
+                JOIN form_versions target ON target.id = rw.target_form_version_id
+                WHERE rw.project_id = ? AND rw.assigned_app_user_id = ? AND rw.state = 'READY'
+                  AND src.submitted_by_id = rw.assigned_app_user_id
+                  AND EXISTS (SELECT 1 FROM app_user_projects aup
+                      WHERE aup.app_user_id = rw.assigned_app_user_id
+                        AND aup.project_id = rw.project_id
+                        AND aup.form_id = src.form_id AND aup.status = 'ACTIVE')
+                  AND EXISTS (SELECT 1 FROM app_user_projects aup
+                      WHERE aup.app_user_id = rw.assigned_app_user_id
+                        AND aup.project_id = rw.project_id
+                        AND aup.form_id = target.form_id AND aup.status = 'ACTIVE')
+                ORDER BY rw.created_at DESC LIMIT 100
                 """, this::fromRow, projectId, actor.getId());
     }
 
@@ -243,23 +254,22 @@ public class RecordWorkService {
     public List<RecordSummary> ownedRecords(UUID projectId) {
         AppUser actor = currentAppUser();
         requireActiveProject(projectId);
-        List<UUID> assigned = appUserProjectRepository.findAssignedFormIdsByAppUserIdAndProjectId(
-                actor.getId(), projectId);
-        if (assigned.isEmpty()) return List.of();
         return jdbc.query("""
                 SELECT s.id, s.instance_id, s.form_id, s.form_version_id, s.submitted_at
                 FROM submissions s JOIN xforms f ON f.id = s.form_id
                 WHERE f.project_id = ? AND s.submitted_by_id = ?
+                  AND EXISTS (SELECT 1 FROM app_user_projects aup
+                      WHERE aup.project_id = f.project_id
+                        AND aup.app_user_id = s.submitted_by_id
+                        AND aup.form_id = s.form_id AND aup.status = 'ACTIVE')
                 ORDER BY s.submitted_at DESC LIMIT 100
                 """, (rs, row) -> {
-            UUID formId = rs.getObject("form_id", UUID.class);
-            if (!assigned.contains(formId)) return null;
             var at = rs.getTimestamp("submitted_at");
             return new RecordSummary(rs.getObject("id", UUID.class),
-                    rs.getString("instance_id"), formId,
+                    rs.getString("instance_id"), rs.getObject("form_id", UUID.class),
                     rs.getObject("form_version_id", UUID.class),
                     at == null ? null : at.toInstant());
-        }, projectId, actor.getId()).stream().filter(Objects::nonNull).toList();
+        }, projectId, actor.getId());
     }
 
     /**
