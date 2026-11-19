@@ -693,4 +693,69 @@ class OpenRosaBasicAuthIntegrationTest {
                         .accept(MediaType.TEXT_XML))
                 .andExpect(status().isOk());
     }
+
+    // ODK Collect v2026.4.0 requests {base}/formList?deviceID=... and sends
+    // a HEAD to {base}/submission before multipart submission.
+    @Test
+    void odk2026FormList_WithDeviceId_ReturnsRequiredOpenRosaFields() throws Exception {
+        mockMvc.perform(get("/v1/projects/{id}/formList", TEST_PROJECT_ID)
+                        .param("deviceID", "android:synthetic-2026-device")
+                        .header("Authorization", validCredentials)
+                        .header("User-Agent", "ODK Collect v2026.4.0")
+                        .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-OpenRosa-Version", "1.0"))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_XML))
+                .andExpect(content().string(containsString("<formID>sample_form</formID>")))
+                .andExpect(content().string(containsString("<version>1</version>")))
+                .andExpect(content().string(containsString("<hash>md5:")))
+                .andExpect(content().string(containsString("<downloadUrl>")))
+                .andExpect(content().string(containsString("<manifestUrl>")));
+    }
+
+    @Test
+    void odk2026FormList_UnauthenticatedDeviceGetsBasicChallenge() throws Exception {
+        mockMvc.perform(get("/v1/projects/{id}/formList", TEST_PROJECT_ID)
+                        .param("deviceID", "android:synthetic-2026-device")
+                        .accept(MediaType.TEXT_XML))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("X-OpenRosa-Version", "1.0"))
+                .andExpect(header().string("WWW-Authenticate", containsString("Basic realm=")));
+    }
+
+    @Test
+    void odk2026FormList_ProxyHeadersProducePublicHttpsUrls() throws Exception {
+        mockMvc.perform(get("/v1/projects/{id}/formList", TEST_PROJECT_ID)
+                        .param("deviceID", "android:synthetic-2026-device")
+                        .header("Authorization", validCredentials)
+                        .header("X-Forwarded-Proto", "https")
+                        .header("X-Forwarded-Host", "collector.example.test")
+                        .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(
+                        "https://collector.example.test/v1/projects/" + TEST_PROJECT_ID
+                                + "/forms/sample_form.xml")));
+    }
+
+    @Test
+    void odk2026SubmissionHead_WorksWithDeviceIdQuery() throws Exception {
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .head("/v1/projects/{id}/submission", TEST_PROJECT_ID)
+                        .param("deviceID", "android:synthetic-2026-device")
+                        .header("Authorization", validCredentials)
+                        .header("User-Agent", "ODK Collect v2026.4.0"))
+                .andExpect(status().isNoContent())
+                .andExpect(header().string("X-OpenRosa-Version", "1.0"))
+                .andExpect(header().string("X-OpenRosa-Accept-Content-Length", "104857600"));
+    }
+
+    @Test
+    void odk2026CompatibilityAlias_WithDeviceId_ReturnsFormList() throws Exception {
+        mockMvc.perform(get("/formList")
+                        .param("deviceID", "android:synthetic-2026-device")
+                        .header("Authorization", validCredentials)
+                        .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("<formID>sample_form</formID>")));
+    }
 }
