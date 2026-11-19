@@ -30,6 +30,13 @@ public class RecordWorkController {
         return service.ownedRecords(projectId);
     }
 
+    @GetMapping("/records/{sourceSubmissionId}/target-versions")
+    public List<RecordWorkService.TargetVersion> targetVersions(
+            @PathVariable UUID projectId, @PathVariable UUID sourceSubmissionId,
+            @RequestParam RecordWorkService.WorkType workType) {
+        return service.targetVersions(projectId, sourceSubmissionId, workType);
+    }
+
     @GetMapping("/records/{sourceSubmissionId}/timeline")
     public List<RecordWorkService.RelatedRecord> timeline(
             @PathVariable UUID projectId, @PathVariable UUID sourceSubmissionId) {
