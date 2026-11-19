@@ -673,4 +673,97 @@ class OpenRosaRealHttpIntegrationTest {
             "SELECT form_version_id FROM submissions WHERE instance_id = ?",
             UUID.class, amendedInstance));
     }
+
+    private UUID m3SeparateFollowUpForm() {
+        String followUpId = "m3_followup_form";
+        List<UUID> formIds = jdbcTemplate.query(
+            "SELECT id FROM xforms WHERE project_id = ? AND xmlns = ?",
+            (rs, row) -> rs.getObject("id", UUID.class), TEST_PROJECT_ID, followUpId);
+        UUID owner = ensureFixtureOwner();
+        UUID formId;
+        if (formIds.isEmpty()) {
+            formId = UUID.randomUUID();
+            String xform = SAMPLE_XFORM_XML.replace(TEST_FORM_XMLNS, followUpId)
+                .replace("M2 Synthetic HTTP Form", "Second Household Visit");
+            jdbcTemplate.update("""
+                    INSERT INTO xforms
+                    (id, title, description, xmlns, version, xml_content, is_published,
+                     is_active, is_encrypted, settings, metadata, published_at,
+                     project_id, created_by_id, updated_by_id, published_by_id,
+                     created_at, updated_at)
+                    VALUES (?, 'Second Household Visit', 'Independent periodic observation',
+                     ?, '1', ?, true, true, false, '{}', '{}', CURRENT_TIMESTAMP,
+                     ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, formId, followUpId, xform, TEST_PROJECT_ID, owner, owner, owner);
+            UUID versionId = UUID.randomUUID();
+            jdbcTemplate.update("""
+                    INSERT INTO form_versions
+                    (id, form_id, version, xml_content, xmlns, status,
+                     is_published, is_latest, settings, metadata,
+                     published_at, published_by, created_by, created_by_id, published_by_id,
+                     created_at, updated_at)
+                    VALUES (?, ?, '1', ?, ?, 'PUBLISHED', true, true, '{}', '{}',
+                     CURRENT_TIMESTAMP, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, versionId, formId, xform, followUpId, owner, owner, owner, owner);
+        } else {
+            formId = formIds.get(0);
+        }
+        UUID appUser = jdbcTemplate.queryForObject(
+            "SELECT id FROM app_users WHERE username = 'm2_synthetic_appuser'", UUID.class);
+        Integer assignments = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM app_user_projects
+            WHERE app_user_id = ? AND project_id = ? AND form_id = ? AND status = 'ACTIVE'
+            """, Integer.class, appUser, TEST_PROJECT_ID, formId);
+        if (assignments == null || assignments == 0) {
+            jdbcTemplate.update("""
+                    INSERT INTO app_user_projects
+                    (id, app_user_id, project_id, form_id, assigned_by,
+                     status, metadata, assigned_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 'ACTIVE', '{}',
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, UUID.randomUUID(), appUser, TEST_PROJECT_ID, formId, owner);
+        }
+        return jdbcTemplate.queryForObject("""
+            SELECT id FROM form_versions WHERE form_id = ? AND version = '1'
+            """, UUID.class, formId);
+    }
+
+    @Test
+    void m3FollowUpMayUseDifferentAssignedQuestionnaireButAmendmentMayNot() throws Exception {
+        UUID targetVersion = m3SeparateFollowUpForm();
+        String originalInstance = "uuid:" + UUID.randomUUID();
+        var original = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", originalInstance, null, "Initial census form")), null);
+        assertEquals(201, original.statusCode(), original.body());
+        UUID originalId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, originalInstance);
+
+        var illegalAmendment = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(originalId, targetVersion, "AMENDMENT", null,
+                "invalid-cross-form-" + UUID.randomUUID()), null);
+        assertEquals(400, illegalAmendment.statusCode());
+
+        String visitKey = "revisit-different-form-" + UUID.randomUUID();
+        var visit = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(originalId, targetVersion, "FOLLOW_UP", visitKey,
+                "visit-" + UUID.randomUUID()), null);
+        assertEquals(201, visit.statusCode(), visit.body());
+        String taskId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(visit.body()).get("id").asText();
+
+        String newInstance = "uuid:" + UUID.randomUUID();
+        String xml = m3Xml("1", newInstance, null, "Periodic household observation")
+            .replace(TEST_FORM_XMLNS, "m3_followup_form");
+        var recordedVisit = sendM3("POST", projectBase + "/submission", multipartM3(xml), taskId);
+        assertEquals(201, recordedVisit.statusCode(), recordedVisit.body());
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM record_links
+            WHERE source_submission_id = ? AND link_type = 'FOLLOW_UP'
+            """, Integer.class, originalId));
+        assertNotEquals(
+            jdbcTemplate.queryForObject("SELECT form_id FROM submissions WHERE id = ?",
+                UUID.class, originalId),
+            jdbcTemplate.queryForObject("SELECT form_id FROM submissions WHERE instance_id = ?",
+                UUID.class, newInstance));
+    }
 }
