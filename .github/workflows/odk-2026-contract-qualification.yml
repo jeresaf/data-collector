@@ -1,0 +1,41 @@
+name: ODK 2026 OpenRosa Contract Qualification
+
+on:
+  push:
+    branches:
+      - codex/odk-2026-openrosa-qualification
+      - codex/m2-odk2026-integration-gate
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-odk-contract:
+    name: Focused ODK 2026 OpenRosa compatibility tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Check out contract branch
+        uses: actions/checkout@v4
+      - name: Java 17 and Maven
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - name: Run ODK 2026 focused contract tests
+        run: |
+          mvn -B -ntp -Dtest='OpenRosaBasicAuthIntegrationTest#odk2026*' test
+      - name: Upload focused test evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: odk-2026-openrosa-surefire
+          path: backend/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 14
