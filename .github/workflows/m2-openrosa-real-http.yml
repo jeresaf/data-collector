@@ -1,0 +1,42 @@
+name: M2 OpenRosa Real HTTP Smoke
+
+on:
+  push:
+    branches:
+      - codex/m2-odk2026-integration-gate
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m2-real-http-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  loopback-http:
+    name: M2 actual HTTP (synthetic project, transient H2)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - name: HTTP discovery through multipart submission and duplicate retry
+        run: |
+          mvn -B -ntp -Dtest='OpenRosaRealHttpIntegrationTest,OpenRosaBasicAuthIntegrationTest#odk2026*' test
+      - name: Publish Surefire evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m2-real-http-surefire
+          path: backend/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 14
