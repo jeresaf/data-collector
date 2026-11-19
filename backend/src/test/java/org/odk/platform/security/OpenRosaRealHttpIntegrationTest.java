@@ -509,4 +509,168 @@ class OpenRosaRealHttpIntegrationTest {
             "SELECT COUNT(*) FROM submissions WHERE instance_id = ?", Integer.class, instanceId);
         assertEquals(1, afterRetry, "Retry must not insert a second submission");
     }
+
+    private UUID m3VersionTwo() {
+        UUID formId = jdbcTemplate.queryForObject(
+            "SELECT id FROM xforms WHERE project_id = ? AND xmlns = ?",
+            UUID.class, TEST_PROJECT_ID, TEST_FORM_XMLNS);
+        List<UUID> present = jdbcTemplate.query(
+            "SELECT id FROM form_versions WHERE form_id = ? AND version = '2'",
+            (rs, row) -> rs.getObject("id", UUID.class), formId);
+        if (!present.isEmpty()) return present.get(0);
+        UUID id = UUID.randomUUID();
+        UUID owner = ensureFixtureOwner();
+        String xml = SAMPLE_XFORM_XML
+            .replace("version=\"1\"", "version=\"2\"")
+            .replace("<meta><instanceID/></meta><name/>",
+                    "<meta><instanceID/><deprecatedID/></meta><name/><followUpNote/>")
+            .replace("</h:body>",
+                    "<input ref=\"/data/followUpNote\"><label>Visit notes</label></input></h:body>");
+        jdbcTemplate.update("""
+                INSERT INTO form_versions
+                (id, form_id, version, xml_content, xmlns,
+                 status, is_published, is_latest, settings, metadata,
+                 published_at, published_by, created_by, created_by_id,
+                 published_by_id, created_at, updated_at)
+                VALUES (?, ?, '2', ?, ?,
+                 'PUBLISHED', true, false, '{}', '{}',
+                 CURRENT_TIMESTAMP, ?, ?, ?, ?,
+                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, id, formId, xml, TEST_FORM_XMLNS, owner, owner, owner, owner);
+        return id;
+    }
+
+    private String m3Xml(String version, String instanceId, String deprecatedId, String name) {
+        String meta = "<meta><instanceID>" + instanceId + "</instanceID>"
+            + (deprecatedId == null ? "" : "<deprecatedID>" + deprecatedId + "</deprecatedID>")
+            + "</meta>";
+        return "<data id=\"m2_http_form\" version=\"" + version + "\">"
+            + meta + "<name>" + name + "</name>"
+            + ("2".equals(version) ? "<followUpNote>synthetic note</followUpNote>" : "")
+            + "</data>";
+    }
+
+    private String multipartM3(String xml) {
+        return "--m3Boundary\r\nContent-Disposition: form-data; "
+                + "name=\"xml_submission_file\"; filename=\"record.xml\"\r\n"
+                + "Content-Type: text/xml\r\n\r\n" + xml
+                + "\r\n--m3Boundary--\r\n";
+    }
+
+    private HttpResponse<String> sendM3(String method, String url, String body, String workId) throws Exception {
+        HttpRequest.Builder request = HttpRequest.newBuilder(localUri(url))
+            .timeout(Duration.ofSeconds(20))
+            .header("Authorization", authorization);
+        if (workId != null) request.header("X-DataCollector-Work-Item-Id", workId);
+        if ("POST".equals(method)) {
+            boolean multipart = url.contains("/submission");
+            request.header("Content-Type",
+                multipart ? "multipart/form-data; boundary=m3Boundary" : "application/json");
+            request.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        } else {
+            request.GET();
+        }
+        return client.send(request.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    private String m3CreateWork(UUID source, UUID targetVersion, String kind,
+                                String visitKey, String requestId) {
+        return "{\"sourceSubmissionId\":\"" + source + "\","
+            + "\"targetFormVersionId\":\"" + targetVersion + "\","
+            + "\"workType\":\"" + kind + "\","
+            + "\"clientRequestId\":\"" + requestId + "\","
+            + "\"visitKey\":" + (visitKey == null ? "null" : "\"" + visitKey + "\"") + "}";
+    }
+
+    @Test
+    void m3NewSecondVisitIsNewSubmissionAndNeverReplacesVisitOne() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String firstInstance = "uuid:" + UUID.randomUUID();
+        var first = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", firstInstance, null, "Household at Visit One")), null);
+        assertEquals(201, first.statusCode(), first.body());
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, firstInstance);
+        String sourceXml = jdbcTemplate.queryForObject(
+            "SELECT xml_content FROM submissions WHERE id = ?", String.class, sourceId);
+
+        String requestId = "visit-" + UUID.randomUUID();
+        String visitKey = "2026-Q4-second-visit-" + UUID.randomUUID();
+        String payload = m3CreateWork(sourceId, targetVersion, "FOLLOW_UP", visitKey, requestId);
+        var created = sendM3("POST", projectBase + "/record-work-items", payload, null);
+        assertEquals(201, created.statusCode(), created.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(created.body()).get("id").asText();
+
+        var retriedTask = sendM3("POST", projectBase + "/record-work-items", payload, null);
+        assertEquals(201, retriedTask.statusCode());
+        assertEquals(workId, new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(retriedTask.body()).get("id").asText());
+
+        var preparation = sendM3("GET",
+            projectBase + "/record-work-items/" + workId + "/prepare", null, null);
+        assertEquals(200, preparation.statusCode(), preparation.body());
+        assertTrue(preparation.body().contains("WITHOUT deprecatedID"));
+        assertTrue(preparation.body().contains("mappingApprovalRequired"));
+        assertTrue(preparation.body().contains("version=\\\"2\\\""));
+
+        String secondInstance = "uuid:" + UUID.randomUUID();
+        var second = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("2", secondInstance, null, "Household at Visit Two")), workId);
+        assertEquals(201, second.statusCode(), second.body());
+        assertEquals(sourceXml, jdbcTemplate.queryForObject(
+            "SELECT xml_content FROM submissions WHERE id = ?", String.class, sourceId));
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM record_links
+            WHERE source_submission_id = ? AND link_type = 'FOLLOW_UP'
+            """, Integer.class, sourceId));
+        assertEquals(0, jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM submission_versions WHERE submission_id = ?",
+            Integer.class, sourceId));
+
+        // A malicious second completion with a different instance ID must roll
+        // the new submission back, not create another linked visit.
+        String invalidInstance = "uuid:" + UUID.randomUUID();
+        var retry = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("2", invalidInstance, null, "Duplicate second visit")), workId);
+        assertEquals(409, retry.statusCode(), retry.body());
+        assertEquals(0, jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM submissions WHERE instance_id = ?",
+            Integer.class, invalidInstance));
+    }
+
+    @Test
+    void m3AmendmentOnPublishedVersionTwoPreservesVersionOneHistory() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String firstInstance = "uuid:" + UUID.randomUUID();
+        var initial = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", firstInstance, null, "Prior answers")), null);
+        assertEquals(201, initial.statusCode(), initial.body());
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, firstInstance);
+        UUID sourceVersion = jdbcTemplate.queryForObject(
+            "SELECT form_version_id FROM submissions WHERE id = ?", UUID.class, sourceId);
+        String payload = m3CreateWork(sourceId, targetVersion, "AMENDMENT", null,
+            "amend-" + UUID.randomUUID());
+        var created = sendM3("POST", projectBase + "/record-work-items", payload, null);
+        assertEquals(201, created.statusCode(), created.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(created.body()).get("id").asText();
+
+        String amendedInstance = "uuid:" + UUID.randomUUID();
+        var replacement = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("2", amendedInstance, firstInstance, "Corrected answers")), workId);
+        assertEquals(201, replacement.statusCode(), replacement.body());
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM record_links
+            WHERE source_submission_id = ? AND link_type = 'AMENDMENT'
+            """, Integer.class, sourceId));
+        assertEquals(sourceVersion, jdbcTemplate.queryForObject("""
+            SELECT source_form_version_id FROM submission_versions
+            WHERE submission_id = ? ORDER BY created_at DESC LIMIT 1
+            """, UUID.class, sourceId));
+        assertEquals(targetVersion, jdbcTemplate.queryForObject(
+            "SELECT form_version_id FROM submissions WHERE instance_id = ?",
+            UUID.class, amendedInstance));
+    }
 }
