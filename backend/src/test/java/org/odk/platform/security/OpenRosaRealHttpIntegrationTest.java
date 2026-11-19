@@ -784,4 +784,42 @@ class OpenRosaRealHttpIntegrationTest {
             "SELECT COUNT(*) FROM submissions WHERE instance_id = ?",
             Integer.class, instance));
     }
+
+    @Test
+    void m3OtherEnumeratorCannotDownloadOrAmendARecordTheyDoNotOwn() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String firstInstance = "uuid:" + UUID.randomUUID();
+        var initial = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", firstInstance, null, "Private household answers")), null);
+        assertEquals(201, initial.statusCode());
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, firstInstance);
+        UUID owner = ensureFixtureOwner();
+        UUID otherUser = ensureAppUser("m3_other_enumerator", "synthetic-test-only-credential");
+        UUID formId = jdbcTemplate.queryForObject(
+            "SELECT id FROM xforms WHERE project_id = ? AND xmlns = ?",
+            UUID.class, TEST_PROJECT_ID, TEST_FORM_XMLNS);
+        ensureAppUserAssignment(otherUser, owner, formId);
+
+        String otherAuth = "Basic " + Base64.getEncoder().encodeToString(
+            "m3_other_enumerator:synthetic-test-only-credential".getBytes(StandardCharsets.UTF_8));
+        HttpRequest.Builder prepare = HttpRequest.newBuilder(
+            localUri(projectBase + "/records")).header("Authorization", otherAuth).GET();
+        var records = client.send(prepare.build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, records.statusCode());
+        assertFalse(records.body().contains(firstInstance),
+            "An assigned enumerator cannot enumerate a different enumerator's household records");
+
+        String payload = m3CreateWork(sourceId, targetVersion, "AMENDMENT", null,
+            "unauthorized-" + UUID.randomUUID());
+        HttpRequest forbiddenCreate = HttpRequest.newBuilder(
+                localUri(projectBase + "/record-work-items"))
+            .header("Authorization", otherAuth)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(payload))
+            .build();
+        var denial = client.send(forbiddenCreate, HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, denial.statusCode(),
+            "Records outside the operator's permitted ownership should not be disclosed");
+    }
 }
