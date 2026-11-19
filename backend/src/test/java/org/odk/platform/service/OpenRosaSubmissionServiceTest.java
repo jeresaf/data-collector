@@ -52,6 +52,7 @@ class OpenRosaSubmissionServiceTest {
     @Mock SubmissionPersistenceService persistence;
     @Mock SubmissionAttachmentService attachments;
     @Mock SubmissionReplacementService replacements;
+    @Mock RecordWorkService recordWork;
     @Mock AuditService audit;
     @Mock HttpServletRequest request;
 
