@@ -2,8 +2,10 @@ package org.odk.platform.openrosa;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.odk.platform.domain.AppUser;
 import org.odk.platform.domain.Project;
 import org.odk.platform.domain.XForm;
+import org.odk.platform.repository.AppUserProjectRepository;
 import org.odk.platform.repository.ProjectRepository;
 import org.odk.platform.repository.XFormRepository;
 import org.odk.platform.security.CurrentUserService;
@@ -16,7 +18,6 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -33,11 +34,14 @@ class OpenRosaAuthorizationLookupFailureTest {
 
     private OpenRosaController controller;
     private CurrentUserService currentUserService;
+    private AppUserProjectRepository appUserProjects;
 
     @BeforeEach
     void setUp() {
         controller = new OpenRosaController();
         currentUserService = mock(CurrentUserService.class);
+        appUserProjects = mock(AppUserProjectRepository.class);
+        ReflectionTestUtils.setField(controller, "appUserProjectRepository", appUserProjects);
 
         ProjectRepository projects = mock(ProjectRepository.class);
         Project activeProject = mock(Project.class);
@@ -83,4 +87,47 @@ class OpenRosaAuthorizationLookupFailureTest {
                 PROJECT_ID, "sample_form", "choices.csv",
                 new MockHttpServletRequest(), new MockHttpServletResponse()).getStatusCode());
     }
+    /**
+     * A successfully authenticated mobile principal is not sufficient when
+     * its current form-assignment repository cannot be queried.
+     */
+    private void simulateAssignmentLookupFailure() {
+        AppUser appUser = mock(AppUser.class);
+        UUID appUserId = UUID.fromString("00000000-0000-0000-0000-000000000043");
+        when(appUser.getId()).thenReturn(appUserId);
+        when(currentUserService.getCurrentUser())
+                .thenReturn(Optional.of(appUser));
+        when(appUserProjects.findAssignedFormIdsByAppUserIdAndProjectId(appUserId, PROJECT_ID))
+                .thenThrow(new IllegalStateException("synthetic assignment repository failure"));
+    }
+
+    @Test
+    void formListMustFailClosedWhenAssignmentLookupThrows() {
+        simulateAssignmentLookupFailure();
+        assertEquals(HttpStatus.FORBIDDEN, controller.formList(PROJECT_ID,
+                new MockHttpServletRequest(), new MockHttpServletResponse()).getStatusCode());
+    }
+
+    @Test
+    void formXmlMustFailClosedWhenAssignmentLookupThrows() {
+        simulateAssignmentLookupFailure();
+        assertEquals(HttpStatus.FORBIDDEN, controller.formDownload(PROJECT_ID, "sample_form",
+                new MockHttpServletRequest(), new MockHttpServletResponse()).getStatusCode());
+    }
+
+    @Test
+    void manifestMustFailClosedWhenAssignmentLookupThrows() {
+        simulateAssignmentLookupFailure();
+        assertEquals(HttpStatus.FORBIDDEN, controller.formManifest(PROJECT_ID, "sample_form",
+                new MockHttpServletRequest(), new MockHttpServletResponse()).getStatusCode());
+    }
+
+    @Test
+    void attachmentMustFailClosedWhenAssignmentLookupThrows() {
+        simulateAssignmentLookupFailure();
+        assertEquals(HttpStatus.FORBIDDEN, controller.attachmentDownload(
+                PROJECT_ID, "sample_form", "choices.csv",
+                new MockHttpServletRequest(), new MockHttpServletResponse()).getStatusCode());
+    }
+
 }
