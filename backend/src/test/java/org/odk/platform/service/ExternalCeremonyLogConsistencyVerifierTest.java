@@ -32,7 +32,7 @@ class ExternalCeremonyLogConsistencyVerifierTest {
     private static final String LOG_KEY = "separate-external-log-key-v1";
     private static final String ATTESTOR_KEY = "separate-external-attestor-v1";
 
-    private record Scenario(
+    record Scenario(
             KeyPair attestor, KeyPair log,
             ExternalCeremonyLogConsistencyVerifier.CurrentInclusion current,
             ExternalCeremonyLogConsistencyVerifier.HistoricalAnchor historical,
@@ -46,11 +46,11 @@ class ExternalCeremonyLogConsistencyVerifierTest {
         return HexFormat.of().formatHex(bytes);
     }
 
-    private static byte[] sha256(byte[] bytes) throws Exception {
+    static byte[] sha256(byte[] bytes) throws Exception {
         return MessageDigest.getInstance("SHA-256").digest(bytes);
     }
 
-    private static String sign(KeyPair keys, byte[] bytes) throws Exception {
+    static String sign(KeyPair keys, byte[] bytes) throws Exception {
         Signature signer = Signature.getInstance("Ed25519");
         signer.initSign(keys.getPrivate());
         signer.update(bytes);
@@ -161,7 +161,7 @@ class ExternalCeremonyLogConsistencyVerifierTest {
                 ExternalCeremonyCheckpointVerifier.canonicalCheckpointBytes(checkpoint)));
     }
 
-    private static Scenario scenario(int oldSize, int newSize) throws Exception {
+    static Scenario scenario(int oldSize, int newSize) throws Exception {
         if (oldSize < 1 || oldSize >= newSize || newSize < 2)
             throw new IllegalArgumentException("Strict prefix required");
         KeyPair attestor = ephemeral();
