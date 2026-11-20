@@ -2,13 +2,13 @@
 
 **Snapshot:** 20 November 2026  
 **Authority:** [Rebaselined U01–U09 roadmap](ROADMAP_2026_REBASELINE.md) and historical GitHub PR metadata.  
-**This is a traceability inventory, NOT a claim of code merge, feature acceptance or release readiness.** Existing legacy PR names are intentionally preserved. This count excludes the standalone documentation-only roadmap [Draft PR #23](https://github.com/jeresaf/data-collector/pull/23), which was opened during this rebaseline; thus the backend can show 23 open Draft PRs when #23 itself is counted.
+**This is a traceability inventory, NOT a claim of code merge, feature acceptance or release readiness.** Existing legacy PR names are intentionally preserved. This count excludes the standalone documentation-only roadmap [Draft PR #23](https://github.com/jeresaf/data-collector/pull/23). New security remediation [Draft PR #25](https://github.com/jeresaf/data-collector/pull/25) is tracked separately from legacy #1–#22 but included in the current feature-Draft count.
 
 ## Current backlog accounting
 
-- **Backend `jeresaf/data-collector`:** 22 open Draft PRs, #1–#22.
+- **Backend `jeresaf/data-collector`:** **23 feature Draft PRs**: original #1–#22 plus U01-T03 [#25](https://github.com/jeresaf/data-collector/pull/25). Documentation PR #23 is separate.
 - **Android `jeresaf/collect`:** 22 open Draft modernization PRs, #16–#37.
-- **Total:** 44 open Draft modernization PRs. No PR in these two groups was merged as of the snapshot.
+- **Total:** **45 feature Draft PRs** (23 backend + 22 Android), none merged. The previously recorded **44** was accurate before U01-T03 PR #25 was opened on 20 Nov; documentation PR #23 is excluded.
 - Android #1–#15 are **older merged legacy PRs**, not part of the open modernization stack. In particular, Android [#15](https://github.com/jeresaf/collect/pull/15) ("Add admin unit refresh and access revocation logout") is relevant to U05, but **post-forward-port parity must be revalidated**.
 - All dates/statuses here are a point-in-time snapshot. Re-check GitHub before any branch rebase/merge.
 
@@ -38,10 +38,13 @@
 | [#20](https://github.com/jeresaf/data-collector/pull/20) | U07 | `codex/m3d4c2b2b2c1-log-consistency-proof` | `codex/m3d4c2b2b2b-checkpoint-inclusion-proof` | Draft (not merged) |
 | [#21](https://github.com/jeresaf/data-collector/pull/21) | U07 | `codex/m3d4c2b2b2c2-dual-witness-checkpoint` | `codex/m3d4c2b2b2c1-log-consistency-proof` | Draft (not merged) |
 | [#22](https://github.com/jeresaf/data-collector/pull/22) | U07 | `codex/m3d4c2b2b2c3-restricted-witness-retrieval` | `codex/m3d4c2b2b2c2-dual-witness-checkpoint` | Draft (not merged) |
+| [#25](https://github.com/jeresaf/data-collector/pull/25) | **U01-T03** | `codex/u01-t03-mobile-principal-isolation` | `codex/m3d4c2b2b2c3-restricted-witness-retrieval` | **Focused H2/PG15 PASS; broad CI pending; Draft** |
 
 **Backend topology:** #1 (OpenRosa compatibility) targets `main` independently, #2 (R0 browser fixture reconciliation) also targets `main`, and #3–#22 follow the successive #2–#21 Draft branch chain. **Verified GitHub compare:** #1 → Draft tip **diverged** (159 ahead / 4 behind), #2 → Draft tip **ahead** (156 ahead / 0 behind). Although #1 test/contract payload is in the tip, #1 is not its ancestor. See [proposed integration plan](U01_T04_PROPOSED_INTEGRATION_ORDER.md). The backend current tip is `codex/m3d4c2b2b2c3-restricted-witness-retrieval`; GitHub compare against `main` reported **159 ahead, 0 behind**, with 94 changed files visible in the compare. The branch is **NOT merged**, and #1's independent changes need explicit comparison/integration.
 
 **Initial U01-T03 overlap result:** PR #1 and latest Draft tip have **identical** `OpenRosaBasicAuthIntegrationTest.java` and `ODK_COLLECT_2026_COMPATIBILITY_CONTRACT.md` Git blob SHAs, including all five added `odk2026*` HTTP tests. The tip's qualification workflow differs from PR #1 only by an extra branch trigger. **Do not mechanically merge/apply PR #1 a second time**; retain provenance and review commit ancestry/patch IDs before resolving this parallel Draft. Full note in [U01 integration qualification](U01_INTEGRATION_QUALIFICATION.md).
+
+**Latest U01-T03 security branch:** [Draft #25](https://github.com/jeresaf/data-collector/pull/25) builds on qualified #22; it changes **only** mobile principal identity, OpenRosa Basic lookup, and associated H2/real HTTP and PostgreSQL regression tests. Exact-head [focused qualification #44781486149](https://github.com/jeresaf/data-collector/actions/runs/44781486149) passed both H2 and PostgreSQL 15. Full quality gate is **pending** as of this ledger update. This is an added remediation branch, **not a merge into main**; source web/JWT and physical-client release gates remain.
 
 **Backend #22 exact-head qualification evidence:** SHA `007fd511270b02846ebcb853ca7340a9c726151e`; focused [H2 + PostgreSQL 15 workflow #44764143723](https://github.com/jeresaf/data-collector/actions/runs/44764143723) **SUCCESS**, broad [CI Quality Gate #44764142857](https://github.com/jeresaf/data-collector/actions/runs/44764142857) **SUCCESS**. This proves tests on that Draft tip only; no source-data transfer or real external witness fetch was enabled.
 
