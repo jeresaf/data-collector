@@ -1,0 +1,67 @@
+name: M3D4C1 Inactive Signed Mapping Grant Verification Qualification
+
+on:
+  push:
+    branches:
+      - codex/m3d4c1-signed-grant-verification-contract
+  pull_request:
+    branches:
+      - codex/m3d4b2b2b-native-schema-proof
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m3d4c1-signed-envelope-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-schema-h2:
+    name: Inactive Ed25519 grant contract HTTP on H2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpIntegrationTest,SubmissionReplacementServiceTest,StaticTypedMappingFieldPolicyTest,NativeTypedMappingSchemaProbeTest,SignedMappingGrantVerifierTest test
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3d4c1-h2-evidence
+          path: backend/target/surefire-reports/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  source-schema-postgres:
+    name: Inactive Ed25519 grant contract HTTP on PostgreSQL 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - run: docker info
+      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpPostgresIT,StaticTypedMappingFieldPolicyTest,NativeTypedMappingSchemaProbeTest,SignedMappingGrantVerifierTest test
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3d4c1-postgres-evidence
+          path: backend/target/surefire-reports/
+          retention-days: 14
+          if-no-files-found: ignore
