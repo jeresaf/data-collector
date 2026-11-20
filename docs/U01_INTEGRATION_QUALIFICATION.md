@@ -71,6 +71,16 @@ These behaviors were introduced/modified in **merged legacy Android PR #15**; th
 4. Recorded exact backend top SHA: `007fd511270b02846ebcb853ca7340a9c726151e`, with focused H2/PostgreSQL 15 and broad quality gates both **SUCCESS** (see crosswalk).
 5. Production Flyway V1/V2 must not change; V3–V7 additions on the Draft chain need **real historical production-schema migration rehearsal** and rollback, not just disposable Testcontainers.
 
+## U01-T03 initial backend PR #1 overlap audit
+
+**Evidence checked 20 November 2026:** compared actual GitHub blob SHA/content at backend PR #1 branch `codex/odk-2026-openrosa-qualification`, current stacked Draft tip `codex/m3d4c2b2b2c3-restricted-witness-retrieval`, and `main`.
+
+- `backend/src/test/java/org/odk/platform/security/OpenRosaBasicAuthIntegrationTest.java` has **the identical blob SHA `c7fccfbeacbb3a67e374ae4ca382d9dce5d72fd2`** in PR #1 and latest Draft tip. All five new `odk2026*` test methods introduced by PR #1 are present in the tip (and are absent in the older `main` blob `24b4ce41...`).
+- `docs/ODK_COLLECT_2026_COMPATIBILITY_CONTRACT.md` is also **byte-identical** (blob SHA `3d3e4275cfe52b934e7e40f83c8328da319d372a`) in PR #1 and the latest Draft tip.
+- `.github/workflows/odk-2026-contract-qualification.yml` differs only by an **additional `codex/m2-odk2026-integration-gate` push trigger** in the tip; the test command and other workflow steps are unchanged.
+
+**Finding:** PR #1 is separate in PR topology but its functional source/tests/doc payload has already been reproduced in the stacked tip. This is a **duplicate-change integration hazard**, not proof that the entire PR stack is ready to merge. U01-T03 should mark these three overlapping files as **already represented in candidate integration tip**, compare commit ancestry/patch IDs, and avoid reapplying PR #1 mechanically. The owner must still review how to retain PR #1 provenance and closure before any merge/close/rebase action.
+
 ## Android integration graph
 
 1. Legacy customization reference is `ubos-local`, with older user-requested changes; the new modernization root is `codex/odk-2026-forward-port` and must be tied to an **exact upstream ODK 2026 commit/tag**.
