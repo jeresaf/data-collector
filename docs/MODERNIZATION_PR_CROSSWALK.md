@@ -72,6 +72,8 @@
 
 **Android topology:** #16's base `codex/odk-2026-forward-port` is an important upstream modernization root that itself is **not shown as a PR in the #16–#37 set**. #17–#37 form an extensive stacked Draft chain. The current tip is `codex/m4c2b3c3b3b-native-typed-value-proof`; compare against legacy `ubos-local` reported **5,803 ahead and 129 behind**. GitHub's compare returned 300 changed paths (API view may truncate at 300); the large ahead/behind comes from upstream ODK history plus custom work, and is **NOT** proof that precisely 129 custom features are missing.
 
+**Initial U01-T02 source evidence:** Compared original `ubos-local` with latest Android Draft tip at old admin-unit refresh paths. `OpenRosaUserFetcher.java`, `OpenRosaLoginSource.java`, `AdminUnitsTask.java`, and `AdminUnitDetails.java` exist in old source but are absent at those paths in the new tip. `ProjectSettingsDialog.kt`, `MainMenuActivity.kt` and the project-settings layout no longer contain the old refresh/periodic-admin-unit handlers or refresh button. This is a **verified previous-code-path gap**, **not definitive proof** that the feature was not replaced elsewhere. See [U01 evidence](U01_INTEGRATION_QUALIFICATION.md).
+
 **Mandatory next audit:** Compare the actual `ubos-local` patch family and resource/assets/security/intent manifests against modernized source at file/symbol/test level. For each old customization record **PRESERVED / REIMPLEMENTED / RETIRED_WITH_APPROVAL / MISSING / UNVERIFIED**, with code and acceptance evidence. Also establish the authoritative ODK 2026 upstream commit/tag pinned by the root branch, app package/provider identity, and how ODK upstream updates are replayed safely.
 
 ## Functional acceptance state by modernization milestone
@@ -82,7 +84,7 @@
 | **U02** | Android #16–#17; backend #1–#3 Draft | **UNINTEGRATED**; ODK 2026 and generic URL build/actual-server integration not yet accepted |
 | **U03** | Backend #4–#6, Android #18–#20 Draft | **UNINTEGRATED**; versioned amendment/FOLLOW_UP E2E not yet accepted |
 | **U04** | Android #18–#20 and #25–#32 Draft | **UNINTEGRATED**; secure native edit/restart/repeat/media full acceptance not yet completed |
-| **U05** | Legacy Android #15 merged before forward-port; original M18 reference data | **NEEDS REQUALIFICATION**; no verified 2026 periodic refresh and visit workflow |
+| **U05** | Legacy Android #15 merged before forward-port; original M18 reference data | **RECONCILIATION GAP**: original seven refresh-related classes/handlers/layout locations are absent or changed at expected paths in 2026 Draft tip; equivalent replacement not yet proven |
 | **U06** | Backend #7–#12, Android #21–#24 and #33–#37 Draft | **PARTIAL / FAIL-CLOSED**; no general authorized positive cross-version transfer |
 | **U07** | Backend #13–#22 Draft | **CI-QUALIFIED INERT CONTRACTS ONLY**; no production independent trust root, actual signed log publication, trusted-key activation or positive grant |
 | **U08** | Original OpenRosa submission exists; new protected work integration remains unapproved | **NOT END-TO-END ACCEPTED** |
