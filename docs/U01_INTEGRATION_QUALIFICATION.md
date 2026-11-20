@@ -45,6 +45,24 @@ All entries below currently **UNVERIFIED**, not “already migrated”:
 | Submission isolation | Is ordinary OpenRosa submission unable to bypass protected first-save, source authorization, field rules and final-work transaction? |
 | Web/app identity separation | Can JWT Web Users never become mobile App Users by name/email collisions or wrong project role? |
 
+## U01-T02 initial source-level finding: legacy administration-unit refresh
+
+**Evidence checked 20 November 2026:** file contents (or verified absence at the exact path) in `jeresaf/collect` refs `ubos-local` and `codex/m4c2b3c3b3b-native-typed-value-proof`. This is a source-location comparison, not a full-repository symbol index or functional E2E proof.
+
+| Legacy file / behavior | `ubos-local` evidence | Latest Draft tip evidence | Verdict |
+|---|---|---|---|
+| `openrosa/OpenRosaUserFetcher.java` | Exists; `getAdminUnitXML`, `fetchAdminUnits`, `httpInterface.fetchUnits` | Exact path not found | **UNVERIFIED replacement / missing legacy path** |
+| `openrosa/OpenRosaLoginSource.java` | Exists; `fetchAdminUnits`, `/api/v1/adminunits` URL builder | Exact path not found | **UNVERIFIED replacement / missing legacy path** |
+| `tasks/AdminUnitsTask.java` | Exists; asynchronous fetch and listener callback | Exact path not found | **UNVERIFIED replacement / missing legacy path** |
+| `login/AdminUnitDetails.java` | Exists; district/sub-county/village/parish/message structure | Exact path not found | **UNVERIFIED replacement / missing legacy path** |
+| `projects/ProjectSettingsDialog.kt` | Includes `refreshAdminUnitsButton`, `AdminUnitsTask`, `adminUnitsComplete`, access-revocation handling | File exists, different blob; no matching admin-unit/refresh/revocation handlers in file | **PARITY GAP AT PREVIOUS UI LOCATION** |
+| `mainmenu/MainMenuActivity.kt` | Includes periodic `adminUnitsCheck` and `refreshAdminUnits` | File exists, different blob; no matching admin-unit scheduler or callback in file | **PARITY GAP AT PREVIOUS UI LOCATION** |
+| `res/layout/project_settings_dialog_layout.xml` | Contains `refresh_admin_units_button` | File exists, no matching refresh control identifier | **PARITY GAP AT PREVIOUS UI LOCATION** |
+
+These behaviors were introduced/modified in **merged legacy Android PR #15**; the 2026 forward-port does **not automatically inherit** these original file paths. The evidence is sufficient to **block claiming U05 reference-refresh parity**, but is NOT sufficient to assert that no equivalent modern module exists elsewhere.
+
+**U01-T02 next investigation:** inspect the new 2026 identity/login, project settings, dataset fetch and profile-refresh flow; determine whether an alternative service replaces these old APIs. If none does, record a **MISSING** outcome and implement a *generic*, form-independent versioned reference-data refresh under **U05-T01**, with actor-scoped auth, server-controlled URL and offline cache/revocation tests. Do not paste old Java classes into new ODK without reviewing API/auth compatibility.
+
 ## Backend integration graph
 
 1. Root `main` has an independently proposed OpenRosa compatibility Draft PR **#1**.
