@@ -946,4 +946,141 @@ class OpenRosaRealHttpIntegrationTest {
         assertEquals(404, denial.statusCode(),
             "Records outside the operator's permitted ownership should not be disclosed");
     }
+    @Test
+    void m3d4aOwnedReadyAmendmentReturnsExactHashesButNeverGrantsTransfer() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String originalInstance = "uuid:" + UUID.randomUUID();
+        var initial = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", originalInstance, null,
+                "M3D4A PRIVATE SYNTHETIC HOUSEHOLD ANSWER")), null);
+        assertEquals(201, initial.statusCode(), initial.body());
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, originalInstance);
+        var created = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(sourceId, targetVersion, "AMENDMENT", null,
+                "m3d4a-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode(), created.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(created.body()).get("id").asText();
+
+        String url = projectBase + "/record-work-items/" + workId + "/typed-mapping-authority";
+        var response = sendM3("GET", url, null, null);
+        assertEquals(200, response.statusCode(), response.body());
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().readTree(response.body());
+        assertEquals(workId, json.get("workId").asText());
+        assertEquals(sourceId.toString(), json.get("sourceSubmissionId").asText());
+        assertEquals(targetVersion.toString(), json.get("targetFormVersionId").asText());
+        assertEquals("DENIED_TRUSTED_RULE_ISSUER_NOT_CONFIGURED", json.get("state").asText());
+        assertEquals(0, json.get("approvedPaths").size());
+        assertFalse(json.get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(json.get("canTransfer").asBoolean());
+        assertFalse(json.get("canSubmit").asBoolean());
+        assertTrue(json.get("sourceXmlSha256").asText().matches("[0-9a-f]{64}"));
+        assertTrue(json.get("sourceXFormSha256").asText().matches("[0-9a-f]{64}"));
+        assertTrue(json.get("targetXFormSha256").asText().matches("[0-9a-f]{64}"));
+        assertFalse(response.body().contains("PRIVATE SYNTHETIC HOUSEHOLD ANSWER"),
+            "Authority discovery must not expose raw source answers");
+        assertFalse(response.body().contains("<data"),
+            "Authority discovery must not expose raw XML or XForms");
+
+        var noAuth = send("GET", localUri(url), false, null, null);
+        assertEquals(401, noAuth.statusCode());
+
+        // No enumerator-controlled grant issuance API exists in 3B-4A.
+        var unauthorizedIssue = sendM3("POST", url, "{\"approvedPaths\":[\"/data/name\"]}", null);
+        assertTrue(unauthorizedIssue.statusCode() == 405 ||
+            unauthorizedIssue.statusCode() == 404,
+            "A normal app account must not be able to mint mapping grants");
+    }
+
+    @Test
+    void m3d4aFollowUpAndMissingHistoricalSchemaAreNeverAuthorized() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String sourceInstance = "uuid:" + UUID.randomUUID();
+        var initial = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", sourceInstance, null, "Independent source")), null);
+        assertEquals(201, initial.statusCode(), initial.body());
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, sourceInstance);
+
+        var followUp = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(sourceId, targetVersion, "FOLLOW_UP",
+                "visit-" + UUID.randomUUID(), "m3d4a-visit-" + UUID.randomUUID()), null);
+        assertEquals(201, followUp.statusCode(), followUp.body());
+        String followId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(followUp.body()).get("id").asText();
+        var deniedVisit = sendM3("GET", projectBase + "/record-work-items/" +
+            followId + "/typed-mapping-authority", null, null);
+        assertEquals(200, deniedVisit.statusCode(), deniedVisit.body());
+        var visitJson = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(deniedVisit.body());
+        assertEquals("DENIED_INDEPENDENT_VISIT", visitJson.get("state").asText());
+        assertEquals(0, visitJson.get("approvedPaths").size());
+
+        // Simulate a separate imported legacy record without a known original
+        // form version. This test never changes production data.
+        String unknownVersionInstance = "uuid:" + UUID.randomUUID();
+        var legacy = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", unknownVersionInstance, null, "Legacy record")), null);
+        assertEquals(201, legacy.statusCode(), legacy.body());
+        UUID legacyId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?",
+            UUID.class, unknownVersionInstance);
+        jdbcTemplate.update("UPDATE submissions SET form_version_id = NULL WHERE id = ?",
+            legacyId);
+        var amendment = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(legacyId, targetVersion, "AMENDMENT", null,
+                "m3d4a-legacy-" + UUID.randomUUID()), null);
+        assertEquals(201, amendment.statusCode(), amendment.body());
+        String amendmentId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(amendment.body()).get("id").asText();
+        var deniedLegacy = sendM3("GET", projectBase + "/record-work-items/" +
+            amendmentId + "/typed-mapping-authority", null, null);
+        assertEquals(200, deniedLegacy.statusCode(), deniedLegacy.body());
+        var legacyJson = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(deniedLegacy.body());
+        assertEquals("DENIED_HISTORICAL_SCHEMA_UNAVAILABLE",
+            legacyJson.get("state").asText());
+        assertTrue(legacyJson.get("sourceXFormSha256").isNull());
+        assertFalse(legacyJson.get("canTransfer").asBoolean());
+    }
+
+    @Test
+    void m3d4aUnauthorizedOrMissingWorkDoesNotDiscloseMappingMetadata() throws Exception {
+        var missing = sendM3("GET", projectBase + "/record-work-items/" +
+            UUID.randomUUID() + "/typed-mapping-authority", null, null);
+        assertEquals(404, missing.statusCode());
+
+        UUID targetVersion = m3VersionTwo();
+        String originalInstance = "uuid:" + UUID.randomUUID();
+        var initial = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", originalInstance, null, "Private mapping")), null);
+        assertEquals(201, initial.statusCode(), initial.body());
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, originalInstance);
+        var work = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(sourceId, targetVersion, "AMENDMENT", null,
+                "m3d4a-owner-" + UUID.randomUUID()), null);
+        assertEquals(201, work.statusCode(), work.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(work.body()).get("id").asText();
+
+        UUID other = ensureAppUser("m3d4a_other_enumerator", "synthetic-credential-only");
+        UUID owner = ensureFixtureOwner();
+        UUID form = jdbcTemplate.queryForObject(
+            "SELECT id FROM xforms WHERE project_id = ? AND xmlns = ?",
+            UUID.class, TEST_PROJECT_ID, TEST_FORM_XMLNS);
+        ensureAppUserAssignment(other, owner, form);
+        String alternateAuth = "Basic " + Base64.getEncoder().encodeToString(
+            "m3d4a_other_enumerator:synthetic-credential-only"
+                .getBytes(StandardCharsets.UTF_8));
+        var request = HttpRequest.newBuilder(localUri(projectBase +
+                "/record-work-items/" + workId + "/typed-mapping-authority"))
+            .header("Authorization", alternateAuth).GET().build();
+        var forbidden = client.send(request,
+            HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        assertEquals(404, forbidden.statusCode());
+        assertFalse(forbidden.body().contains("sourceXmlSha256"));
+    }
+
 }
