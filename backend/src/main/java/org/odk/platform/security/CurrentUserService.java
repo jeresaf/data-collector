@@ -24,8 +24,19 @@ public class CurrentUserService {
     public Optional<UserPrincipal> getCurrentUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication != null && authentication.isAuthenticated() && authentication.getPrincipal() instanceof UserDetails userDetails) {
+            if (userDetails instanceof MobileAppUserDetails mobile) {
+                // Never resolve a mobile login through the web-user table.
+                // Revalidate its current DB identity and account state for each request.
+                return appUserRepository.findById(mobile.appUserId())
+                        .filter(user -> user.getUsername().equals(mobile.getUsername()))
+                        .filter(user -> Boolean.TRUE.equals(user.getIsActive()))
+                        .map(user -> (UserPrincipal) user);
+            }
+
             String username = userDetails.getUsername();
-            
+
+            // Legacy web/JWT identity resolution. The production mobile Basic
+            // channel always produces MobileAppUserDetails above.
             // First try to find web user
             Optional<User> webUser = userRepository.findByUsername(username);
             if (webUser.isPresent()) {
@@ -48,6 +59,10 @@ public class CurrentUserService {
     public Optional<User> getCurrentWebUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication != null && authentication.isAuthenticated() && authentication.getPrincipal() instanceof UserDetails userDetails) {
+            if (userDetails instanceof MobileAppUserDetails) {
+                // A matching username is never enough to become a web user.
+                return Optional.empty();
+            }
             String username = userDetails.getUsername();
             return userRepository.findByUsername(username);
         }
