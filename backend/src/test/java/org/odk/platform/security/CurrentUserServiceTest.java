@@ -337,4 +337,51 @@ class CurrentUserServiceTest {
         // Assert
         assertFalse(result.isPresent());
     }
+
+    @Test
+    void mobilePrincipalWithSharedUsernameResolvesOnlyItsOwnAppUserId() {
+        UUID appId = UUID.randomUUID();
+        MobileAppUserDetails principal = new MobileAppUserDetails(
+                appId, "same-name", "encoded", true);
+        setAuthentication(new UsernamePasswordAuthenticationToken(
+                principal, null, principal.getAuthorities()));
+
+        AppUser app = AppUser.builder()
+                .id(appId).username("same-name").isActive(true).build();
+        when(appUserRepository.findById(appId)).thenReturn(Optional.of(app));
+        // Even if the same username exists in users, mobile principal cannot query it.
+        assertEquals(appId, currentUserService.getCurrentUser().orElseThrow().getId());
+        assertTrue(currentUserService.getCurrentWebUser().isEmpty());
+        verifyNoInteractions(userRepository);
+        verify(appUserRepository).findById(appId);
+    }
+
+    @Test
+    void mobilePrincipalFailsClosedAfterAppUserRevocation() {
+        UUID appId = UUID.randomUUID();
+        MobileAppUserDetails principal = new MobileAppUserDetails(
+                appId, "revoked-mobile", "encoded", true);
+        setAuthentication(new UsernamePasswordAuthenticationToken(
+                principal, null, principal.getAuthorities()));
+        when(appUserRepository.findById(appId)).thenReturn(Optional.of(
+                AppUser.builder().id(appId).username("revoked-mobile").isActive(false).build()));
+
+        assertTrue(currentUserService.getCurrentUser().isEmpty());
+        assertTrue(currentUserService.getCurrentWebUser().isEmpty());
+        verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void mobilePrincipalRejectsReusedIdUnderDifferentUsername() {
+        UUID appId = UUID.randomUUID();
+        MobileAppUserDetails principal = new MobileAppUserDetails(
+                appId, "old-mobile-name", "encoded", true);
+        setAuthentication(new UsernamePasswordAuthenticationToken(
+                principal, null, principal.getAuthorities()));
+        when(appUserRepository.findById(appId)).thenReturn(Optional.of(
+                AppUser.builder().id(appId).username("other-mobile-name").isActive(true).build()));
+
+        assertTrue(currentUserService.getCurrentUser().isEmpty());
+        verifyNoInteractions(userRepository);
+    }
 }
