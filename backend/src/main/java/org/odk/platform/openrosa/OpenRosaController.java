@@ -145,7 +145,10 @@ public class OpenRosaController {
                 }
             }
         } catch (Exception e) {
-            // User not authenticated or not an app user, return all published forms
+            // Never fall back to an unrestricted form list when identity or
+            // assignment resolution fails (for example, during revocation).
+            log.warn("OpenRosa formList authorization lookup failed", e);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
         StringBuilder xml = new StringBuilder();
@@ -208,7 +211,9 @@ public class OpenRosaController {
                 }
             }
         } catch (Exception e) {
-            // User not authenticated or not an app user, allow access
+            // An authorization lookup failure must not grant form/media access.
+            log.warn("OpenRosa form resource authorization lookup failed", e);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
         Optional<FormVersion> latestVersion = formVersionRepository.findLatestByFormId(form.getId());
@@ -266,7 +271,9 @@ public class OpenRosaController {
                 }
             }
         } catch (Exception e) {
-            // User not authenticated or not an app user, allow access
+            // An authorization lookup failure must not grant form/media access.
+            log.warn("OpenRosa form resource authorization lookup failed", e);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
         Optional<FormVersion> latestVersion = formVersionRepository.findLatestByFormId(form.getId());
@@ -406,7 +413,9 @@ public class OpenRosaController {
                 }
             }
         } catch (Exception e) {
-            // User not authenticated or not an app user, allow access
+            // An authorization lookup failure must not grant form/media access.
+            log.warn("OpenRosa form resource authorization lookup failed", e);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
         // Get the latest form version
