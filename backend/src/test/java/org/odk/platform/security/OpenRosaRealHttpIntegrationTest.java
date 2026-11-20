@@ -1144,6 +1144,54 @@ class OpenRosaRealHttpIntegrationTest {
                 WHERE id = ?
                 """, memberships.get(0));
         }
+        // The existing UserRepository JWT lookup INNER JOIN FETCHes both
+        // global user_roles and role_permissions. Supply a harmless synthetic
+        // login role+permission as fixture data, separate from the authoritative
+        // project_members PROJECT_MANAGER reviewer eligibility check.
+        String authRole = "M3D4B1_TEST_LOGIN_ROLE";
+        List<UUID> authRoles = jdbcTemplate.query(
+            "SELECT id FROM roles WHERE name = ?",
+            (rs, idx) -> rs.getObject("id", UUID.class), authRole);
+        UUID authRoleId = authRoles.isEmpty() ? UUID.randomUUID() : authRoles.get(0);
+        if (authRoles.isEmpty()) {
+            jdbcTemplate.update("""
+                INSERT INTO roles
+                (id, name, display_name, is_system, is_active, created_at, updated_at)
+                VALUES (?, ?, 'Synthetic test login role', FALSE, TRUE,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, authRoleId, authRole);
+        }
+        String authPermission = "M3D4B1_TEST_LOGIN_PERMISSION";
+        List<UUID> permissions = jdbcTemplate.query(
+            "SELECT id FROM permissions WHERE name = ?",
+            (rs, idx) -> rs.getObject("id", UUID.class), authPermission);
+        UUID permissionId = permissions.isEmpty() ? UUID.randomUUID() : permissions.get(0);
+        if (permissions.isEmpty()) {
+            jdbcTemplate.update("""
+                INSERT INTO permissions
+                (id, name, display_name, resource, action, is_system, is_active,
+                 created_at, updated_at)
+                VALUES (?, ?, 'Synthetic login fixture', 'test', 'read', FALSE,
+                        TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, permissionId, authPermission);
+        }
+        Integer permissionAssigned = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM role_permissions WHERE role_id = ? AND permission_id = ?
+            """, Integer.class, authRoleId, permissionId);
+        if (permissionAssigned == 0) {
+            jdbcTemplate.update("INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)",
+                authRoleId, permissionId);
+        }
+        Integer globalRoleAssigned = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM user_roles WHERE user_id = ? AND role_id = ?
+                AND project_id IS NULL
+            """, Integer.class, reviewerId, authRoleId);
+        if (globalRoleAssigned == 0) {
+            jdbcTemplate.update("""
+                INSERT INTO user_roles (id, user_id, role_id, project_id, assigned_by)
+                VALUES (?, ?, ?, NULL, ?)
+                """, UUID.randomUUID(), reviewerId, authRoleId, owner);
+        }
         // Signed by this isolated integration test's actual JWT service. The
         // request still traverses the production JWT filter and database policy.
         return "Bearer " + jwtService.generateToken(
