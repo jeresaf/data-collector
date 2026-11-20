@@ -43,6 +43,7 @@ The 201 response contains a server-generated recommendation ID, work/project/rev
 - Reviewer-supplied fingerprints are matched to fresh server-computed hashes before writing.
 - First commit stores one immutable *through the API* recommendation header plus normalized per-target-path dispositions. The evidence digest hashes a length-delimited canonical tuple (project/work/reviewer/record/instance/form version/source and target hashes/idempotency key/reason/ordered decisions).
 - An exact idempotent retry returns the same recommendation ID. A reused key with different content is HTTP 409; a concurrent duplicate write also fails closed. A transaction ensures header and fields commit together.
+- At most **10 recommendation events per reviewer per work item** can be inserted; replays of an existing exact request remain idempotent after the limit. The limit is checked under the same READY work row lock. Each source XML/XForm fingerprint input is bounded to 8 Mi characters.
 - File paths are bounded ASCII absolute XForm-like paths, max 30 and depth 12; unknown question *meaning* is not trusted or inferred. The endpoint does **not** certify the path exists in the XForm or is semantically transferable.
 - There are no API update/delete actions. A database administrator can still mutate rows, so **SQL append-only enforcement, trusted signatures, and independent audit anchoring are NOT implemented** and must not be claimed.
 
