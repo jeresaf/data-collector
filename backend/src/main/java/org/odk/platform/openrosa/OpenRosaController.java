@@ -347,18 +347,65 @@ public class OpenRosaController {
                 continue;
             }
 
-            appendManifestFile(xml, filename, hash,
-                    baseUrl + "/v1/projects/" + projectId + "/forms/"
-                            + xmlFormId + "/attachments/" + encodePathSegment(filename));
+            // Only explicitly declared, fully validated Entity Lists are typed.
+            // For an explicitly typed dataset, fail closed when storage bytes,
+            // schema, or stored MD5 disagree. Ordinary media stays untyped.
+            if (isDeclaredTypedDataset(dataset)) {
+                Optional<String> type = verifiedDatasetType(dataset);
+                if (type.isEmpty()) {
+                    log.warn("Skipping unqualified typed Entity List in manifest: {}", dataset.getId());
+                    continue;
+                }
+                appendManifestFile(xml, filename, hash,
+                        baseUrl + "/v1/projects/" + projectId + "/forms/"
+                                + xmlFormId + "/attachments/" + encodePathSegment(filename),
+                        type.get());
+            } else {
+                appendManifestFile(xml, filename, hash,
+                        baseUrl + "/v1/projects/" + projectId + "/forms/"
+                                + xmlFormId + "/attachments/" + encodePathSegment(filename));
+            }
         }
     }
 
     private void appendManifestFile(StringBuilder xml, String filename, String hash, String downloadUrl) {
-        xml.append("  <mediaFile>\n");
+        appendManifestFile(xml, filename, hash, downloadUrl, null);
+    }
+
+    private void appendManifestFile(StringBuilder xml, String filename, String hash, String downloadUrl,
+                                    String validatedType) {
+        xml.append("  <mediaFile");
+        if (validatedType != null) {
+            xml.append(" type=\"").append(validatedType).append("\"");
+        }
+        xml.append(">\n");
         xml.append("    <filename>").append(escapeXml(filename)).append("</filename>\n");
         xml.append("    <hash>md5:").append(escapeXml(stripMd5Prefix(hash))).append("</hash>\n");
         xml.append("    <downloadUrl>").append(escapeXml(downloadUrl)).append("</downloadUrl>\n");
         xml.append("  </mediaFile>\n");
+    }
+
+    private boolean isDeclaredTypedDataset(FormExternalDataset dataset) {
+        return dataset.getColumnDefinitions() != null
+                && dataset.getColumnDefinitions().containsKey(EntityListManifestPreflight.METADATA_KEY);
+    }
+
+    private Optional<String> verifiedDatasetType(FormExternalDataset dataset) {
+        String filename = dataset.getDatasetId();
+        if (filename == null || !filename.toLowerCase(Locale.ROOT).endsWith(".csv")
+                || dataset.getFileSize() != null && dataset.getFileSize() > 20_000_000L) {
+            return Optional.empty();
+        }
+        try {
+            byte[] bytes = storageServiceFactory.getStorageService(dataset.getStorageDriver())
+                    .read(dataset.getStoragePath());
+            return bytes.length > 20_000_000 ? Optional.empty()
+                    : EntityListManifestPreflight.verifiedCandidate(
+                            dataset.getColumnDefinitions(), bytes, dataset.getContentHash());
+        } catch (Exception e) {
+            log.warn("Unable to qualify typed Entity List storage bytes for {}", dataset.getId(), e);
+            return Optional.empty();
+        }
     }
 
     private String stripMd5Prefix(String hash) {
@@ -467,9 +514,23 @@ public class OpenRosaController {
             FormExternalDataset dataset = datasetOpt.get();
             try {
                 StorageService storageService = storageServiceFactory.getStorageService(dataset.getStorageDriver());
-                Resource resource = storageService.loadAsResource(dataset.getStoragePath());
-                if (resource == null || !resource.exists()) {
-                    return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+                Resource resource;
+                if (isDeclaredTypedDataset(dataset)) {
+                    // Re-read and verify the exact bytes used in this response.
+                    // A changed file must never be served using a stale manifest
+                    // hash; using ByteArrayResource prevents a second read race.
+                    byte[] bytes = storageService.read(dataset.getStoragePath());
+                    if (bytes.length > 20_000_000 || !dataset.getDatasetId().toLowerCase(Locale.ROOT).endsWith(".csv")
+                            || EntityListManifestPreflight.verifiedCandidate(
+                                    dataset.getColumnDefinitions(), bytes, dataset.getContentHash()).isEmpty()) {
+                        return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+                    }
+                    resource = new org.springframework.core.io.ByteArrayResource(bytes);
+                } else {
+                    resource = storageService.loadAsResource(dataset.getStoragePath());
+                    if (resource == null || !resource.exists()) {
+                        return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+                    }
                 }
 
                 String contentType = dataset.getContentType();
@@ -481,7 +542,9 @@ public class OpenRosaController {
                         .contentType(MediaType.parseMediaType(contentType))
                         .header(HttpHeaders.CONTENT_DISPOSITION,
                                 "attachment; filename=\"" + dataset.getDatasetId() + "\"");
-                if (dataset.getFileSize() != null) {
+                if (isDeclaredTypedDataset(dataset)) {
+                    builder.header(HttpHeaders.CONTENT_LENGTH, String.valueOf(resource.contentLength()));
+                } else if (dataset.getFileSize() != null) {
                     builder.header(HttpHeaders.CONTENT_LENGTH, String.valueOf(dataset.getFileSize()));
                 }
                 return builder.body(resource);
