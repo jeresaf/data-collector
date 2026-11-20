@@ -41,6 +41,8 @@
 
 **Backend topology:** #1 (OpenRosa compatibility) targets `main` independently, #2 (R0 browser fixture reconciliation) also targets `main`, and #3–#22 follow the successive #2–#21 Draft branch chain. The backend current tip is `codex/m3d4c2b2b2c3-restricted-witness-retrieval`; GitHub compare against `main` reported **159 ahead, 0 behind**, with 94 changed files visible in the compare. The branch is **NOT merged**, and #1's independent changes need explicit comparison/integration.
 
+**Initial U01-T03 overlap result:** PR #1 and latest Draft tip have **identical** `OpenRosaBasicAuthIntegrationTest.java` and `ODK_COLLECT_2026_COMPATIBILITY_CONTRACT.md` Git blob SHAs, including all five added `odk2026*` HTTP tests. The tip's qualification workflow differs from PR #1 only by an extra branch trigger. **Do not mechanically merge/apply PR #1 a second time**; retain provenance and review commit ancestry/patch IDs before resolving this parallel Draft. Full note in [U01 integration qualification](U01_INTEGRATION_QUALIFICATION.md).
+
 **Backend #22 exact-head qualification evidence:** SHA `007fd511270b02846ebcb853ca7340a9c726151e`; focused [H2 + PostgreSQL 15 workflow #44764143723](https://github.com/jeresaf/data-collector/actions/runs/44764143723) **SUCCESS**, broad [CI Quality Gate #44764142857](https://github.com/jeresaf/data-collector/actions/runs/44764142857) **SUCCESS**. This proves tests on that Draft tip only; no source-data transfer or real external witness fetch was enabled.
 
 ### Android PRs — original legacy labels → new stable U milestone
