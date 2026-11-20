@@ -30,7 +30,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import static org.hamcrest.Matchers.containsString;
 
-@SpringBootTest(properties = "odk.test.openrosa-basic-auth-integration=true")
+@SpringBootTest(properties = {
+        "odk.test.openrosa-basic-auth-integration=true",
+        "app.storage.local.base-path=${java.io.tmpdir}/odk-openrosa-basic-auth-integration"
+})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Transactional
