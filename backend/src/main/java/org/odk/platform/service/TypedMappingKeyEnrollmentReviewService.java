@@ -467,7 +467,7 @@ public class TypedMappingKeyEnrollmentReviewService {
         }
     }
 
-    private static String requestDigest(
+    static String requestDigest(
             UUID project, UUID requester, String requestId,
             String keyId, Purpose purpose, String spkiHash) {
         return digest("DC_UNTRUSTED_ED25519_KEY_PROPOSAL_V1",
@@ -477,10 +477,18 @@ public class TypedMappingKeyEnrollmentReviewService {
 
     private static String reviewDigest(
             ProposalRow proposal, UUID reviewer, Disposition disposition) {
+        return reviewDigest(proposal.projectId(), proposal.id(),
+                proposal.requesterId(), reviewer,
+                proposal.evidenceHash(), disposition);
+    }
+
+    static String reviewDigest(
+            UUID project, UUID requestId, UUID requester,
+            UUID reviewer, String proposalHash, Disposition disposition) {
         return digest("DC_INDEPENDENT_KEY_REVIEW_V1",
-                proposal.projectId().toString(), proposal.id().toString(),
-                proposal.requesterId().toString(), reviewer.toString(),
-                proposal.evidenceHash(), disposition.name());
+                project.toString(), requestId.toString(),
+                requester.toString(), reviewer.toString(),
+                proposalHash, disposition.name());
     }
 
     private static String digest(String... fields) {
