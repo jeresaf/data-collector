@@ -2170,4 +2170,143 @@ class OpenRosaRealHttpIntegrationTest {
                 fixture.signed(), fixture.clock()).state());
     }
 
+    private String m3d4c2b1RevocationUrl(String resource) {
+        return "http://127.0.0.1:" + port + "/api/projects/" +
+            TEST_PROJECT_ID + "/typed-mapping-revocations/" + resource;
+    }
+
+    @Test
+    void m3d4c2b1GrantRevocationIsPermanentAndIdempotent() throws Exception {
+        var fixture = m3d4c2aSyntheticSignedGrant();
+        m3d4c2aRegisterSynthetic(fixture);
+        var g = fixture.signed().grant();
+        String url = m3d4c2b1RevocationUrl("grants/" + g.grantId());
+        assertEquals("VERIFIED_SIGNATURE_ONLY_NO_OPERATIONAL_GRANT",
+            typedGrantRegistry.inspect(fixture.signed(), fixture.clock()).state());
+
+        var request = "{\"reasonCode\":\"CONSENT_WITHDRAWN\"}";
+        var revoke = m3d4b2Post(url, fixture.fixture().signerToken(), request);
+        assertEquals(201, revoke.statusCode(), revoke.body());
+        var json = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(revoke.body());
+        assertEquals("REVOKED_PERMANENT_NO_GRANT", json.get("state").asText());
+        assertEquals("GRANT", json.get("subjectType").asText());
+        assertEquals(g.grantId().toString(), json.get("subjectId").asText());
+        assertEquals("CONSENT_WITHDRAWN", json.get("reasonCode").asText());
+        assertFalse(json.get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(json.get("canTransfer").asBoolean());
+        assertFalse(json.get("canFinalize").asBoolean());
+        assertFalse(json.get("canSubmit").asBoolean());
+        assertFalse(revoke.body().contains("NONDISCLOSABLE TEST ANSWER"));
+        assertEquals("BLOCKED_REVOKED_OR_DENIED",
+            typedGrantRegistry.inspect(fixture.signed(), fixture.clock()).state());
+
+        var same = m3d4b2Post(url, fixture.fixture().signerToken(), request);
+        assertEquals(201, same.statusCode(), same.body());
+        assertEquals(json.get("revokedAt").asText(),
+            new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(same.body()).get("revokedAt").asText());
+
+        var rewrite = m3d4b2Post(url, fixture.fixture().signerToken(),
+            "{\"reasonCode\":\"SCHEMA_DRIFT\"}");
+        assertEquals(409, rewrite.statusCode(), rewrite.body());
+        assertEquals(1, jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM typed_mapping_grant_revocations
+                WHERE grant_id = ? AND reason = 'CONSENT_WITHDRAWN'
+                """, Integer.class, g.grantId()));
+        assertEquals("BLOCKED_REVOKED_OR_DENIED",
+            typedGrantRegistry.inspect(fixture.signed(), fixture.clock()).state());
+    }
+
+    @Test
+    void m3d4c2b1KeyCompromiseRevocationSurvivesWorkCancellation() throws Exception {
+        var fixture = m3d4c2aSyntheticSignedGrant();
+        m3d4c2aRegisterSynthetic(fixture);
+        var g = fixture.signed().grant();
+        String url = m3d4c2b1RevocationUrl("keys/" + g.signingKeyId());
+        jdbcTemplate.update("""
+            UPDATE record_work_items SET state = 'CANCELLED',
+                updated_at = CURRENT_TIMESTAMP WHERE id = ?
+            """, g.workId());
+        var revoke = m3d4b2Post(url, fixture.fixture().signerToken(),
+            "{\"reasonCode\":\"KEY_COMPROMISE\"}");
+        assertEquals(201, revoke.statusCode(), revoke.body());
+        var json = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(revoke.body());
+        assertEquals("KEY", json.get("subjectType").asText());
+        assertEquals(g.signingKeyId(), json.get("subjectId").asText());
+        assertEquals("REVOKED_PERMANENT_NO_GRANT", json.get("state").asText());
+        assertFalse(json.get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(json.get("canTransfer").asBoolean());
+        assertFalse(json.get("canSubmit").asBoolean());
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_key_revocations WHERE key_id = ?
+            """, Integer.class, g.signingKeyId()));
+        assertTrue(typedGrantRegistry.inspect(fixture.signed(), fixture.clock())
+            .state().startsWith("BLOCKED_"));
+        var replay = m3d4b2Post(url, fixture.fixture().signerToken(),
+            "{\"reasonCode\":\"KEY_COMPROMISE\"}");
+        assertEquals(201, replay.statusCode(), replay.body());
+        assertEquals(json.get("revokedAt").asText(),
+            new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(replay.body()).get("revokedAt").asText());
+        assertEquals(409, m3d4b2Post(url, fixture.fixture().signerToken(),
+            "{\"reasonCode\":\"KEY_ROTATION\"}").statusCode());
+    }
+
+    @Test
+    void m3d4c2b1OnlyCurrentWebProjectAdminCanRevoke() throws Exception {
+        var fixture = m3d4c2aSyntheticSignedGrant();
+        m3d4c2aRegisterSynthetic(fixture);
+        var g = fixture.signed().grant();
+        String grantUrl = m3d4c2b1RevocationUrl("grants/" + g.grantId());
+        String keyUrl = m3d4c2b1RevocationUrl("keys/" + g.signingKeyId());
+        String grantBody = "{\"reasonCode\":\"SECURITY\"}";
+        String keyBody = "{\"reasonCode\":\"SECURITY\"}";
+        var anon = m3d4b2Post(grantUrl, null, grantBody);
+        assertTrue(anon.statusCode() == 401 || anon.statusCode() == 403);
+        var mobile = m3d4b2Post(keyUrl, authorization, keyBody);
+        assertTrue(mobile.statusCode() == 401 || mobile.statusCode() == 403);
+        assertEquals(404, m3d4b2Post(grantUrl,
+            fixture.fixture().reviewerToken(), grantBody).statusCode());
+        assertEquals(404, m3d4b2Post(keyUrl,
+            fixture.fixture().reviewerToken(), keyBody).statusCode());
+
+        UUID admin = g.finalSignerId();
+        try {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = FALSE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, admin);
+            assertEquals(404, m3d4b2Post(grantUrl,
+                fixture.fixture().signerToken(), grantBody).statusCode());
+            assertEquals(404, m3d4b2Post(keyUrl,
+                fixture.fixture().signerToken(), keyBody).statusCode());
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = TRUE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, admin);
+        }
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_grant_revocations
+            WHERE grant_id = ?
+            """, Integer.class, g.grantId()));
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_key_revocations
+            WHERE key_id = ?
+            """, Integer.class, g.signingKeyId()));
+
+        assertEquals(404, m3d4b2Post(
+            "http://127.0.0.1:" + port + "/api/projects/" + UUID.randomUUID() +
+            "/typed-mapping-revocations/grants/" + g.grantId(),
+            fixture.fixture().signerToken(), grantBody).statusCode());
+        assertEquals(400, m3d4b2Post(keyUrl,
+            fixture.fixture().signerToken(), "{\"reasonCode\":\"GRANT_TRANSFER\"}")
+            .statusCode());
+        assertEquals(404, m3d4b2Post(m3d4c2b1RevocationUrl(
+            "grants/" + UUID.randomUUID()),
+            fixture.fixture().signerToken(), grantBody).statusCode());
+    }
+
 }
