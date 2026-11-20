@@ -73,20 +73,21 @@ public class UserDetailsServiceImpl implements UserDetailsService {
                 .build();
     }
 
-    private UserDetails buildAppUserDetails(AppUser user) {
-        // App users get basic app user role
-        List<SimpleGrantedAuthority> authorities = Collections.singletonList(
-                new SimpleGrantedAuthority("ROLE_APP_USER")
-        );
+    /**
+     * OpenRosa Basic is a mobile-account authentication channel: never fall back
+     * to a web user just because both accounts have the same username.
+     */
+    public MobileAppUserDetails loadAppUserByUsername(String username) throws UsernameNotFoundException {
+        AppUser appUser = appUserRepository.findByUsername(username)
+                .orElseThrow(() -> new UsernameNotFoundException("Mobile account unavailable"));
+        if (!Boolean.TRUE.equals(appUser.getIsActive())) {
+            throw new UsernameNotFoundException("Mobile account unavailable");
+        }
+        return buildAppUserDetails(appUser);
+    }
 
-        return org.springframework.security.core.userdetails.User.builder()
-                .username(user.getUsername())
-                .password(user.getPasswordHash())
-                .authorities(authorities)
-                .accountExpired(false)
-                .accountLocked(false)
-                .credentialsExpired(false)
-                .disabled(!user.getIsActive())
-                .build();
+    private MobileAppUserDetails buildAppUserDetails(AppUser user) {
+        return new MobileAppUserDetails(user.getId(), user.getUsername(),
+                user.getPasswordHash(), Boolean.TRUE.equals(user.getIsActive()));
     }
 }
