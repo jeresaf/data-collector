@@ -4,11 +4,9 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.util.Arrays;
-import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -259,6 +257,7 @@ public final class ExternalWitnessRetrievalPolicy {
         }
         String[] labels = host.split("\\.", -1);
         if (labels.length < 3 ||
+                !labels[labels.length - 1].matches("[a-z]{2,63}") ||
                 FORBIDDEN_TLDS.contains(labels[labels.length - 1])) {
             return false;
         }
@@ -287,13 +286,8 @@ public final class ExternalWitnessRetrievalPolicy {
         if (ip instanceof Inet4Address && b.length == 4) {
             long n = ((b[0] & 255L) << 24) | ((b[1] & 255L) << 16) |
                     ((b[2] & 255L) << 8) | (b[3] & 255L);
-            int[][] special = {
-                {0,8}, {10,8}, {100,10}, {127,8}, {169,16},
-                {172,12}, {192,24}, {192,16}, {198,15},
-                {203,24}, {224,4}, {240,4}
-            };
-            // Check exact CIDRs separately. 192/16 and 198/15 above would
-            // overblock public addresses; they are NOT used as whole ranges.
+            // Exact special-purpose CIDRs: do not overblock entire
+            // routable 192/8 or 198/8 networks.
             long[][] forbidden = {
                 {0x00000000L,8}, {0x0a000000L,8},
                 {0x64400000L,10}, {0x7f000000L,8},
