@@ -54,8 +54,8 @@ public final class ExternalCeremonyAttestationVerifier {
             String externalCheckpointSha256, Instant witnessedAt,
             Instant attestedAt, Instant expiresAt) {
         public Attestation {
-            for (UUID id : List.of(projectId, proposalId, proposerId,
-                    reviewerId, witnessId, externalAttestorId)) {
+            for (UUID id : new UUID[]{projectId, proposalId, proposerId,
+                    reviewerId, witnessId, externalAttestorId}) {
                 if (id == null || id.equals(new UUID(0L, 0L))) {
                     throw new IllegalArgumentException(
                             "Complete non-nil ceremony identities required");
@@ -73,8 +73,7 @@ public final class ExternalCeremonyAttestationVerifier {
                     !hash(reviewEvidenceSha256) || !hash(externalBundleSha256) ||
                     !hash(commitmentSha256) || !hash(externalCheckpointSha256) ||
                     witnessedAt == null || attestedAt == null || expiresAt == null ||
-                    witnessedAt.getNano() != 0 || attestedAt.getNano() != 0 ||
-                    expiresAt.getNano() != 0 ||
+                    attestedAt.getNano() != 0 || expiresAt.getNano() != 0 ||
                     attestedAt.isBefore(witnessedAt) ||
                     !expiresAt.isAfter(attestedAt) ||
                     expiresAt.isAfter(attestedAt.plus(MAX_VALIDITY))) {
@@ -255,7 +254,10 @@ public final class ExternalCeremonyAttestationVerifier {
                 out.writeInt(bytes.length);
                 out.write(bytes);
             }
+            // V7 recorded_at can contain fractional PostgreSQL precision;
+            // binding both seconds and nanoseconds prevents time truncation.
             out.writeLong(a.witnessedAt().getEpochSecond());
+            out.writeInt(a.witnessedAt().getNano());
             out.writeLong(a.attestedAt().getEpochSecond());
             out.writeLong(a.expiresAt().getEpochSecond());
             out.flush();
