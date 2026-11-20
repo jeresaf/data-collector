@@ -1103,3 +1103,28 @@ CREATE TABLE typed_mapping_review_fields (
         (disposition IN ('REENTER', 'LEAVE_EMPTY', 'ESCALATE_FOR_RULE_REVIEW')),
     PRIMARY KEY (recommendation_id, target_path)
 );
+
+
+-- M3D4B2B1 disposable H2 equivalent of production additive Flyway V4.
+CREATE TABLE typed_mapping_final_denials (
+    id UUID PRIMARY KEY,
+    project_id UUID NOT NULL REFERENCES projects(id),
+    work_item_id UUID NOT NULL REFERENCES record_work_items(id),
+    recommendation_id UUID NOT NULL UNIQUE
+        REFERENCES typed_mapping_review_recommendations(id),
+    original_reviewer_user_id UUID NOT NULL REFERENCES users(id),
+    final_authorizer_user_id UUID NOT NULL REFERENCES users(id),
+    client_request_id VARCHAR(128) NOT NULL,
+    reason_code VARCHAR(48) NOT NULL CHECK (reason_code IN
+        ('INSUFFICIENT_EVIDENCE', 'SCHEMA_UNSAFE', 'CONSENT_UNCLEAR',
+         'SOURCE_UNTRUSTED', 'POLICY_NOT_SATISFIED')),
+    recommendation_evidence_sha256 VARCHAR(64) NOT NULL,
+    denial_evidence_sha256 VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT ck_final_denial_independent_users
+        CHECK (original_reviewer_user_id <> final_authorizer_user_id),
+    CONSTRAINT uq_final_denial_request
+        UNIQUE (work_item_id, final_authorizer_user_id, client_request_id)
+);
+CREATE INDEX idx_final_denial_project_work
+    ON typed_mapping_final_denials(project_id, work_item_id, created_at);
