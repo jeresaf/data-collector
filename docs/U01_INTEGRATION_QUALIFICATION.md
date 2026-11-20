@@ -13,10 +13,12 @@ Make the 22 backend and 22 Android open modernization Draft PRs safely integrabl
 | Task ID | Work | Evidence as of 2026-11-20 | Status |
 |---|---|---|---|
 | **U01-T01** | Enumerate PR stacks, their dependency edges, rename aliases, known CI and tip branches | [Crosswalk](MODERNIZATION_PR_CROSSWALK.md): backend #1–#22, Android #16–#37, 44 Drafts total | **INVENTORY RECORDED**, recheck immediately before integration |
-| **U01-T02** | Trace original `ubos-local` custom code, resources, workflows and permissions into the 2026 forward-port and Draft tip | Upstream Android history diverged; 5,803 ahead / 129 behind relative to `ubos-local`. Existing PR titles alone do NOT prove parity | **OPEN: source-level assessment required** |
-| **U01-T03** | Compare independent backend PR #1 against #2–#22 stack, model split branch roots, identify actual merge conflicts and exact-tip acceptance | Backend Draft tip 159 ahead / 0 behind `main`, 94 paths in compare; PR #1 targets main separately | **OPEN: graph/patch integration analysis required** |
+| **U01-T02** | Trace original `ubos-local` custom code, resources, workflows and permissions into the 2026 forward-port and Draft tip | [Initial verified Android source-parity report](U01_T02_ANDROID_SOURCE_PARITY_AUDIT.md): reference-data refresh handlers absent at expected paths since forward-port; generic server URL and separate visit contracts exist. Repo-wide replacement audit still open. | **PARTIAL: evidence recorded, parity not certified** |
+| **U01-T03** | Compare independent backend PR #1 against #2–#22 stack, model split branch roots, identify actual merge conflicts and exact-tip acceptance | [Initial CI/integration findings](U01_T03_CI_BASELINE_AND_PR_INTEGRATION.md): PR #1 test/doc payload already present in tip; PR #2 test fixtures present; standalone main-based documentation CI failed backend + Playwright. | **PARTIAL: conflicts and baseline qualification open** |
 | **U01-T04** | Produce clean owner-reviewed merge/rebase/squash order, migration rehearsal dependencies and rollback | No merges authorized; current crosswalk is only an inventory | **BLOCKED ON T02/T03** |
 | **U01-T05** | Execute integration after explicit owner approval, rerun all CI and prove original feature parity | No integration performed | **BLOCKED ON OWNER APPROVAL** |
+
+**First completed research slices:** [U01-T02 source-code findings](U01_T02_ANDROID_SOURCE_PARITY_AUDIT.md) and [U01-T03 CI / PR-overlap findings](U01_T03_CI_BASELINE_AND_PR_INTEGRATION.md). Treat them as partial evidence only.
 
 ## Source-level `ubos-local` preservation audit: required matrix
 
