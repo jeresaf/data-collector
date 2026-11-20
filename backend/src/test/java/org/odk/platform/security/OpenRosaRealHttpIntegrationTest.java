@@ -72,6 +72,8 @@ class OpenRosaRealHttpIntegrationTest {
     @LocalServerPort private int port;
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private org.odk.platform.security.JwtService jwtService;
+    @Autowired private org.springframework.security.core.userdetails.UserDetailsService userDetailsService;
     private HttpClient client;
     private String authorization;
     private String projectBase;
@@ -1081,6 +1083,167 @@ class OpenRosaRealHttpIntegrationTest {
             HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         assertEquals(404, forbidden.statusCode());
         assertFalse(forbidden.body().contains("sourceXmlSha256"));
+    }
+
+    private String m3d4bReviewerUrl(String workId) {
+        return "http://127.0.0.1:" + port + "/api/projects/" + TEST_PROJECT_ID
+            + "/record-work-items/" + workId + "/typed-review-eligibility";
+    }
+
+    private String m3d4bReviewerToken() {
+        UUID owner = ensureFixtureOwner();
+        String reviewer = "m3d4b_independent_web_reviewer";
+        String email = "m3d4b-reviewer@example.test";
+        List<UUID> known = jdbcTemplate.query(
+            "SELECT id FROM users WHERE username = ?",
+            (rs, idx) -> rs.getObject("id", UUID.class), reviewer);
+        UUID reviewerId = known.isEmpty() ? UUID.randomUUID() : known.get(0);
+        if (known.isEmpty()) {
+            jdbcTemplate.update("""
+                INSERT INTO users
+                  (id, username, email, password_hash, first_name, last_name,
+                   is_active, is_verified, failed_login_attempts,
+                   created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'Independent', 'Reviewer',
+                        TRUE, TRUE, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, reviewerId, reviewer, email, passwordEncoder.encode(
+                    "reviewer-test-fixture-only-password"));
+        } else {
+            jdbcTemplate.update("""
+                UPDATE users SET is_active = TRUE, is_verified = TRUE,
+                    email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+                """, email, reviewerId);
+        }
+        List<UUID> roleIds = jdbcTemplate.query(
+            "SELECT id FROM roles WHERE name = 'PROJECT_MANAGER'",
+            (rs, idx) -> rs.getObject("id", UUID.class));
+        UUID roleId = roleIds.isEmpty() ? UUID.randomUUID() : roleIds.get(0);
+        if (roleIds.isEmpty()) {
+            jdbcTemplate.update("""
+                INSERT INTO roles (id, name, display_name, is_system, is_active,
+                                   created_at, updated_at)
+                VALUES (?, 'PROJECT_MANAGER', 'Project manager', TRUE, TRUE,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, roleId);
+        }
+        List<UUID> memberships = jdbcTemplate.query("""
+                SELECT id FROM project_members
+                WHERE project_id = ? AND user_id = ? AND role_id = ?
+                """, (rs, idx) -> rs.getObject("id", UUID.class),
+                TEST_PROJECT_ID, reviewerId, roleId);
+        if (memberships.isEmpty()) {
+            jdbcTemplate.update("""
+                INSERT INTO project_members
+                (id, project_id, user_id, role_id, assigned_by, is_active,
+                 created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, UUID.randomUUID(), TEST_PROJECT_ID, reviewerId, roleId, owner);
+        } else {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """, memberships.get(0));
+        }
+        // Signed by this isolated integration test's actual JWT service. The
+        // request still traverses the production JWT filter and database policy.
+        return "Bearer " + jwtService.generateToken(
+            userDetailsService.loadUserByUsername(reviewer));
+    }
+
+    private HttpResponse<String> m3d4bReviewerGet(String url, String bearer)
+            throws Exception {
+        HttpRequest.Builder request = HttpRequest.newBuilder(localUri(url))
+            .timeout(Duration.ofSeconds(20)).GET();
+        if (bearer != null) request.header("Authorization", bearer);
+        return client.send(request.build(),
+            HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void m3d4bWebReviewerEligibilityUsesCurrentProjectMembershipNotMobileLogin() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String sourceInstance = "uuid:" + UUID.randomUUID();
+        var first = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", sourceInstance, null, "Reviewer fixture")), null);
+        assertEquals(201, first.statusCode(), first.body());
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, sourceInstance);
+        var created = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(sourceId, targetVersion, "AMENDMENT", null,
+                "m3d4b-review-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode(), created.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(created.body()).get("id").asText();
+        String url = m3d4bReviewerUrl(workId);
+
+        // No public anonymous or mobile Basic endpoint can mint or even
+        // request independent reviewer eligibility.
+        var anonymous = m3d4bReviewerGet(url, null);
+        assertTrue(anonymous.statusCode() == 401 || anonymous.statusCode() == 403);
+        var enumerator = m3d4bReviewerGet(url, authorization);
+        assertTrue(enumerator.statusCode() == 401 || enumerator.statusCode() == 403);
+
+        String reviewerBearer = m3d4bReviewerToken();
+        var eligible = m3d4bReviewerGet(url, reviewerBearer);
+        assertEquals(200, eligible.statusCode(), eligible.body());
+        var data = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(eligible.body());
+        assertEquals("ELIGIBLE_TO_REQUEST_REVIEW_ONLY", data.get("state").asText());
+        assertTrue(data.get("eligibleToRequestIndependentReview").asBoolean());
+        assertFalse(data.get("canApproveMapping").asBoolean());
+        assertFalse(data.get("canTransfer").asBoolean());
+        assertFalse(data.get("canSubmit").asBoolean());
+        assertFalse(eligible.body().contains("Reviewer fixture"));
+        assertFalse(eligible.body().contains("<data"));
+
+        UUID reviewerId = jdbcTemplate.queryForObject(
+            "SELECT id FROM users WHERE username = 'm3d4b_independent_web_reviewer'",
+            UUID.class);
+        try {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = FALSE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, reviewerId);
+            var revoked = m3d4bReviewerGet(url, reviewerBearer);
+            assertEquals(404, revoked.statusCode(),
+                "A still-valid JWT must not survive project-role revocation");
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = TRUE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, reviewerId);
+        }
+
+        // No POST approval endpoint is introduced by this slice.
+        var issue = HttpRequest.newBuilder(localUri(url))
+            .header("Authorization", reviewerBearer)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString("{\"approvedPaths\":[\"/data/name\"]}"))
+            .build();
+        var issueResponse = client.send(issue,
+            HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        assertTrue(issueResponse.statusCode() == 404 ||
+            issueResponse.statusCode() == 405);
+    }
+
+    @Test
+    void m3d4bFollowUpIsNotEligibleForHistoricalMappingReview() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String sourceInstance = "uuid:" + UUID.randomUUID();
+        var first = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", sourceInstance, null, "Independent visit")), null);
+        assertEquals(201, first.statusCode(), first.body());
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, sourceInstance);
+        var created = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(sourceId, targetVersion, "FOLLOW_UP",
+                "visit-" + UUID.randomUUID(), "m3d4b-follow-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode(), created.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(created.body()).get("id").asText();
+        String token = m3d4bReviewerToken();
+        var response = m3d4bReviewerGet(m3d4bReviewerUrl(workId), token);
+        assertEquals(404, response.statusCode());
     }
 
 }
