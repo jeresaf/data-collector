@@ -159,7 +159,7 @@ public final class ExternalWitnessRetrievalPolicy {
                     (body != null && (body.length > MAX_BODY_BYTES ||
                         body.length == 0 || body.length != bodyLength ||
                         remoteBodySha256 == null ||
-                        !state.equals("BOUNDED_TRANSPORT_EVIDENCE_ONLY_UNVERIFIED_NO_TRUST"))) {
+                        !state.equals("BOUNDED_TRANSPORT_EVIDENCE_ONLY_UNVERIFIED_NO_TRUST")))) {
                 throw new IllegalArgumentException(
                         "Network bytes cannot establish independent publication or rights");
             }
