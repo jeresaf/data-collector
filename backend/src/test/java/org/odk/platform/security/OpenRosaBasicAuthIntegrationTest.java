@@ -816,4 +816,45 @@ class OpenRosaBasicAuthIntegrationTest {
                         .accept(MediaType.TEXT_XML))
                 .andExpect(status().isUnauthorized());
     }
+    /**
+     * Real HTTP regression: a currently valid Basic user loses its project
+     * assignment after the request fixture was created. No previously assigned
+     * form XML or manifest may be returned.
+     */
+    @Test
+    void revokedFormAssignmentCannotDownloadFormOrManifest() throws Exception {
+        UUID mobileId = jdbcTemplate.queryForObject(
+                "SELECT id FROM app_users WHERE username = ?",
+                (rs, rowNum) -> rs.getObject("id", UUID.class),
+                "appuser");
+        jdbcTemplate.update(
+                "DELETE FROM app_user_projects WHERE app_user_id = ? AND project_id = ?",
+                mobileId, TEST_PROJECT_ID);
+
+        mockMvc.perform(get("/v1/projects/{projectId}/forms/{formId}.xml",
+                        TEST_PROJECT_ID, TEST_FORM_XMLNS)
+                        .header("Authorization", validCredentials)
+                        .accept(MediaType.TEXT_XML))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/v1/projects/{projectId}/forms/{formId}/manifest",
+                        TEST_PROJECT_ID, TEST_FORM_XMLNS)
+                        .header("Authorization", validCredentials)
+                        .accept(MediaType.TEXT_XML))
+                .andExpect(status().isNotFound());
+    }
+
+    /**
+     * Real HTTP regression: an assigned but deactivated mobile identity cannot
+     * use existing credentials to browse the project's forms.
+     */
+    @Test
+    void inactiveMobileAccountCannotUseOpenRosaBasic() throws Exception {
+        jdbcTemplate.update("UPDATE app_users SET is_active = false WHERE username = ?", "appuser");
+        mockMvc.perform(get("/v1/projects/{projectId}/formList", TEST_PROJECT_ID)
+                        .header("Authorization", validCredentials)
+                        .accept(MediaType.TEXT_XML))
+                .andExpect(status().is4xxClientError());
+    }
+
 }
