@@ -171,7 +171,7 @@ class OpenRosaTypedEntityManifestTest {
     @Test
     void assignedMobileUserCanReadValidatedTypedManifestAndDataset() throws Exception {
         mobilePrincipalWithAssignments(List.of(FORM));
-        assertTrue(manifest().contains("<mediaFile type=\\"entityList\\">"));
+        assertTrue(manifest().contains("<mediaFile type=\"entityList\">"));
         assertEquals(200, download().getStatusCode().value());
         verify(storage, atLeastOnce()).read("project/households.csv");
     }
