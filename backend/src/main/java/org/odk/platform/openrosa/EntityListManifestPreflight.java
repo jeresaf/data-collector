@@ -40,7 +40,7 @@ public final class EntityListManifestPreflight {
             return Optional.empty();
         }
         Optional<List<List<String>>> parsed = parse(csvBytes);
-        if (parsed.isEmpty() || !validHeader(parsed.get().get(0))) {
+        if (parsed.isEmpty() || parsed.get().size() < 2 || !validHeader(parsed.get().get(0))\n                || containsQuotedHeader(csvBytes)) {
             return Optional.empty();
         }
         return type;
@@ -61,7 +61,7 @@ public final class EntityListManifestPreflight {
         }
         List<List<String>> rows = parsed.get();
         List<String> header = rows.get(0);
-        if (!validHeader(header) || rows.size() < 2) {
+        if (!validHeader(header) || rows.size() < 2 || containsQuotedHeader(csvBytes)) {
             return Optional.empty();
         }
 
@@ -99,6 +99,20 @@ public final class EntityListManifestPreflight {
             }
         }
         return type;
+    }
+
+    private static boolean containsQuotedHeader(byte[] csvBytes) {
+        // Reject even correctly quoted header identifiers to preserve the
+        // initial conservative allowlist until native ODK parser parity is proven.
+        for (byte b : csvBytes) {
+            if (b == '\\n' || b == '\\r') {
+                break;
+            }
+            if (b == '"') {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Optional<String> declaredType(Map<String, Object> metadata) {
