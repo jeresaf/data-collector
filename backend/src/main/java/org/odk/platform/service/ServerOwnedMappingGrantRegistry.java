@@ -1,6 +1,7 @@
 package org.odk.platform.service;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -32,6 +33,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ServerOwnedMappingGrantRegistry {
     private final JdbcTemplate jdbc;
+    @Value("${spring.profiles.active:}")
+    private String activeProfiles;
 
     public record RegistryEvidence(
             UUID grantId, String state, boolean canReadHistoricalAnswers,
@@ -310,8 +313,21 @@ public class ServerOwnedMappingGrantRegistry {
             return new RegistryEvidence(id, cryptographic.state(),
                 false, false, false, false);
         } catch (Exception failure) {
-            // Never reveal SQL, source answers, stored public keys or
-            // underlying schema in error messages or returned evidence.
+            // Public/prod state never includes SQL, answers, schema or a stack.
+            // The synthetic test profile can expose only exception CLASS and
+            // SQLSTATE to diagnose cross-database mismatches in CI.
+            if (activeProfiles != null &&
+                    java.util.Arrays.asList(activeProfiles.split(",")).contains("test")) {
+                String type = failure.getClass().getSimpleName();
+                Throwable root = failure;
+                while (root.getCause() != null && root.getCause() != root) {
+                    root = root.getCause();
+                }
+                String state = root instanceof java.sql.SQLException sql ?
+                        sql.getSQLState() : "NO_SQLSTATE";
+                return blocked(id, "BLOCKED_TEST_DIAGNOSTIC_" +
+                        type + "_" + state);
+            }
             return blocked(id, "BLOCKED_TRUST_REGISTRY_UNAVAILABLE_OR_INVALID");
         }
     }
