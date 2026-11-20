@@ -3,6 +3,8 @@ package org.odk.platform.openrosa;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
 
@@ -109,6 +111,47 @@ class EntityListManifestPreflightTest {
                 Map.of("odkMediaType", "entityList"), malformedRow));
         assertTrue(EntityListManifestPreflight.validatedCandidate(
                 Map.of("odkMediaType", "entityList"), malformedRow).isEmpty());
+    }
+
+    @Test
+    void verifiedCandidateRequiresMd5MatchingExactBytes() throws Exception {
+        Map<String, Object> declaration = Map.of("odkMediaType", "entityList");
+        String actualHash = HexFormat.of().formatHex(
+                MessageDigest.getInstance("MD5").digest(VALID_MINIMUM));
+
+        assertEquals(Optional.of("entityList"),
+                EntityListManifestPreflight.verifiedCandidate(declaration, VALID_MINIMUM, actualHash));
+        assertEquals(Optional.of("entityList"),
+                EntityListManifestPreflight.verifiedCandidate(declaration, VALID_MINIMUM,
+                        "md5:" + actualHash.toUpperCase(java.util.Locale.ROOT)));
+
+        assertTrue(EntityListManifestPreflight.verifiedCandidate(
+                declaration, VALID_MINIMUM, "md5:00000000000000000000000000000000").isEmpty());
+        assertTrue(EntityListManifestPreflight.verifiedCandidate(
+                declaration, VALID_MINIMUM, "sha256:" + actualHash).isEmpty());
+        assertTrue(EntityListManifestPreflight.verifiedCandidate(
+                declaration, VALID_MINIMUM, null).isEmpty());
+        assertTrue(EntityListManifestPreflight.verifiedCandidate(
+                Map.of(), VALID_MINIMUM, actualHash).isEmpty());
+    }
+
+    @Test
+    void verifiedCandidateRejectsChangedOrInvalidRecordsRegardlessOfMatchingDigest() throws Exception {
+        Map<String, Object> declaration = Map.of("odkMediaType", "entityList");
+        byte[] modified = ("name,label,__version\\n"
+                + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,Household,2\\n")
+                .getBytes(StandardCharsets.UTF_8);
+        String originalHash = HexFormat.of().formatHex(
+                MessageDigest.getInstance("MD5").digest(VALID_MINIMUM));
+        assertTrue(EntityListManifestPreflight.verifiedCandidate(
+                declaration, modified, originalHash).isEmpty());
+
+        byte[] malformed = "name,label,__version\\nnot-uuid,Label,1\\n"
+                .getBytes(StandardCharsets.UTF_8);
+        String malformedHash = HexFormat.of().formatHex(
+                MessageDigest.getInstance("MD5").digest(malformed));
+        assertTrue(EntityListManifestPreflight.verifiedCandidate(
+                declaration, malformed, malformedHash).isEmpty());
     }
 
 }
