@@ -32,7 +32,7 @@ jobs:
           java-version: '17'
           cache: maven
           cache-dependency-path: backend/pom.xml
-      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpIntegrationTest,SubmissionReplacementServiceTest test
+      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpIntegrationTest,SubmissionReplacementServiceTest,StaticTypedMappingFieldPolicyTest test
       - if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -57,7 +57,7 @@ jobs:
           cache: maven
           cache-dependency-path: backend/pom.xml
       - run: docker info
-      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpPostgresIT test
+      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpPostgresIT,StaticTypedMappingFieldPolicyTest test
       - if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
