@@ -1759,4 +1759,93 @@ class OpenRosaRealHttpIntegrationTest {
             """, Integer.class, UUID.fromString(f.workId())));
     }
 
+    private String m3d4b2b2aPolicyUrl(M3D4B2BFixture fixture) {
+        return "http://127.0.0.1:" + port + "/api/projects/" +
+            TEST_PROJECT_ID + "/record-work-items/" + fixture.workId() +
+            "/typed-rule-candidates/" + fixture.recommendationId();
+    }
+
+    @Test
+    void m3d4b2b2aIndependentSignerSeesStaticCandidateButNoMigrationGrant()
+            throws Exception {
+        var fixture = m3d4b2bFixture();
+        String url = m3d4b2b2aPolicyUrl(fixture);
+        var response = m3d4bReviewerGet(url, fixture.signerToken());
+        assertEquals(200, response.statusCode(), response.body());
+        var json = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(response.body());
+        assertEquals("ADVISORY_STATIC_FIELD_REVIEW_ONLY_NO_GRANT",
+            json.get("state").asText());
+        assertEquals(fixture.recommendationId(),
+            json.get("recommendationId").asText());
+        assertEquals(fixture.recommendationSha256(),
+            json.get("recommendationEvidenceSha256").asText());
+        assertNotEquals(json.get("originatingReviewerId").asText(),
+            json.get("independentSignerId").asText());
+        assertEquals(1, json.get("fields").size());
+        assertEquals("/data/name", json.get("fields").get(0)
+            .get("targetPath").asText());
+        assertEquals("STATIC_SAME_PATH_TYPE_CANDIDATE_ONLY",
+            json.get("fields").get(0).get("state").asText());
+        assertFalse(json.get("canApproveMapping").asBoolean());
+        assertFalse(json.get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(json.get("canIssueGrant").asBoolean());
+        assertFalse(json.get("canTransfer").asBoolean());
+        assertFalse(json.get("canSubmit").asBoolean());
+        assertFalse(response.body().contains("NONDISCLOSABLE TEST ANSWER"));
+        assertFalse(response.body().contains("<data"));
+
+        var reviewerSelf = m3d4bReviewerGet(url, fixture.reviewerToken());
+        assertTrue(reviewerSelf.statusCode() == 404 ||
+            reviewerSelf.statusCode() == 409);
+        var mobile = m3d4bReviewerGet(url, authorization);
+        assertTrue(mobile.statusCode() == 401 || mobile.statusCode() == 403);
+        var unauthenticated = m3d4bReviewerGet(url, null);
+        assertTrue(unauthenticated.statusCode() == 401 ||
+            unauthenticated.statusCode() == 403);
+
+        // This GET-only endpoint MUST NOT accept a request to issue grants.
+        var issue = m3d4b2Post(url, fixture.signerToken(),
+            "{\"canTransfer\":true,\"approvedPaths\":[\"/data/name\"]}");
+        assertTrue(issue.statusCode() == 404 || issue.statusCode() == 405,
+            "Static field inspector is not a grant issuer");
+    }
+
+    @Test
+    void m3d4b2b2aTamperedFieldReviewAndIndependentFinalDenialVetoPolicy()
+            throws Exception {
+        var f = m3d4b2bFixture();
+        String url = m3d4b2b2aPolicyUrl(f);
+        UUID recommendation = UUID.fromString(f.recommendationId());
+        try {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_review_fields SET disposition = 'REENTER'
+                WHERE recommendation_id = ? AND target_path = '/data/name'
+                """, recommendation);
+            var tampered = m3d4bReviewerGet(url, f.signerToken());
+            assertEquals(409, tampered.statusCode(),
+                "A changed field recommendation must not pass evidence rehashing");
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_review_fields
+                SET disposition = 'ESCALATE_FOR_RULE_REVIEW'
+                WHERE recommendation_id = ? AND target_path = '/data/name'
+                """, recommendation);
+        }
+        assertEquals(200, m3d4bReviewerGet(
+            url, f.signerToken()).statusCode());
+
+        var denial = new com.fasterxml.jackson.databind.ObjectMapper()
+            .createObjectNode();
+        denial.put("clientRequestId", "policy-veto-" + UUID.randomUUID());
+        denial.put("reasonCode", "SCHEMA_UNSAFE");
+        denial.put("recommendationEvidenceSha256", f.recommendationSha256());
+        var rejected = m3d4b2Post(m3d4b2bUrl(f),
+            f.signerToken(), denial.toString());
+        assertEquals(201, rejected.statusCode(), rejected.body());
+        assertEquals(409, m3d4bReviewerGet(
+            url, f.signerToken()).statusCode(),
+            "Previously recorded independent denial must veto policy inspection");
+    }
+
 }
