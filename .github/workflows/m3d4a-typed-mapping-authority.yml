@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - codex/m3d4a-typed-mapping-authority-deny
+  pull_request:
+    branches:
+      - codex/m3c-source-schema-prepare
   workflow_dispatch:
 
 permissions:
