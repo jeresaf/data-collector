@@ -33,6 +33,8 @@ ODK's built-in **Entity Lists** and **form media CSVs** are different formats/pa
 - This is a source-level protocol mismatch at the integration seam. We have **not** run a full Android/device/server E2E demonstrating the resulting UI symptoms; the outcome follows the inspected explicit branch condition.
 - This does **not** mean that all `select_one_from_file` CSV choices fail: ordinary media CSV is a valid separate mechanism. Nor does it prove that old admin-unit refresh was replaced; the legacy independent UI/periodic schedule remains unverified.
 
+**Tracking:** [U05-T01 issue #24](https://github.com/jeresaf/data-collector/issues/24). This is an implementation and qualification backlog, **not a claim of an already working fix**.
+
 ## Safe U05-T01 implementation proposal — not yet applied
 
 **Do not globally add `type="entityList"` to every CSV.** Many are ordinary choice/lookup media and may lack required Entity `name`, `label`, `__id`/version columns or approval semantics; misclassification risks incorrect entity creation/deletion.
