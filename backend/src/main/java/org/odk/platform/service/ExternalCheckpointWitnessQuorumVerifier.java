@@ -184,13 +184,21 @@ public final class ExternalCheckpointWitnessQuorumVerifier {
                     witnessB.signed().receipt().witnessId())) {
             return blocked(proposalId, "BLOCKED_DUPLICATE_OR_SHARED_WITNESS_IDENTITY");
         }
-        // Two valid signatures about *different* checkpoint roots at the
-        // same log/size are direct evidence of a split view, not a quorum.
-        // Validate signature first so fabricated mismatching text cannot
-        // trigger a misleading equivocation diagnosis.
-        if (!sameHead(witnessA.signed().receipt(),
-                      witnessB.signed().receipt())) {
-            return blocked(proposalId, "BLOCKED_SIGNED_WITNESS_EQUIVOCATION");
+        // Evaluate both *authenticated* witnesses before checking head
+        // agreement; tampered unsigned text is never an equivocation signal.
+        var a = witnessA.signed().receipt();
+        var b = witnessB.signed().receipt();
+        if (!sameHead(a, b)) {
+            if (a.logId().equals(b.logId()) &&
+                    a.logVerifierKeyId().equals(b.logVerifierKeyId()) &&
+                    a.treeSize() == b.treeSize() &&
+                    !a.rootSha256().equals(b.rootSha256())) {
+                return blocked(proposalId, "BLOCKED_SIGNED_WITNESS_EQUIVOCATION");
+            }
+            return blocked(proposalId, "BLOCKED_SIGNED_WITNESS_HEAD_MISMATCH");
+        }
+        if (!matchesCheckpoint(a, checkpoint, checkpointHash)) {
+            return blocked(proposalId, "BLOCKED_SIGNED_WITNESS_HEAD_MISMATCH");
         }
 
         return new Evidence(proposalId,
@@ -256,25 +264,31 @@ public final class ExternalCheckpointWitnessQuorumVerifier {
         }
         if (now.isBefore(receipt.observedAt()) ||
                 !now.isBefore(receipt.expiresAt()) ||
-                !receipt.checkpointAt().equals(checkpoint.checkpointAt())) {
+                receipt.observedAt().isAfter(checkpoint.validUntil())) {
             return "BLOCKED_EXPIRED_OR_FUTURE_WITNESS_RECEIPT";
-        }
-        if (!receipt.logId().equals(checkpoint.logId()) ||
-                !receipt.logVerifierKeyId().equals(checkpoint.verifierKeyId()) ||
-                receipt.treeSize() != checkpoint.treeSize() ||
-                !receipt.rootSha256().equals(checkpoint.rootSha256()) ||
-                !receipt.canonicalCheckpointSha256().equals(checkpointHash)) {
-            return "BLOCKED_SIGNED_WITNESS_HEAD_MISMATCH";
         }
         try {
             if (revocation.revoked(trusted.witnessId(),
-                    trusted.verifierKeyId(), checkpointHash, proposalId)) {
+                    trusted.verifierKeyId(),
+                    receipt.canonicalCheckpointSha256(), proposalId)) {
                 return "BLOCKED_EXTERNAL_WITNESS_REVOKED";
             }
         } catch (Exception unavailable) {
             return "BLOCKED_EXTERNAL_WITNESS_REVOCATION_UNAVAILABLE";
         }
         return null;
+    }
+
+    private static boolean matchesCheckpoint(
+            WitnessReceipt r,
+            ExternalCeremonyCheckpointVerifier.Checkpoint checkpoint,
+            String checkpointHash) {
+        return r.checkpointAt().equals(checkpoint.checkpointAt()) &&
+                r.logId().equals(checkpoint.logId()) &&
+                r.logVerifierKeyId().equals(checkpoint.verifierKeyId()) &&
+                r.treeSize() == checkpoint.treeSize() &&
+                r.rootSha256().equals(checkpoint.rootSha256()) &&
+                r.canonicalCheckpointSha256().equals(checkpointHash);
     }
 
     private static boolean sameHead(WitnessReceipt a, WitnessReceipt b) {
