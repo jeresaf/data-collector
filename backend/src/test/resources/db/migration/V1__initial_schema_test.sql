@@ -1232,3 +1232,27 @@ CREATE TABLE typed_mapping_key_enrollment_reviews (
 );
 CREATE INDEX idx_untrusted_key_reviews_project
     ON typed_mapping_key_enrollment_reviews(project_id, reviewed_at);
+
+
+-- M3D4C2B2B1 disposable H2 parity for additive PostgreSQL V7.
+CREATE TABLE typed_mapping_key_ceremony_commitments (
+    request_id UUID PRIMARY KEY
+        REFERENCES typed_mapping_key_enrollment_requests(id),
+    project_id UUID NOT NULL REFERENCES projects(id),
+    proposal_reviewer_user_id UUID NOT NULL REFERENCES users(id),
+    witness_user_id UUID NOT NULL REFERENCES users(id),
+    client_request_id VARCHAR(128) NOT NULL,
+    proposal_evidence_sha256 VARCHAR(64) NOT NULL,
+    reviewer_evidence_sha256 VARCHAR(64) NOT NULL,
+    observed_key_sha256 VARCHAR(64) NOT NULL,
+    external_bundle_sha256 VARCHAR(64) NOT NULL,
+    external_reference VARCHAR(128) NOT NULL,
+    commitment_sha256 VARCHAR(64) NOT NULL,
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT ck_ceremony_witness_not_reviewer
+        CHECK (proposal_reviewer_user_id <> witness_user_id),
+    CONSTRAINT uq_ceremony_witness_client_intent
+        UNIQUE (project_id, witness_user_id, client_request_id)
+);
+CREATE INDEX idx_ceremony_commitments_project
+    ON typed_mapping_key_ceremony_commitments(project_id, recorded_at);
