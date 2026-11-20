@@ -758,4 +758,62 @@ class OpenRosaBasicAuthIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("<formID>sample_form</formID>")));
     }
+
+    @Test
+    void mobileBasicWithWebUsernameCollisionStillUsesOnlyAssignedAppUser() throws Exception {
+        // Simulates two distinct principals with the same *username* in
+        // users and app_users. Each has its own password and account identity.
+        String mobileUsername = "appuser";
+        String webPassword = passwordEncoder.encode("separate-web-password");
+        List<UUID> existingWebIds = jdbcTemplate.query(
+                "SELECT id FROM users WHERE username = ?",
+                (rs, index) -> rs.getObject("id", UUID.class), mobileUsername);
+        if (existingWebIds.isEmpty()) {
+            jdbcTemplate.update("""
+                    INSERT INTO users (
+                      id, username, email, password_hash, first_name, last_name,
+                      is_active, is_verified, failed_login_attempts, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'Colliding', 'Web Account',
+                            true, true, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, UUID.randomUUID(), mobileUsername,
+                    "colliding-openrosa-web@example.test", webPassword);
+        } else {
+            jdbcTemplate.update(
+                    "UPDATE users SET password_hash = ?, is_active = true WHERE id = ?",
+                    webPassword, existingWebIds.get(0));
+        }
+
+        // The mobile Basic credentials must never resolve to the colliding web
+        // account; only the assigned App User can obtain project-scoped formList.
+        mockMvc.perform(get("/formList").header("Authorization", validCredentials)
+                        .accept(MediaType.TEXT_XML))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("sample_form")));
+    }
+
+    @Test
+    void webOnlyPasswordCannotAuthenticateAsMobileOnCollision() throws Exception {
+        String webPassword = "separate-web-password";
+        List<UUID> ids = jdbcTemplate.query(
+                "SELECT id FROM users WHERE username = ?",
+                (rs, index) -> rs.getObject("id", UUID.class), "appuser");
+        if (ids.isEmpty()) {
+            jdbcTemplate.update("""
+                    INSERT INTO users (
+                      id, username, email, password_hash, first_name, last_name,
+                      is_active, is_verified, failed_login_attempts, created_at, updated_at)
+                    VALUES (?, 'appuser', 'collision-mobile-negative@example.test', ?,
+                            'Web', 'Only', true, true, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, UUID.randomUUID(), passwordEncoder.encode(webPassword));
+        } else {
+            jdbcTemplate.update("UPDATE users SET password_hash = ?, is_active = true WHERE id = ?",
+                    passwordEncoder.encode(webPassword), ids.get(0));
+        }
+        String webCredentials = "Basic " + Base64.getEncoder().encodeToString(
+                ("appuser:" + webPassword).getBytes(StandardCharsets.UTF_8));
+
+        mockMvc.perform(get("/formList").header("Authorization", webCredentials)
+                        .accept(MediaType.TEXT_XML))
+                .andExpect(status().isUnauthorized());
+    }
 }
