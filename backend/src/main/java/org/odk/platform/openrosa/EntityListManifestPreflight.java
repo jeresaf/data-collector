@@ -1,6 +1,9 @@
 package org.odk.platform.openrosa;
 
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.CodingErrorAction;
@@ -100,6 +103,39 @@ public final class EntityListManifestPreflight {
             }
         }
         return type;
+    }
+
+    /**
+     * The last local eligibility gate before manifest publication: matches
+     * the recorded MD5 against the exact byte payload supplied by storage.
+     *
+     * <p>This does not fetch storage itself, prevent subsequent mutation, or
+     * grant publication; the caller still needs snapshot/stream stability,
+     * authorization and Android importer qualification.</p>
+     */
+    public static Optional<String> verifiedCandidate(
+            Map<String, Object> metadata, byte[] csvBytes, String recordedHash) {
+        Optional<String> valid = validatedCandidate(metadata, csvBytes);
+        if (valid.isEmpty() || recordedHash == null) {
+            return Optional.empty();
+        }
+
+        String digest = recordedHash.regionMatches(true, 0, "md5:", 0, 4)
+                ? recordedHash.substring(4) : recordedHash;
+        if (!digest.matches("(?i)[a-f0-9]{32}")) {
+            return Optional.empty();
+        }
+        try {
+            byte[] actual = MessageDigest.getInstance("MD5").digest(csvBytes);
+            String actualHex = HexFormat.of().formatHex(actual);
+            return MessageDigest.isEqual(
+                    actualHex.getBytes(StandardCharsets.US_ASCII),
+                    digest.toLowerCase(java.util.Locale.ROOT).getBytes(StandardCharsets.US_ASCII))
+                    ? valid : Optional.empty();
+        } catch (NoSuchAlgorithmException e) {
+            // A missing digest algorithm is not authorization to publish.
+            return Optional.empty();
+        }
     }
 
     private static boolean containsQuotedHeader(byte[] csvBytes) {
