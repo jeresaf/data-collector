@@ -101,42 +101,42 @@ public class ServerOwnedMappingGrantRegistry {
             }
 
             List<RegisteredGrant> records = jdbc.query("""
-                SELECT grant.grant_id, grant.project_id, grant.work_item_id,
-                       grant.recommendation_id, grant.signing_key_id,
-                       grant.source_submission_id, grant.target_form_version_id,
-                       grant.original_reviewer_id, grant.final_signer_id,
-                       grant.source_instance_id, grant.source_xml_sha256,
-                       grant.source_xform_sha256, grant.target_xform_sha256,
-                       grant.recommendation_evidence_sha256,
-                       grant.canonical_envelope_sha256, grant.signature_sha256,
-                       grant.issued_at, grant.not_before, grant.expires_at,
+                SELECT registered.grant_id, registered.project_id, registered.work_item_id,
+                       registered.recommendation_id, registered.signing_key_id,
+                       registered.source_submission_id, registered.target_form_version_id,
+                       registered.original_reviewer_id, registered.final_signer_id,
+                       registered.source_instance_id, registered.source_xml_sha256,
+                       registered.source_xform_sha256, registered.target_xform_sha256,
+                       registered.recommendation_evidence_sha256,
+                       registered.canonical_envelope_sha256, registered.signature_sha256,
+                       registered.issued_at, registered.not_before, registered.expires_at,
                        src.xml_content AS live_source_xml,
                        historical.xml_content AS live_source_form,
                        target.xml_content AS live_target_form,
                        recommendation.client_request_id AS recommendation_request,
                        recommendation.reason_code AS recommendation_reason,
                        recommendation.evidence_sha256 AS recommendation_stored_hash
-                FROM typed_mapping_signed_grant_registry grant
+                FROM typed_mapping_signed_grant_registry registered
                 JOIN record_work_items work
-                  ON work.id = grant.work_item_id
-                 AND work.project_id = grant.project_id
-                JOIN submissions src ON src.id = grant.source_submission_id
+                  ON work.id = registered.work_item_id
+                 AND work.project_id = registered.project_id
+                JOIN submissions src ON src.id = registered.source_submission_id
                 JOIN form_versions historical
                   ON historical.id = work.source_form_version_id
                 JOIN form_versions target
                   ON target.id = work.target_form_version_id
                 JOIN xforms xform ON xform.id = src.form_id
                 JOIN typed_mapping_review_recommendations recommendation
-                  ON recommendation.id = grant.recommendation_id
+                  ON recommendation.id = registered.recommendation_id
                  AND recommendation.work_item_id = work.id
                  AND recommendation.project_id = work.project_id
-                JOIN users reviewer ON reviewer.id = grant.original_reviewer_id
-                JOIN users signer ON signer.id = grant.final_signer_id
-                WHERE grant.grant_id = ? AND grant.project_id = ?
-                  AND grant.signing_key_id = ?
+                JOIN users reviewer ON reviewer.id = registered.original_reviewer_id
+                JOIN users signer ON signer.id = registered.final_signer_id
+                WHERE registered.grant_id = ? AND registered.project_id = ?
+                  AND registered.signing_key_id = ?
                   AND work.state = 'READY' AND work.work_type = 'AMENDMENT'
-                  AND work.source_submission_id = grant.source_submission_id
-                  AND work.source_instance_id = grant.source_instance_id
+                  AND work.source_submission_id = registered.source_submission_id
+                  AND work.source_instance_id = registered.source_instance_id
                   AND src.instance_id = work.source_instance_id
                   AND src.form_version_id = historical.id
                   AND historical.form_id = src.form_id
@@ -146,7 +146,7 @@ public class ServerOwnedMappingGrantRegistry {
                   AND target.is_published = TRUE
                   AND recommendation.source_submission_id = src.id
                   AND recommendation.target_form_version_id = target.id
-                  AND recommendation.reviewer_user_id = grant.original_reviewer_id
+                  AND recommendation.reviewer_user_id = registered.original_reviewer_id
                   AND reviewer.is_active = TRUE AND reviewer.is_verified = TRUE
                   AND signer.is_active = TRUE AND signer.is_verified = TRUE
                   AND reviewer.username <> signer.username
@@ -161,7 +161,7 @@ public class ServerOwnedMappingGrantRegistry {
                   AND EXISTS (
                       SELECT 1 FROM project_members pm
                       JOIN roles role ON role.id = pm.role_id
-                      WHERE pm.project_id = grant.project_id
+                      WHERE pm.project_id = registered.project_id
                         AND pm.user_id = reviewer.id
                         AND pm.is_active = TRUE AND role.is_active = TRUE
                         AND role.name IN ('PROJECT_MANAGER', 'PROJECT_ADMIN')
@@ -170,7 +170,7 @@ public class ServerOwnedMappingGrantRegistry {
                   AND EXISTS (
                       SELECT 1 FROM project_members pm
                       JOIN roles role ON role.id = pm.role_id
-                      WHERE pm.project_id = grant.project_id
+                      WHERE pm.project_id = registered.project_id
                         AND pm.user_id = signer.id
                         AND pm.is_active = TRUE AND role.is_active = TRUE
                         AND role.name = 'PROJECT_ADMIN'
