@@ -2309,4 +2309,240 @@ class OpenRosaRealHttpIntegrationTest {
             fixture.fixture().signerToken(), grantBody).statusCode());
     }
 
+    private String m3d4c2b2aKeyReviewUrl() {
+        return "http://127.0.0.1:" + port + "/api/projects/" +
+            TEST_PROJECT_ID + "/typed-key-enrollment-requests";
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode m3d4c2b2aProposal(
+            String keyId, String clientId) throws Exception {
+        var publicPair = java.security.KeyPairGenerator.getInstance("Ed25519")
+            .generateKeyPair();
+        var json = new com.fasterxml.jackson.databind.ObjectMapper()
+            .createObjectNode();
+        json.put("clientRequestId", clientId);
+        json.put("proposedKeyId", keyId);
+        json.put("purpose", "ROTATION_REVIEW");
+        json.put("publicKeySpkiBase64Url",
+            Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(publicPair.getPublic().getEncoded()));
+        return json;
+    }
+
+    @Test
+    void m3d4c2b2aIndependentPublicKeyReviewCannotActivateTrust() throws Exception {
+        String requester = m3d4bReviewerToken();
+        String independentAdmin = m3d4b2bFinalSignerToken();
+        String endpoint = m3d4c2b2aKeyReviewUrl();
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String keyId = "test-ed25519-review-" + UUID.randomUUID();
+        var body = m3d4c2b2aProposal(keyId, "propose-" + UUID.randomUUID());
+        var created = m3d4b2Post(endpoint, requester, body.toString());
+        assertEquals(201, created.statusCode(), created.body());
+        var proposal = mapper.readTree(created.body());
+        String requestId = proposal.get("requestId").asText();
+        String sha = proposal.get("requestEvidenceSha256").asText();
+        assertEquals("UNTRUSTED_PUBLIC_KEY_PROPOSAL_ONLY",
+            proposal.get("state").asText());
+        assertEquals(keyId, proposal.get("proposedKeyId").asText());
+        assertTrue(sha.matches("[0-9a-f]{64}"));
+        assertFalse(proposal.get("trustedKeyRegistered").asBoolean());
+        assertFalse(proposal.get("canIssueGrant").asBoolean());
+        assertFalse(proposal.get("canTransfer").asBoolean());
+        assertFalse(proposal.get("canSubmit").asBoolean());
+        assertFalse(created.body().contains("publicKeySpkiBase64Url"));
+
+        var retry = m3d4b2Post(endpoint, requester, body.toString());
+        assertEquals(201, retry.statusCode(), retry.body());
+        assertEquals(requestId,
+            mapper.readTree(retry.body()).get("requestId").asText());
+
+        var changed = body.deepCopy();
+        changed.put("purpose", "COMPROMISE_REPLACEMENT");
+        assertEquals(409, m3d4b2Post(endpoint,
+            requester, changed.toString()).statusCode());
+
+        String url = endpoint + "/" + requestId;
+        assertEquals(404, m3d4bReviewerGet(
+            url + "/review-context", requester).statusCode());
+        var context = m3d4bReviewerGet(
+            url + "/review-context", independentAdmin);
+        assertEquals(200, context.statusCode(), context.body());
+        var reviewContext = mapper.readTree(context.body());
+        assertEquals(sha, reviewContext.get("requestEvidenceSha256").asText());
+        assertEquals("ELIGIBLE_TO_REVIEW_UNTRUSTED_KEY_ONLY",
+            reviewContext.get("state").asText());
+        assertNotEquals(reviewContext.get("originalRequesterId").asText(),
+            reviewContext.get("independentReviewerId").asText());
+
+        var review = mapper.createObjectNode();
+        review.put("disposition", "REQUIRES_OFFLINE_KEY_CEREMONY");
+        review.put("requestEvidenceSha256", sha);
+        var reviewed = m3d4b2Post(url + "/reviews",
+            independentAdmin, review.toString());
+        assertEquals(201, reviewed.statusCode(), reviewed.body());
+        var result = mapper.readTree(reviewed.body());
+        assertEquals("OFFLINE_CEREMONY_REQUIRED_NO_TRUST",
+            result.get("state").asText());
+        assertFalse(result.get("trustedKeyRegistered").asBoolean());
+        assertFalse(result.get("canIssueGrant").asBoolean());
+        assertFalse(result.get("canTransfer").asBoolean());
+        assertFalse(result.get("canSubmit").asBoolean());
+        assertTrue(result.get("reviewEvidenceSha256").asText()
+            .matches("[0-9a-f]{64}"));
+        assertEquals(201, m3d4b2Post(url + "/reviews",
+            independentAdmin, review.toString()).statusCode());
+        var reversed = review.deepCopy();
+        reversed.put("disposition", "REJECTED");
+        assertEquals(409, m3d4b2Post(url + "/reviews",
+            independentAdmin, reversed.toString()).statusCode());
+
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_key_enrollment_requests
+            WHERE id = ?
+            """, Integer.class, UUID.fromString(requestId)));
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_key_enrollment_reviews
+            WHERE request_id = ? AND disposition = 'REQUIRES_OFFLINE_KEY_CEREMONY'
+            """, Integer.class, UUID.fromString(requestId)));
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_trust_keys WHERE key_id = ?
+            """, Integer.class, keyId));
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_signed_grant_registry
+            WHERE signing_key_id = ?
+            """, Integer.class, keyId));
+    }
+
+    @Test
+    void m3d4c2b2aSelfReviewAndStaleEnrollmentEvidenceFailClosed()
+            throws Exception {
+        String admin = m3d4b2bFinalSignerToken();
+        String url = m3d4c2b2aKeyReviewUrl();
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String keyId = "test-self-review-" + UUID.randomUUID();
+        var body = m3d4c2b2aProposal(keyId, "self-" + UUID.randomUUID());
+        var response = m3d4b2Post(url, admin, body.toString());
+        assertEquals(201, response.statusCode(), response.body());
+        var json = mapper.readTree(response.body());
+        String requestId = json.get("requestId").asText();
+        String reviewUrl = url + "/" + requestId + "/reviews";
+        var decision = mapper.createObjectNode();
+        decision.put("disposition", "REQUIRES_OFFLINE_KEY_CEREMONY");
+        decision.put("requestEvidenceSha256",
+            json.get("requestEvidenceSha256").asText());
+        assertEquals(409, m3d4b2Post(reviewUrl, admin,
+            decision.toString()).statusCode());
+        assertEquals(409, m3d4bReviewerGet(
+            url + "/" + requestId + "/review-context", admin).statusCode());
+
+        String requester = m3d4bReviewerToken();
+        String otherKey = "test-review-evidence-" + UUID.randomUUID();
+        var second = m3d4b2Post(url, requester,
+            m3d4c2b2aProposal(otherKey, "review-" + UUID.randomUUID()).toString());
+        assertEquals(201, second.statusCode(), second.body());
+        var secondJson = mapper.readTree(second.body());
+        String secondUrl = url + "/" + secondJson.get("requestId").asText();
+        var stale = mapper.createObjectNode();
+        stale.put("disposition", "REJECTED");
+        stale.put("requestEvidenceSha256", "f".repeat(64));
+        assertEquals(409, m3d4b2Post(
+            secondUrl + "/reviews", admin, stale.toString()).statusCode());
+
+        UUID proposal = UUID.fromString(secondJson.get("requestId").asText());
+        try {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_key_enrollment_requests
+                SET purpose = 'NEW_PROJECT_PILOT' WHERE id = ?
+                """, proposal);
+            assertEquals(409, m3d4bReviewerGet(
+                secondUrl + "/review-context", admin).statusCode());
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_key_enrollment_requests
+                SET purpose = 'ROTATION_REVIEW' WHERE id = ?
+                """, proposal);
+        }
+        assertEquals(200, m3d4bReviewerGet(
+            secondUrl + "/review-context", admin).statusCode());
+        UUID requesterId = secondJson.get("requesterId") == null ?
+            jdbcTemplate.queryForObject(
+                "SELECT requester_user_id FROM typed_mapping_key_enrollment_requests WHERE id = ?",
+                UUID.class, proposal) :
+            UUID.fromString(secondJson.get("requesterId").asText());
+        try {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = FALSE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, requesterId);
+            assertEquals(409, m3d4b2Post(secondUrl + "/reviews",
+                admin, stale.toString()).statusCode());
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = TRUE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, requesterId);
+        }
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_key_enrollment_reviews
+            WHERE request_id = ?
+            """, Integer.class, proposal));
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_trust_keys WHERE key_id = ?
+            """, Integer.class, otherKey));
+    }
+
+    @Test
+    void m3d4c2b2aMobileAnonymousAndMalformedKeysCannotEnterTrustReview()
+            throws Exception {
+        String url = m3d4c2b2aKeyReviewUrl();
+        String requester = m3d4bReviewerToken();
+        String admin = m3d4b2bFinalSignerToken();
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String keyId = "test-denials-" + UUID.randomUUID();
+        var body = m3d4c2b2aProposal(keyId, "deny-" + UUID.randomUUID());
+        var anonymous = m3d4b2Post(url, null, body.toString());
+        assertTrue(anonymous.statusCode() == 401 || anonymous.statusCode() == 403);
+        var mobile = m3d4b2Post(url, authorization, body.toString());
+        assertTrue(mobile.statusCode() == 401 || mobile.statusCode() == 403);
+
+        var forged = body.deepCopy();
+        forged.put("publicKeySpkiBase64Url",
+            Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(new byte[44]));
+        assertEquals(400, m3d4b2Post(url, requester,
+            forged.toString()).statusCode());
+        var wrongPurpose = body.deepCopy();
+        wrongPurpose.put("purpose", "ACTIVATE_TRANSFER");
+        assertEquals(400, m3d4b2Post(url, requester,
+            wrongPurpose.toString()).statusCode());
+
+        var created = m3d4b2Post(url, requester, body.toString());
+        assertEquals(201, created.statusCode(), created.body());
+        var proposal = mapper.readTree(created.body());
+        String reviewUrl = url + "/" + proposal.get("requestId").asText();
+        var review = mapper.createObjectNode();
+        review.put("disposition", "ACTIVATE_KEY");
+        review.put("requestEvidenceSha256",
+            proposal.get("requestEvidenceSha256").asText());
+        assertEquals(400, m3d4b2Post(reviewUrl + "/reviews",
+            admin, review.toString()).statusCode());
+        review.put("disposition", "REJECTED");
+        assertTrue(List.of(401, 403).contains(
+            m3d4b2Post(reviewUrl + "/reviews",
+                authorization, review.toString()).statusCode()));
+        assertTrue(List.of(401, 403).contains(
+            m3d4b2Post(reviewUrl + "/reviews",
+                null, review.toString()).statusCode()));
+        assertEquals(404, m3d4b2Post(
+            "http://127.0.0.1:" + port + "/api/projects/" + UUID.randomUUID() +
+            "/typed-key-enrollment-requests/" + proposal.get("requestId").asText() +
+            "/reviews", admin, review.toString()).statusCode());
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_key_enrollment_reviews
+            WHERE request_id = ?
+            """, Integer.class, UUID.fromString(
+                proposal.get("requestId").asText())));
+    }
+
 }
