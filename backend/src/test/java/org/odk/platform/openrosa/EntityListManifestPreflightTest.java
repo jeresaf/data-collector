@@ -59,4 +59,56 @@ class EntityListManifestPreflightTest {
         assertTrue(EntityListManifestPreflight.declaredCandidate(
                 Map.of("odkMediaType", "entityList"), new byte[] {(byte) 0xff, 0x00}).isEmpty());
     }
+    @Test
+    void validatesCanonicalUniqueUuidAndPositiveVersionAcrossRows() {
+        String valid = "name,label,__version,notes\n"
+                + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,\"Household, north\",1,\"quoted \"\"value\"\"\ncontinued\"\n"
+                + "0c622aa1-3c8a-4e76-bdbc-824f6945d325,South,2,ok\n";
+        assertEquals(Optional.of("entityList"), EntityListManifestPreflight.validatedCandidate(
+                Map.of("odkMediaType", "entityList"), valid.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void rejectsDuplicateEntityIdsAndInvalidVersions() {
+        String id = "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad";
+        for (String csv : new String[] {
+                "name,label,__version\n" + id + ",A,1\n" + id + ",B,2\n",
+                "name,label,__version\n" + id + ",A,0\n",
+                "name,label,__version\n" + id + ",A,-1\n",
+                "name,label,__version\n" + id + ",A,2147483648\n",
+                "name,label,__version\nnot-a-uuid,A,1\n",
+                "name,label,__version\n" + id + ",A,01\n"
+        }) {
+            assertTrue(EntityListManifestPreflight.validatedCandidate(
+                    Map.of("odkMediaType", "entityList"), csv.getBytes(StandardCharsets.UTF_8)).isEmpty(),
+                    csv);
+        }
+    }
+
+    @Test
+    void rejectsTruncatedRowsMalformedQuotesAndRepeatedBlankRecords() {
+        String id = "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad";
+        for (String csv : new String[] {
+                "name,label,__version\n" + id + ",A\n",
+                "name,label,__version\n" + id + ",A,1,EXTRA\n",
+                "name,label,__version\n" + id + ",\"unfinished,1\n",
+                "name,label,__version\n" + id + ",A\"bad,1\n",
+                "name,label,__version\n" + id + ",A,1\n\n"
+        }) {
+            assertTrue(EntityListManifestPreflight.validatedCandidate(
+                    Map.of("odkMediaType", "entityList"), csv.getBytes(StandardCharsets.UTF_8)).isEmpty(),
+                    csv);
+        }
+    }
+
+    @Test
+    void priorHeaderPreflightDoesNotImplyFullRowValidation() {
+        byte[] malformedRow = "name,label,__version\nnot-a-uuid,Value,0\n"
+                .getBytes(StandardCharsets.UTF_8);
+        assertEquals(Optional.of("entityList"), EntityListManifestPreflight.declaredCandidate(
+                Map.of("odkMediaType", "entityList"), malformedRow));
+        assertTrue(EntityListManifestPreflight.validatedCandidate(
+                Map.of("odkMediaType", "entityList"), malformedRow).isEmpty());
+    }
+
 }
