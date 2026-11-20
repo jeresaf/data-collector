@@ -10,7 +10,6 @@ import org.springframework.lang.NonNull;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
@@ -25,7 +24,7 @@ import java.util.Base64;
 @Slf4j
 public class OpenRosaBasicAuthFilter extends OncePerRequestFilter {
 
-    private final UserDetailsService userDetailsService;
+    private final UserDetailsServiceImpl userDetailsService;
     private final PasswordEncoder passwordEncoder;
 
     @Override
@@ -73,7 +72,7 @@ public class OpenRosaBasicAuthFilter extends OncePerRequestFilter {
 
             UserDetails userDetails;
             try {
-                userDetails = userDetailsService.loadUserByUsername(username);
+                userDetails = userDetailsService.loadAppUserByUsername(username);
             } catch (Exception e) {
                 // Do not reveal whether a username exists.
                 log.debug("OpenRosa Basic authentication failed for username: {}", username);
