@@ -9,7 +9,7 @@
 
 The original M0–M21 platform roadmap and its task IDs were reused for a distinct ODK 2026 migration stream. New security/record steps then accumulated names like `M3D4C2B2B2C3` and Android `M4C-2B-3C-3B-3B`. These are **legacy implementation labels**, not a sustainable roadmap. A green CI job on a Draft PR is not an integrated milestone, a physical-client certification, or release approval.
 
-At this snapshot, `jeresaf/data-collector` has **22 open Draft PRs #1–#22**, and `jeresaf/collect` has **22 open Draft modernization PRs #16–#37**. There are **44 unmerged modernization PRs** across the two repositories. All Android #16–#37 and backend #1–#22 remain Draft, not merged. Existing earlier Android PR #15 is merged but does not certify the post-upstream-migration behavior.
+At the first inventory snapshot, `jeresaf/data-collector` had **22 feature Draft PRs #1–#22**, and `jeresaf/collect` had **22 Draft modernization PRs #16–#37**, giving **44** in total. The later scoped **U01-T03 [backend Draft PR #25](https://github.com/jeresaf/data-collector/pull/25)** adds one feature PR: **45 unmerged feature Drafts** now exist (23 backend + 22 Android). [Roadmap documentation Draft #23](https://github.com/jeresaf/data-collector/pull/23) is separate; [U05 issue #24](https://github.com/jeresaf/data-collector/issues/24) is a tracked task, not a PR. All feature Drafts remain unmerged. Earlier merged Android #15 does not certify post-forward-port behavior.
 
 A GitHub comparison on 20 November 2026 shows the last backend modernization Draft branch **159 commits ahead, 0 behind** backend `main` (94 reported changed files), and the latest Android modernization Draft branch **5,803 commits ahead and 129 behind** `ubos-local`. Android commit counts include large upstream ODK history: **do not interpret 129 as a measured number of missing customizations**. The old customization inventory and equivalent implementation check are still required. See [PR crosswalk](MODERNIZATION_PR_CROSSWALK.md).
 
@@ -49,6 +49,8 @@ A GitHub comparison on 20 November 2026 shows the last backend modernization Dra
 
 **Priorities are dependency-driven, not merely number-driven.** U01 is next. U02 and U03 may be integration-qualified in parallel afterward; U04/U05 may develop against deny-only work; **positive historical-value copying** needs U06+U07; **protected submission** needs U08; rollout requires U09. The goal is a functioning generic collection system, not prolonged speculative attestation work.
 
+**U01-T03 execution addendum (20 November 2026):** Original `main`-based Draft roadmap CI failures were traced to tests already corrected by passing backend PR #2 (cleared stale MockMvc security contexts and updated browser fixture selectors/validation). A **separate security remediation [Draft PR #25](https://github.com/jeresaf/data-collector/pull/25)** introduces typed mobile app-user identity, mobile-only OpenRosa Basic lookup, fail-closed active UUID rechecks and collision tests. Focused H2/PostgreSQL 15 qualification passed [Actions #44781486149](https://github.com/jeresaf/data-collector/actions/runs/44781486149). **Broad CI and integration/release acceptance remain separate.** This is `U01-T03`, **not a new milestone**. [U05-T01 typed Entity List protocol repair](https://github.com/jeresaf/data-collector/issues/24) remains open.
+
 ## Cross-cutting acceptance gates (NOT milestone numbers)
 
 | Gate | Required proof | Can be deferred? |
@@ -74,7 +76,7 @@ A GitHub comparison on 20 November 2026 shows the last backend modernization Dra
 
 1. **U01-T01: Inventory and freeze a baseline manifest** of every Draft PR, its base/head branch, current passing CI evidence, and its original legacy label. **Initial inventory done** in [crosswalk](MODERNIZATION_PR_CROSSWALK.md). Both repositories remain unmerged.
 2. **U01-T02: Build source-level `ubos-local` → ODK 2026 feature diff** including original app-user permissions, form download, notifications, source instance ownership, admin unit refresh, offline queues, version-specific editing and attachment handling. Flag each `PRESERVED`, `REIMPLEMENTED`, `INTENTIONALLY_RETIRED`, `MISSING`, or `UNVERIFIED`, with file/test evidence.
-3. **U01-T03: Audit branch topology, integration conflicts and CI for exact backend/android tips.** Backend Draft #1 is parallel to the #2–#22 stack; Android #16 depends on forward-port root and was built against divergent `ubos-local`. Do **not** merge 44 PRs blindly, force-push old provenance or silently delete work.
+3. **U01-T03: Audit branch topology, integration conflicts and CI for exact backend/android tips.** Backend Draft #1 is parallel to the #2–#22 stack; Android #16 depends on forward-port root and was built against divergent `ubos-local`. Do **not** merge 45 feature PRs blindly, force-push old provenance or silently delete work.
 4. **U01-T04: Propose and qualify an integration sequence** with conflict/duplicate-commit resolution, required squashes where needed, review checkpoints, and rollback. Seek the owner's explicit approval **before** actual integration/merge or release.
 5. **U01-T05: Once integration is approved, repeat G01–G03 exact-tip tests** and prepare U02/U03 functional acceptance work. Do not claim U01 accepted until actual integration is proven.
 
