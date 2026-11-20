@@ -138,15 +138,15 @@ class EntityListManifestPreflightTest {
     @Test
     void verifiedCandidateRejectsChangedOrInvalidRecordsRegardlessOfMatchingDigest() throws Exception {
         Map<String, Object> declaration = Map.of("odkMediaType", "entityList");
-        byte[] modified = ("name,label,__version\\n"
-                + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,Household,2\\n")
+        byte[] modified = ("name,label,__version\n"
+                + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,Household,2\n")
                 .getBytes(StandardCharsets.UTF_8);
         String originalHash = HexFormat.of().formatHex(
                 MessageDigest.getInstance("MD5").digest(VALID_MINIMUM));
         assertTrue(EntityListManifestPreflight.verifiedCandidate(
                 declaration, modified, originalHash).isEmpty());
 
-        byte[] malformed = "name,label,__version\\nnot-uuid,Label,1\\n"
+        byte[] malformed = "name,label,__version\nnot-uuid,Label,1\n"
                 .getBytes(StandardCharsets.UTF_8);
         String malformedHash = HexFormat.of().formatHex(
                 MessageDigest.getInstance("MD5").digest(malformed));
