@@ -153,4 +153,32 @@ class UserDetailsServiceImplTest {
         assertThrows(UsernameNotFoundException.class, () -> 
                 userDetailsService.loadUserByUsername("nonexistent"));
     }
+
+    @Test
+    void mobileLookupUsesAppUserEvenIfWebUsernameWouldCollide() {
+        UUID appId = UUID.randomUUID();
+        org.odk.platform.domain.AppUser app = org.odk.platform.domain.AppUser.builder()
+                .id(appId).username("shared-login")
+                .passwordHash("mobile-hash").isActive(true).build();
+        when(appUserRepository.findByUsername("shared-login")).thenReturn(Optional.of(app));
+
+        MobileAppUserDetails mobile = userDetailsService.loadAppUserByUsername("shared-login");
+        assertEquals(appId, mobile.appUserId());
+        assertEquals("mobile-hash", mobile.getPassword());
+        assertTrue(mobile.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_APP_USER")));
+        org.mockito.Mockito.verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void mobileLookupRejectsInactiveAndUnknownAccountsWithoutWebFallback() {
+        when(appUserRepository.findByUsername("inactive")).thenReturn(Optional.of(
+                org.odk.platform.domain.AppUser.builder().id(UUID.randomUUID())
+                        .username("inactive").passwordHash("hash").isActive(false).build()));
+
+        assertThrows(UsernameNotFoundException.class,
+                () -> userDetailsService.loadAppUserByUsername("inactive"));
+        assertThrows(UsernameNotFoundException.class,
+                () -> userDetailsService.loadAppUserByUsername("unknown"));
+        org.mockito.Mockito.verifyNoInteractions(userRepository);
+    }
 }
