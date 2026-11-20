@@ -73,6 +73,7 @@ class OpenRosaRealHttpIntegrationTest {
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private org.odk.platform.security.JwtService jwtService;
+    @Autowired private org.odk.platform.service.ServerOwnedMappingGrantRegistry typedGrantRegistry;
     @Autowired private org.springframework.security.core.userdetails.UserDetailsService userDetailsService;
     private HttpClient client;
     private String authorization;
@@ -1931,6 +1932,242 @@ class OpenRosaRealHttpIntegrationTest {
         assertEquals(409, m3d4bReviewerGet(
             url, f.signerToken()).statusCode(),
             "Independent final denial is a veto even for native candidates");
+    }
+
+    private record M3D4C2ATestGrant(
+        M3D4B2BFixture fixture,
+        org.odk.platform.service.SignedMappingGrantVerifier.SignedGrant signed,
+        java.security.KeyPair keys,
+        java.time.Instant clock) { }
+
+    /**
+     * This fixture signs test-only inert metadata. It never creates an issuer
+     * API or a production private key. No source answers leave the database.
+     */
+    private M3D4C2ATestGrant m3d4c2aSyntheticSignedGrant() throws Exception {
+        M3D4B2BFixture f = m3d4b2bFixture();
+        UUID reviewerId = jdbcTemplate.queryForObject(
+            "SELECT reviewer_user_id FROM typed_mapping_review_recommendations WHERE id = ?",
+            UUID.class, UUID.fromString(f.recommendationId()));
+        UUID signerId = jdbcTemplate.queryForObject(
+            "SELECT id FROM users WHERE username = 'm3d4b2b_final_web_authorizer'",
+            UUID.class);
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT source_submission_id FROM record_work_items WHERE id = ?",
+            UUID.class, UUID.fromString(f.workId()));
+        UUID targetId = jdbcTemplate.queryForObject(
+            "SELECT target_form_version_id FROM record_work_items WHERE id = ?",
+            UUID.class, UUID.fromString(f.workId()));
+        var ctxResponse = m3d4bReviewerGet(
+            m3d4b2Endpoint(f.workId()) + "/context", f.reviewerToken());
+        assertEquals(200, ctxResponse.statusCode(), ctxResponse.body());
+        var ctx = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(ctxResponse.body());
+        var clock = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        var grant = new org.odk.platform.service.SignedMappingGrantVerifier.Grant(
+            UUID.randomUUID(), TEST_PROJECT_ID, UUID.fromString(f.workId()),
+            UUID.fromString(f.recommendationId()), sourceId, targetId,
+            reviewerId, signerId, f.originalInstanceId(),
+            ctx.get("sourceXmlSha256").asText(),
+            ctx.get("sourceXFormSha256").asText(),
+            ctx.get("targetXFormSha256").asText(),
+            f.recommendationSha256(),
+            "m3d4c2a-test-key-" + UUID.randomUUID(),
+            clock.minusSeconds(90), clock.minusSeconds(30),
+            clock.plusSeconds(3600),
+            List.of(new org.odk.platform.service.SignedMappingGrantVerifier.FieldRule(
+                "/data/name",
+                org.odk.platform.service.SignedMappingGrantVerifier.NativeType.TEXT)));
+        var keys = java.security.KeyPairGenerator.getInstance("Ed25519")
+            .generateKeyPair();
+        var signer = java.security.Signature.getInstance("Ed25519");
+        signer.initSign(keys.getPrivate());
+        signer.update(
+            org.odk.platform.service.SignedMappingGrantVerifier.canonicalBytes(grant));
+        var signed = new org.odk.platform.service.SignedMappingGrantVerifier.SignedGrant(
+            grant, Base64.getUrlEncoder().withoutPadding().encodeToString(signer.sign()));
+        return new M3D4C2ATestGrant(f, signed, keys, clock);
+    }
+
+    private String m3d4c2aHex(byte[] data) throws Exception {
+        return java.util.HexFormat.of().formatHex(
+            MessageDigest.getInstance("SHA-256").digest(data));
+    }
+
+    private void m3d4c2aRegisterSynthetic(
+        M3D4C2ATestGrant fixture) throws Exception {
+        var g = fixture.signed().grant();
+        java.sql.Timestamp from = java.sql.Timestamp.from(
+            fixture.clock().minusSeconds(3600));
+        java.sql.Timestamp until = java.sql.Timestamp.from(
+            fixture.clock().plusSeconds(86400));
+        jdbcTemplate.update("""
+            INSERT INTO typed_mapping_trust_keys
+            (key_id, project_id, public_key_spki,
+             valid_from, valid_until, registered_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, g.signingKeyId(), g.projectId(),
+            fixture.keys().getPublic().getEncoded(), from, until, g.finalSignerId());
+        jdbcTemplate.update("""
+            INSERT INTO typed_mapping_signed_grant_registry
+            (grant_id, project_id, work_item_id, recommendation_id,
+             signing_key_id, source_submission_id, target_form_version_id,
+             original_reviewer_id, final_signer_id, source_instance_id,
+             source_xml_sha256, source_xform_sha256, target_xform_sha256,
+             recommendation_evidence_sha256, canonical_envelope_sha256,
+             signature_sha256, issued_at, not_before, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, g.grantId(), g.projectId(), g.workId(), g.recommendationId(),
+            g.signingKeyId(), g.sourceSubmissionId(), g.targetFormVersionId(),
+            g.originalReviewerId(), g.finalSignerId(), g.sourceInstanceId(),
+            g.sourceXmlSha256(), g.sourceXFormSha256(), g.targetXFormSha256(),
+            g.recommendationEvidenceSha256(),
+            m3d4c2aHex(org.odk.platform.service.SignedMappingGrantVerifier
+                .canonicalBytes(g)),
+            m3d4c2aHex(Base64.getUrlDecoder()
+                .decode(fixture.signed().signatureBase64Url())),
+            java.sql.Timestamp.from(g.issuedAt()),
+            java.sql.Timestamp.from(g.notBefore()),
+            java.sql.Timestamp.from(g.expiresAt()));
+        jdbcTemplate.update("""
+            INSERT INTO typed_mapping_registered_grant_fields
+                (grant_id, field_path, native_type)
+            VALUES (?, '/data/name', 'TEXT')
+            """, g.grantId());
+    }
+
+    @Test
+    void m3d4c2aUnknownOrRegisteredSyntheticGrantNeverAuthorizesTransfer()
+            throws Exception {
+        var fixture = m3d4c2aSyntheticSignedGrant();
+        var grant = fixture.signed().grant();
+
+        // A genuinely signed envelope alone is not in the trusted registry.
+        var unknown = typedGrantRegistry.inspect(
+            fixture.signed(), fixture.clock());
+        assertEquals("BLOCKED_UNREGISTERED_TRUST_KEY", unknown.state());
+        assertFalse(unknown.canReadHistoricalAnswers());
+        assertFalse(unknown.canTransfer());
+        assertFalse(unknown.canFinalize());
+        assertFalse(unknown.canSubmit());
+
+        jdbcTemplate.update("""
+            INSERT INTO typed_mapping_trust_keys
+            (key_id, project_id, public_key_spki,
+             valid_from, valid_until, registered_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, grant.signingKeyId(), grant.projectId(),
+            fixture.keys().getPublic().getEncoded(),
+            java.sql.Timestamp.from(fixture.clock().minusSeconds(3600)),
+            java.sql.Timestamp.from(fixture.clock().plusSeconds(3600)),
+            grant.finalSignerId());
+        assertEquals("BLOCKED_GRANT_NOT_REGISTERED_OR_WORK_CHANGED",
+            typedGrantRegistry.inspect(fixture.signed(), fixture.clock()).state());
+
+        jdbcTemplate.update("DELETE FROM typed_mapping_trust_keys WHERE key_id = ?",
+            grant.signingKeyId());
+        m3d4c2aRegisterSynthetic(fixture);
+        var verified = typedGrantRegistry.inspect(
+            fixture.signed(), fixture.clock());
+        assertEquals("VERIFIED_SIGNATURE_ONLY_NO_OPERATIONAL_GRANT",
+            verified.state());
+        assertFalse(verified.canReadHistoricalAnswers());
+        assertFalse(verified.canTransfer());
+        assertFalse(verified.canFinalize());
+        assertFalse(verified.canSubmit());
+        assertEquals("BLOCKED_NOT_YET_VALID_OR_EXPIRED",
+            typedGrantRegistry.inspect(
+                fixture.signed(), fixture.clock().plusSeconds(3601)).state());
+
+        jdbcTemplate.update("""
+            INSERT INTO typed_mapping_grant_revocations
+                (grant_id, revoked_by, reason)
+            VALUES (?, ?, 'CONSENT_WITHDRAWN')
+            """, grant.grantId(), grant.finalSignerId());
+        assertEquals("BLOCKED_REVOKED_OR_DENIED",
+            typedGrantRegistry.inspect(fixture.signed(), fixture.clock()).state());
+    }
+
+    @Test
+    void m3d4c2aKeyRevocationAndChangedReviewerRoleFailClosed()
+            throws Exception {
+        var fixture = m3d4c2aSyntheticSignedGrant();
+        m3d4c2aRegisterSynthetic(fixture);
+        var g = fixture.signed().grant();
+        assertEquals("VERIFIED_SIGNATURE_ONLY_NO_OPERATIONAL_GRANT",
+            typedGrantRegistry.inspect(
+                fixture.signed(), fixture.clock()).state());
+
+        UUID reviewer = g.originalReviewerId();
+        try {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = FALSE
+                WHERE project_id = ? AND user_id = ?
+                """, g.projectId(), reviewer);
+            assertEquals("BLOCKED_GRANT_NOT_REGISTERED_OR_WORK_CHANGED",
+                typedGrantRegistry.inspect(
+                    fixture.signed(), fixture.clock()).state());
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = TRUE
+                WHERE project_id = ? AND user_id = ?
+                """, g.projectId(), reviewer);
+        }
+        assertEquals("VERIFIED_SIGNATURE_ONLY_NO_OPERATIONAL_GRANT",
+            typedGrantRegistry.inspect(
+                fixture.signed(), fixture.clock()).state());
+
+        jdbcTemplate.update("""
+            INSERT INTO typed_mapping_key_revocations
+            (key_id, revoked_by, reason)
+            VALUES (?, ?, 'KEY_COMPROMISE')
+            """, g.signingKeyId(), g.finalSignerId());
+        assertEquals("BLOCKED_REVOKED_OR_DENIED",
+            typedGrantRegistry.inspect(
+                fixture.signed(), fixture.clock()).state());
+        assertFalse(typedGrantRegistry.inspect(
+            fixture.signed(), fixture.clock()).canTransfer());
+    }
+
+    @Test
+    void m3d4c2aFinalDenialAndSourceMutationVetoRegisteredTestEnvelope()
+            throws Exception {
+        var fixture = m3d4c2aSyntheticSignedGrant();
+        m3d4c2aRegisterSynthetic(fixture);
+        var g = fixture.signed().grant();
+        assertEquals("VERIFIED_SIGNATURE_ONLY_NO_OPERATIONAL_GRANT",
+            typedGrantRegistry.inspect(
+                fixture.signed(), fixture.clock()).state());
+
+        UUID source = g.sourceSubmissionId();
+        String sourceXml = jdbcTemplate.queryForObject(
+            "SELECT xml_content FROM submissions WHERE id = ?", String.class, source);
+        try {
+            jdbcTemplate.update("""
+                UPDATE submissions SET xml_content = ?
+                WHERE id = ?
+                """, sourceXml.replace("NONDISCLOSABLE TEST ANSWER",
+                        "CHANGED SYNTHETIC ANSWER"), source);
+            assertEquals("BLOCKED_LIVE_SOURCE_OR_REGISTRY_DRIFT",
+                typedGrantRegistry.inspect(
+                    fixture.signed(), fixture.clock()).state());
+        } finally {
+            jdbcTemplate.update("UPDATE submissions SET xml_content = ? WHERE id = ?",
+                sourceXml, source);
+        }
+
+        var denial = new com.fasterxml.jackson.databind.ObjectMapper()
+            .createObjectNode();
+        denial.put("clientRequestId", "revoked-review-" + UUID.randomUUID());
+        denial.put("reasonCode", "CONSENT_UNCLEAR");
+        denial.put("recommendationEvidenceSha256",
+            fixture.fixture().recommendationSha256());
+        var denied = m3d4b2Post(m3d4b2bUrl(fixture.fixture()),
+            fixture.fixture().signerToken(), denial.toString());
+        assertEquals(201, denied.statusCode(), denied.body());
+        assertEquals("BLOCKED_REVOKED_OR_DENIED",
+            typedGrantRegistry.inspect(
+                fixture.signed(), fixture.clock()).state());
     }
 
 }
