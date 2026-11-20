@@ -6,6 +6,8 @@
 - **[Cross-repository PR crosswalk](docs/MODERNIZATION_PR_CROSSWALK.md)**: original legacy implementation labels mapped to current modernization milestones; all 44 unmerged Draft PRs audited.
 - **[U01 integration qualification checklist](docs/U01_INTEGRATION_QUALIFICATION.md)**: exact tasks and no-merge constraints for reconciling `ubos-local` and ODK Collect 2026.
 - **[U01-T02 Android source-parity evidence](docs/U01_T02_ANDROID_SOURCE_PARITY_AUDIT.md)**: verified old administration-unit refresh code-path loss at the ODK 2026 forward-port and generic client foundations.
+- **[U01-T02 legacy feature migration ledger](docs/U01_T02_LEGACY_ANDROID_CHANGESET_LEDGER.md)**: all 15 merged legacy Android PRs, with rejected/corrected entry, retry, repeat and refresh parity risks.
+- **[U01-T02 / U05 typed Entity List manifest seam](docs/U01_T02_ODK_ENTITY_LIST_SEAM.md)**: exact backend manifest versus ODK parser/importer mismatch and safe remediation acceptance.
 - **[U01-T03 baseline CI and PR integration findings](docs/U01_T03_CI_BASELINE_AND_PR_INTEGRATION.md)**: main-based CI failures, duplicate PR #1 payload and validated PR #2 fixture changes.
 - **[Original M0–M21 platform tracker](odk-platform-task-progress.md)**: authoritative historical 279-task milestone IDs; 15 August 2026 snapshot, not a current production release sign-off.
 
