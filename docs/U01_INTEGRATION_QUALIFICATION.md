@@ -20,6 +20,8 @@ Make the 22 backend and 22 Android open modernization Draft PRs safely integrabl
 
 **First completed research slices:** [U01-T02 source-code findings](U01_T02_ANDROID_SOURCE_PARITY_AUDIT.md) and [U01-T03 CI / PR-overlap findings](U01_T03_CI_BASELINE_AND_PR_INTEGRATION.md). Treat them as partial evidence only.
 
+**Additional source findings:** [15 merged Android PR migration ledger](U01_T02_LEGACY_ANDROID_CHANGESET_LEDGER.md), [ODK Entity List/backend manifest compatibility finding](U01_T02_ODK_ENTITY_LIST_SEAM.md), and [exact backend 400 / username collision / browser failure investigation](U01_T03_CI_BASELINE_AND_PR_INTEGRATION.md). The client does implement an ODK native Entity List importer but Data Collector currently emits the referenced uploaded dataset as untyped media; this is a concrete **U05** seam rather than complete absence of native entity support. U01-T02/T03 remain **PARTIAL**.
+
 ## Source-level `ubos-local` preservation audit: required matrix
 
 For each custom behavior, record source path+symbol+base commit, desired behavior/test, new path+symbol+head commit, equivalence verdict, and action/PR. Permitted verdicts:
