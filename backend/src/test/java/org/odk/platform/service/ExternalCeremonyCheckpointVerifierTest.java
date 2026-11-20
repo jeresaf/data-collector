@@ -310,7 +310,8 @@ class ExternalCeremonyCheckpointVerifierTest {
     void futureExpiredAndUnboundedLogCheckpointsFailClosed()
             throws Exception {
         var s = scenario();
-        assertEquals("BLOCKED_CHECKPOINT_TIME_WINDOW",
+        // The attestation itself is not yet valid before its issued time.
+        assertEquals("BLOCKED_INDEPENDENT_ATTESTATION_INVALID",
                 verify(s, s.signedCheckpoint(), s.proof(), s.pinnedLogKey(),
                     CHECKPOINT.minusSeconds(1),
                     (l, k, r, p) -> false).state());
@@ -318,6 +319,22 @@ class ExternalCeremonyCheckpointVerifierTest {
                 verify(s, s.signedCheckpoint(), s.proof(), s.pinnedLogKey(),
                     CHECKPOINT.plusSeconds(3600),
                     (l, k, r, p) -> false).state());
+        // A signed checkpoint created after its referencing attestation is
+        // a causal/time inconsistency even if both signatures are valid.
+        var original = s.signedCheckpoint().checkpoint();
+        var late = new ExternalCeremonyCheckpointVerifier.Checkpoint(
+                original.logId(), original.verifierKeyId(), original.treeSize(),
+                original.rootSha256(), ATTESTED.plusSeconds(30),
+                ATTESTED.plusSeconds(3630));
+        var signedLate = signCheckpoint(s.log(), late);
+        var attestationWithLateHash = signAttestation(
+                s.attestor(), attestation(digestHex(
+                    ExternalCeremonyCheckpointVerifier.canonicalCheckpointBytes(late))));
+        assertEquals("BLOCKED_CHECKPOINT_TIME_WINDOW",
+                ExternalCeremonyCheckpointVerifier.inspect(
+                    attestationWithLateHash, s.attestor().getPublic(), expected(s),
+                    (key, proposal) -> false, signedLate, s.proof(),
+                    s.pinnedLogKey(), NOW, (l, k, r, p) -> false).state());
         var c = s.signedCheckpoint().checkpoint();
         assertThrows(IllegalArgumentException.class,
                 () -> new ExternalCeremonyCheckpointVerifier.Checkpoint(
