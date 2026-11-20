@@ -265,6 +265,63 @@ public class RecordWorkService {
     }
 
     /**
+     * 3B-4A authority discovery: a securely scoped, fail-closed server policy.
+     * There is deliberately NO grant-issuance API or reusable authorization
+     * token yet. A local Android review, even if encrypted, is not an
+     * independently authorized mapping rule.
+     */
+    public record TypedMappingAuthority(
+            UUID workId, UUID sourceSubmissionId, UUID targetFormVersionId,
+            String sourceXmlSha256, String sourceXFormSha256,
+            String targetXFormSha256, String state, List<String> approvedPaths,
+            boolean canReadHistoricalAnswers, boolean canTransfer,
+            boolean canSubmit) {
+        public TypedMappingAuthority {
+            if (!approvedPaths.isEmpty() || canReadHistoricalAnswers ||
+                    canTransfer || canSubmit) {
+                throw new IllegalArgumentException(
+                        "Server cannot issue a mapping grant without trusted rule approval");
+            }
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public TypedMappingAuthority typedMappingAuthority(UUID projectId, UUID workId) {
+        // Reuse the existing real Basic-auth AppUser identity and fresh READY,
+        // project ownership, original record, form assignment and historical
+        // form version validation. The returned object contains no source XML,
+        // answer values, XForm definitions or edit/upload authorization.
+        Preparation prepared = prepare(projectId, workId);
+        WorkView work = prepared.work();
+        String state = switch (work.workType()) {
+            case FOLLOW_UP -> "DENIED_INDEPENDENT_VISIT";
+            case AMENDMENT -> prepared.sourceXFormXml() == null
+                    ? "DENIED_HISTORICAL_SCHEMA_UNAVAILABLE"
+                    : "DENIED_TRUSTED_RULE_ISSUER_NOT_CONFIGURED";
+        };
+        return new TypedMappingAuthority(
+                work.id(), work.sourceSubmissionId(), work.targetFormVersionId(),
+                contentSha256(prepared.sourceXml()),
+                prepared.sourceXFormXml() == null ? null :
+                    contentSha256(prepared.sourceXFormXml()),
+                contentSha256(prepared.targetXFormXml()),
+                state, List.of(), false, false, false);
+    }
+
+    private static String contentSha256(String text) {
+        if (text == null || text.isBlank()) {
+            throw new IllegalArgumentException("Verified document is missing");
+        }
+        try {
+            byte[] bytes = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(bytes);
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("JVM SHA-256 provider missing", ex);
+        }
+    }
+
+    /**
      * Enumerates only published, active and form-assigned versions within the
      * source record's project. An amendment can only use the same form;
      * follow-up visits may use another assigned questionnaire.
