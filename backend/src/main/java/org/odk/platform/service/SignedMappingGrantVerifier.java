@@ -223,10 +223,11 @@ public final class SignedMappingGrantVerifier {
     }
 
     /**
-     * Package-private for a synthetic TEST-ONLY signer. Production key custody
-     * and grant issuance are intentionally NOT supplied in this milestone.
+     * Public deterministic encoding for independently checking an envelope
+     * against a server-owned registry. Encoding bytes is NOT signing; the
+     * production issuer and its private signing key do not exist yet.
      */
-    static byte[] canonicalBytes(Grant grant) {
+    public static byte[] canonicalBytes(Grant grant) {
         Objects.requireNonNull(grant, "Verified grant scope required");
         try {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
