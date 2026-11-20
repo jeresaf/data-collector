@@ -15,7 +15,7 @@ Make the 22 backend and 22 Android open modernization Draft PRs safely integrabl
 | **U01-T01** | Enumerate PR stacks, their dependency edges, rename aliases, known CI and tip branches | [Crosswalk](MODERNIZATION_PR_CROSSWALK.md): backend #1–#22, Android #16–#37, 44 Drafts total | **INVENTORY RECORDED**, recheck immediately before integration |
 | **U01-T02** | Trace original `ubos-local` custom code, resources, workflows and permissions into the 2026 forward-port and Draft tip | [Initial verified Android source-parity report](U01_T02_ANDROID_SOURCE_PARITY_AUDIT.md): reference-data refresh handlers absent at expected paths since forward-port; generic server URL and separate visit contracts exist. Repo-wide replacement audit still open. | **PARTIAL: evidence recorded, parity not certified** |
 | **U01-T03** | Compare independent backend PR #1 against #2–#22 stack, model split branch roots, identify actual merge conflicts and exact-tip acceptance | [Initial CI/integration findings](U01_T03_CI_BASELINE_AND_PR_INTEGRATION.md): PR #1 test/doc payload already present in tip; PR #2 test fixtures present; standalone main-based documentation CI failed backend + Playwright. | **PARTIAL: conflicts and baseline qualification open** |
-| **U01-T04** | Produce clean owner-reviewed merge/rebase/squash order, migration rehearsal dependencies and rollback | No merges authorized; current crosswalk is only an inventory | **BLOCKED ON T02/T03** |
+| **U01-T04** | Produce clean owner-reviewed merge/rebase/squash order, migration rehearsal dependencies and rollback | [Proposed, not executed integration sequence](U01_T04_PROPOSED_INTEGRATION_ORDER.md) now records exact backend ancestry (PR #1 divergent, PR #2 ancestor) and Android forward-port divergence, plus all owner gates. | **DRAFT PLAN; approval/complete parity still blocked** |
 | **U01-T05** | Execute integration after explicit owner approval, rerun all CI and prove original feature parity | No integration performed | **BLOCKED ON OWNER APPROVAL** |
 
 **First completed research slices:** [U01-T02 source-code findings](U01_T02_ANDROID_SOURCE_PARITY_AUDIT.md) and [U01-T03 CI / PR-overlap findings](U01_T03_CI_BASELINE_AND_PR_INTEGRATION.md). Treat them as partial evidence only.
@@ -66,6 +66,9 @@ All entries below currently **UNVERIFIED**, not “already migrated”:
 These behaviors were introduced/modified in **merged legacy Android PR #15**; the 2026 forward-port does **not automatically inherit** these original file paths. The evidence is sufficient to **block claiming U05 reference-refresh parity**, but is NOT sufficient to assert that no equivalent modern module exists elsewhere.
 
 **U01-T02 next investigation:** inspect the new 2026 identity/login, project settings, dataset fetch and profile-refresh flow; determine whether an alternative service replaces these old APIs. If none does, record a **MISSING** outcome and implement a *generic*, form-independent versioned reference-data refresh under **U05-T01**, with actor-scoped auth, server-controlled URL and offline cache/revocation tests. Do not paste old Java classes into new ODK without reviewing API/auth compatibility.
+
+
+**Verified branch topology:** backend PR #1 → latest tip is **diverged** (159 ahead / 4 behind), while R0 PR #2 → latest tip is **ahead** (156 ahead / 0 behind). Android `ubos-local` → ODK 2026 root is **diverged** (5,570 ahead / 129 behind), while ODK root → latest Android Draft is **ahead** (233 / 0). See [integration order and acceptance gates](U01_T04_PROPOSED_INTEGRATION_ORDER.md).
 
 ## Backend integration graph
 
