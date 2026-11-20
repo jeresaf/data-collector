@@ -18,7 +18,6 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.io.IOException;
@@ -34,7 +33,7 @@ class OpenRosaBasicAuthFilterTest {
     private OpenRosaBasicAuthFilter openRosaBasicAuthFilter;
 
     @Mock
-    private UserDetailsService userDetailsService;
+    private UserDetailsServiceImpl userDetailsService;
 
     @Mock
     private PasswordEncoder passwordEncoder;
@@ -106,13 +105,10 @@ class OpenRosaBasicAuthFilterTest {
         String credentials = "Basic " + java.util.Base64.getEncoder().encodeToString("appuser:password123".getBytes());
         request.addHeader("Authorization", credentials);
 
-        UserDetails userDetails = User.builder()
-                .username("appuser")
-                .password("$2a$10$encodedpassword")
-                .authorities(List.of(new SimpleGrantedAuthority("ROLE_APP_USER")))
-                .build();
+        MobileAppUserDetails userDetails = new MobileAppUserDetails(
+                java.util.UUID.randomUUID(), "appuser", "$2a$10$encodedpassword", true);
 
-        when(userDetailsService.loadUserByUsername("appuser")).thenReturn(userDetails);
+        when(userDetailsService.loadAppUserByUsername("appuser")).thenReturn(userDetails);
         when(passwordEncoder.matches("password123", "$2a$10$encodedpassword")).thenReturn(true);
 
         // Act
@@ -120,7 +116,7 @@ class OpenRosaBasicAuthFilterTest {
 
         // Assert
         verify(filterChain).doFilter(request, response);
-        verify(userDetailsService).loadUserByUsername("appuser");
+        verify(userDetailsService).loadAppUserByUsername("appuser");
         verify(passwordEncoder).matches("password123", "$2a$10$encodedpassword");
 
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
@@ -137,13 +133,10 @@ class OpenRosaBasicAuthFilterTest {
         String credentials = "Basic " + java.util.Base64.getEncoder().encodeToString("appuser:wrongpassword".getBytes());
         request.addHeader("Authorization", credentials);
 
-        UserDetails userDetails = User.builder()
-                .username("appuser")
-                .password("$2a$10$encodedpassword")
-                .authorities(List.of(new SimpleGrantedAuthority("ROLE_APP_USER")))
-                .build();
+        MobileAppUserDetails userDetails = new MobileAppUserDetails(
+                java.util.UUID.randomUUID(), "appuser", "$2a$10$encodedpassword", true);
 
-        when(userDetailsService.loadUserByUsername("appuser")).thenReturn(userDetails);
+        when(userDetailsService.loadAppUserByUsername("appuser")).thenReturn(userDetails);
         when(passwordEncoder.matches("wrongpassword", "$2a$10$encodedpassword")).thenReturn(false);
 
         // Act
@@ -151,7 +144,7 @@ class OpenRosaBasicAuthFilterTest {
 
         // Assert
         verify(filterChain).doFilter(request, response);
-        verify(userDetailsService).loadUserByUsername("appuser");
+        verify(userDetailsService).loadAppUserByUsername("appuser");
         verify(passwordEncoder).matches("wrongpassword", "$2a$10$encodedpassword");
         assertNull(SecurityContextHolder.getContext().getAuthentication());
     }
@@ -163,7 +156,7 @@ class OpenRosaBasicAuthFilterTest {
         String credentials = "Basic " + java.util.Base64.getEncoder().encodeToString("nonexistent:password123".getBytes());
         request.addHeader("Authorization", credentials);
 
-        when(userDetailsService.loadUserByUsername("nonexistent"))
+        when(userDetailsService.loadAppUserByUsername("nonexistent"))
                 .thenThrow(new org.springframework.security.core.userdetails.UsernameNotFoundException("User not found"));
 
         // Act
@@ -171,7 +164,7 @@ class OpenRosaBasicAuthFilterTest {
 
         // Assert
         verify(filterChain).doFilter(request, response);
-        verify(userDetailsService).loadUserByUsername("nonexistent");
+        verify(userDetailsService).loadAppUserByUsername("nonexistent");
         assertNull(SecurityContextHolder.getContext().getAuthentication());
     }
 
@@ -241,7 +234,7 @@ class OpenRosaBasicAuthFilterTest {
         String credentials = "Basic " + java.util.Base64.getEncoder().encodeToString("appuser:password123".getBytes());
         request.addHeader("Authorization", credentials);
 
-        when(userDetailsService.loadUserByUsername("appuser"))
+        when(userDetailsService.loadAppUserByUsername("appuser"))
                 .thenThrow(new RuntimeException("Database error"));
 
         // Act
@@ -262,13 +255,10 @@ class OpenRosaBasicAuthFilterTest {
         String credentials = "Basic " + java.util.Base64.getEncoder().encodeToString("appuser:password123".getBytes());
         request.addHeader("Authorization", credentials);
 
-        UserDetails userDetails = User.builder()
-                .username("appuser")
-                .password("$2a$10$encodedpassword")
-                .authorities(List.of(new SimpleGrantedAuthority("ROLE_APP_USER")))
-                .build();
+        MobileAppUserDetails userDetails = new MobileAppUserDetails(
+                java.util.UUID.randomUUID(), "appuser", "$2a$10$encodedpassword", true);
 
-        when(userDetailsService.loadUserByUsername("appuser")).thenReturn(userDetails);
+        when(userDetailsService.loadAppUserByUsername("appuser")).thenReturn(userDetails);
         when(passwordEncoder.matches("password123", "$2a$10$encodedpassword")).thenReturn(true);
 
         // Act
@@ -294,13 +284,10 @@ class OpenRosaBasicAuthFilterTest {
         String credentials = "Basic " + java.util.Base64.getEncoder().encodeToString("appuser:password123".getBytes());
         request.addHeader("Authorization", credentials);
 
-        UserDetails userDetails = User.builder()
-                .username("appuser")
-                .password("$2a$10$encodedpassword")
-                .authorities(List.of(new SimpleGrantedAuthority("ROLE_APP_USER")))
-                .build();
+        MobileAppUserDetails userDetails = new MobileAppUserDetails(
+                java.util.UUID.randomUUID(), "appuser", "$2a$10$encodedpassword", true);
 
-        when(userDetailsService.loadUserByUsername("appuser")).thenReturn(userDetails);
+        when(userDetailsService.loadAppUserByUsername("appuser")).thenReturn(userDetails);
         when(passwordEncoder.matches("password123", "$2a$10$encodedpassword")).thenReturn(true);
 
         // Act
