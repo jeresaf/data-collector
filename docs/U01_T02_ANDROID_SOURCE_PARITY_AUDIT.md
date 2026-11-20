@@ -29,6 +29,12 @@ Therefore the **original implementation paths ceased to exist at the initial ODK
 
 Old merged Android [PR #15](https://github.com/jeresaf/collect/pull/15) changed `OpenRosaUserFetcher.java`, `OpenRosaLoginSource.java`, `ProjectSettingsDialog.kt`, `MainMenuActivity.kt`, and other files to support reference-data refresh and access revocation. The owner did **not** approve retiring those capabilities. They are migration requirements.
 
+## Additional PR-scope audit: Android Drafts #16–#37
+
+All **22 individual Draft PR changed-filename lists** were inspected via the GitHub PR API (180 changed-file occurrences, counting files again when changed in multiple stacked PRs). None of those changed filenames explicitly identifies an admin-unit refresh module, entity-list refresh service, or replacement reference-data downloader. PR #25 does touch `OpenRosaServerInstanceUploader.kt`, but that concerns guarded submission rather than a proven replacement for administration-unit download.
+
+**Interpretation:** The 2026 modernization Draft stack does not visibly introduce a dedicated reference-data refresh file/feature by filename. It cannot establish the absence of a replacement in the **ODK upstream forward-port** or in an existing general-purpose entity/dataset client. A repository-wide source/symbol search and functional run are still necessary. This raises the **priority of U05**, but it is not yet a `MISSING` verdict for all possible implementations.
+
 ## Required U01-T02 follow-up verification
 
 1. Search the full forward-port and latest tip for modern entity-list download, background sync, project-role revocation, offline dataset cache and equivalent event paths. A missing *old filename* does not prove no modern implementation.
