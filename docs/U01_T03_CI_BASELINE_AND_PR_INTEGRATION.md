@@ -34,6 +34,31 @@ Do **not** report the roadmap PR CI as green; failures are real. Documentation f
 - The backend Draft tip #22 at `007fd511270b02846ebcb853ca7340a9c726151e` passed both [focused H2/PostgreSQL 15 workflow #44764143723](https://github.com/jeresaf/data-collector/actions/runs/44764143723) and [full quality gate #44764142857](https://github.com/jeresaf/data-collector/actions/runs/44764142857) on the previous exact head. Those successes **do not transfer automatically** to a separate `main`-based documentation PR.
 - PR #2 also changes `OpenRosaBasicAuthIntegrationTest.java` from main blob `24b4ce41...` to `e654c646...`; the specific one-test HTTP 201→400 failure must be traced through fixture initialization and subsequent integration changes, not "fixed" by simply changing the expected status to 400.
 
+## Exact backend `main` 400 cause and identity-separation review
+
+A full inspection of the failed [Backend H2 job #136407412769](https://github.com/jeresaf/data-collector/actions/runs/44769998562) shows the actual `MockHttpServletResponse` **body** of the failing `POST /submission`:
+
+```xml
+<OpenRosaResponse xmlns="http://openrosa.org/http/response">
+  <message>No project context available for this user</message>
+</OpenRosaResponse>
+```
+
+This is **not evidence of bad XForm validation**. The compatibility alias `OpenRosaCompatibilityController.getAppUserProjectId()` rejects the request **before** invoking `OpenRosaSubmissionService.receive`: it requires the security-resolved current principal to be an `AppUser` and to have an `ACTIVE` assignment to an active project. The test `ensureOpenRosaFixture` explicitly uses JDBC to create an `appuser` and an active assignment; the discrepancy must be isolated, not bypassed.
+
+Two source-level identity hazards deserve regression coverage:
+
+- `UserDetailsServiceImpl.loadUserByUsername` (in the latest backend tip) loads a **web user first**, then an App User only when no web user with the same username is found. `OpenRosaBasicAuthFilter` uses this shared details service, even for mobile OpenRosa Basic credentials.
+- `CurrentUserService.getCurrentUser()` also looks up a **web user first** by the `UserDetails` username before trying `AppUserRepository`. Thus the existing implementation does **not** strongly bind the resolved principal type to the authenticated login type when usernames collide between the two tables. This is a **potential cross-identity/security regression** to test under **U01-T03 / G03**; it is **not yet proven** to be the cause of this CI failure.
+
+**Required qualification:** test collision where `users.username == app_users.username`, independent passwords and roles, revoked/disabled mobile account, missing/active/multiple project assignments, and both JWT web and OpenRosa Basic entry points. Authentication must never resolve a Web User for a mobile App User session or vice versa; the security context needs a genuinely typed authenticated identity. Do not "fix" the 400 by bypassing assignment checks or accepting ambiguous identities.
+
+### Actual browser failure locators
+
+[Frontend job #136407413143](https://github.com/jeresaf/data-collector/actions/runs/44769998562) reports **16 passed / 4 failed**. The desktop repeat-flow test fails at `web-form-advanced.spec.ts:84`, waiting for `getByText('Instance 1 of 1')`, despite the test heading `Repeat Acceptance` being visible; the mobile version fails the same flow. The two other failures are the desktop/mobile `web-form.spec.ts` finish-and-submit flow.
+
+PR #2's changed fixture files are present byte-for-byte in the qualified Draft tip. Before any patch, compare fixture setup/expected instance states with the live runtime instead of lengthening timeouts or deleting checks. The green Draft stack and red `main` PR must be qualified on a **reviewed integration candidate**, not conflated.
+
 ## U01-T03 next actions
 
 1. Before merging or closing anything, establish exact ancestry/patch IDs for PR #1 versus the #2–#22 linear stack, and confirm whether any CI metadata needs preserving when consolidating. A shared blob does **not** prove identical full branch ancestry.
