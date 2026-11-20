@@ -2,9 +2,11 @@ package org.odk.platform.openrosa;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.odk.platform.domain.AppUser;
 import org.odk.platform.domain.FormExternalDataset;
 import org.odk.platform.domain.FormVersion;
 import org.odk.platform.domain.XForm;
+import org.odk.platform.repository.AppUserProjectRepository;
 import org.odk.platform.repository.FormAttachmentRepository;
 import org.odk.platform.repository.FormExternalDatasetRepository;
 import org.odk.platform.repository.FormVersionRepository;
@@ -44,6 +46,8 @@ class OpenRosaTypedEntityManifestTest {
     private OpenRosaController controller;
     private StorageService storage;
     private FormExternalDataset dataset;
+    private CurrentUserService currentUserService;
+    private AppUserProjectRepository appUserProjectRepository;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -68,15 +72,17 @@ class OpenRosaTypedEntityManifestTest {
         StorageServiceFactory factory = mock(StorageServiceFactory.class);
         when(factory.getStorageService("local")).thenReturn(storage);
 
-        CurrentUserService user = mock(CurrentUserService.class);
-        when(user.getCurrentUser()).thenReturn(Optional.empty());
+        currentUserService = mock(CurrentUserService.class);
+        when(currentUserService.getCurrentUser()).thenReturn(Optional.empty());
+        appUserProjectRepository = mock(AppUserProjectRepository.class);
 
         ReflectionTestUtils.setField(controller, "xFormRepository", forms);
         ReflectionTestUtils.setField(controller, "formVersionRepository", versions);
         ReflectionTestUtils.setField(controller, "formAttachmentRepository", attachments);
         ReflectionTestUtils.setField(controller, "formExternalDatasetRepository", datasets);
         ReflectionTestUtils.setField(controller, "storageServiceFactory", factory);
-        ReflectionTestUtils.setField(controller, "currentUserService", user);
+        ReflectionTestUtils.setField(controller, "currentUserService", currentUserService);
+        ReflectionTestUtils.setField(controller, "appUserProjectRepository", appUserProjectRepository);
 
         String hash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(VALID));
         dataset = FormExternalDataset.builder()
@@ -141,4 +147,49 @@ class OpenRosaTypedEntityManifestTest {
         assertFalse(manifest().contains("<mediaFile"));
         assertEquals(404, download().getStatusCode().value());
     }
+    private void mobilePrincipalWithAssignments(List<UUID> assigned) {
+        AppUser appUser = mock(AppUser.class);
+        UUID userId = UUID.fromString("00000000-0000-0000-0000-000000000089");
+        when(appUser.getId()).thenReturn(userId);
+        when(currentUserService.getCurrentUser()).thenReturn(Optional.of(appUser));
+        when(appUserProjectRepository.findAssignedFormIdsByAppUserIdAndProjectId(userId, PROJECT))
+                .thenReturn(assigned);
+    }
+
+    @Test
+    void mobileUserWithoutFormAssignmentCannotReadTypedManifestOrDataset() throws Exception {
+        mobilePrincipalWithAssignments(List.of());
+        var request = new MockHttpServletRequest();
+        request.setScheme("https");
+        request.setServerName("example.test");
+        assertEquals(404, controller.formManifest(
+                PROJECT, "sample_form", request, new MockHttpServletResponse()).getStatusCode().value());
+        assertEquals(404, download().getStatusCode().value());
+        verifyNoInteractions(storage);
+    }
+
+    @Test
+    void assignedMobileUserCanReadValidatedTypedManifestAndDataset() throws Exception {
+        mobilePrincipalWithAssignments(List.of(FORM));
+        assertTrue(manifest().contains("<mediaFile type=\\"entityList\\">"));
+        assertEquals(200, download().getStatusCode().value());
+        verify(storage, atLeastOnce()).read("project/households.csv");
+    }
+
+    @Test
+    void assignmentLookupFailureDeniesTypedManifestAndDatasetBeforeStorageRead() {
+        AppUser appUser = mock(AppUser.class);
+        UUID userId = UUID.fromString("00000000-0000-0000-0000-000000000090");
+        when(appUser.getId()).thenReturn(userId);
+        when(currentUserService.getCurrentUser()).thenReturn(Optional.of(appUser));
+        when(appUserProjectRepository.findAssignedFormIdsByAppUserIdAndProjectId(userId, PROJECT))
+                .thenThrow(new IllegalStateException("synthetic assignment outage"));
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        assertEquals(403, controller.formManifest(
+                PROJECT, "sample_form", request, new MockHttpServletResponse()).getStatusCode().value());
+        assertEquals(403, download().getStatusCode().value());
+        verifyNoInteractions(storage);
+    }
+
 }
