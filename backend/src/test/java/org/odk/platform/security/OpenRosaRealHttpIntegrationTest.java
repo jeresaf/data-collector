@@ -2545,4 +2545,278 @@ class OpenRosaRealHttpIntegrationTest {
                 proposal.get("requestId").asText())));
     }
 
+    private String m3d4c2b2b1WitnessToken() {
+        m3d4b2bFinalSignerToken();
+        String username = "m3d4c2b2b1_independent_ceremony_witness";
+        String email = "independent-ceremony-witness@example.test";
+        UUID owner = ensureFixtureOwner();
+        List<UUID> existing = jdbcTemplate.query("""
+                SELECT id FROM users WHERE username = ?
+                """, (rs, n) -> rs.getObject("id", UUID.class), username);
+        UUID id = existing.isEmpty() ? UUID.randomUUID() : existing.get(0);
+        if (existing.isEmpty()) {
+            jdbcTemplate.update("""
+                    INSERT INTO users
+                    (id, username, email, password_hash, first_name, last_name,
+                     is_active, is_verified, failed_login_attempts,
+                     created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'Offline', 'Witness', TRUE, TRUE, 0,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, id, username, email,
+                    passwordEncoder.encode("synthetic-witness-only"));
+        } else {
+            jdbcTemplate.update("""
+                    UPDATE users SET email = ?, is_active = TRUE,
+                        is_verified = TRUE, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """, email, id);
+        }
+        UUID login = jdbcTemplate.queryForObject("""
+                SELECT id FROM roles WHERE name = 'M3D4B1_TEST_LOGIN_ROLE'
+                """, UUID.class);
+        UUID admin = jdbcTemplate.queryForObject("""
+                SELECT id FROM roles WHERE name = 'PROJECT_ADMIN'
+                """, UUID.class);
+        int count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM user_roles
+                WHERE user_id = ? AND role_id = ? AND project_id IS NULL
+                """, Integer.class, id, login);
+        if (count == 0) {
+            jdbcTemplate.update("""
+                    INSERT INTO user_roles (id, user_id, role_id, assigned_by)
+                    VALUES (?, ?, ?, ?)
+                    """, UUID.randomUUID(), id, login, owner);
+        }
+        List<UUID> memberships = jdbcTemplate.query("""
+                SELECT id FROM project_members
+                WHERE project_id = ? AND user_id = ? AND role_id = ?
+                """, (rs, n) -> rs.getObject("id", UUID.class),
+                TEST_PROJECT_ID, id, admin);
+        if (memberships.isEmpty()) {
+            jdbcTemplate.update("""
+                    INSERT INTO project_members
+                    (id, project_id, user_id, role_id, assigned_by,
+                     is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, TRUE,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, UUID.randomUUID(), TEST_PROJECT_ID, id, admin, owner);
+        } else {
+            jdbcTemplate.update("""
+                    UPDATE project_members SET is_active = TRUE,
+                        updated_at = CURRENT_TIMESTAMP WHERE id = ?
+                    """, memberships.get(0));
+        }
+        return "Bearer " + jwtService.generateToken(
+                userDetailsService.loadUserByUsername(username));
+    }
+
+    private record M3D4C2B2B1Fixture(
+            String id, String keyId, String proposerToken,
+            String reviewerToken, String witnessToken,
+            String proposalHash, String reviewHash, String keyHash) {}
+
+    private M3D4C2B2B1Fixture m3d4c2b2b1ReviewedProposal() throws Exception {
+        String proposer = m3d4bReviewerToken();
+        String reviewer = m3d4b2bFinalSignerToken();
+        String witness = m3d4c2b2b1WitnessToken();
+        String keyId = "ceremony-untrusted-" + UUID.randomUUID();
+        var proposed = m3d4b2Post(m3d4c2b2aKeyReviewUrl(), proposer,
+            m3d4c2b2aProposal(keyId, "p-" + UUID.randomUUID()).toString());
+        assertEquals(201, proposed.statusCode(), proposed.body());
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var json = mapper.readTree(proposed.body());
+        String id = json.get("requestId").asText();
+        String proposalHash = json.get("requestEvidenceSha256").asText();
+        var payload = mapper.createObjectNode();
+        payload.put("disposition", "REQUIRES_OFFLINE_KEY_CEREMONY");
+        payload.put("requestEvidenceSha256", proposalHash);
+        var reviewed = m3d4b2Post(
+            m3d4c2b2aKeyReviewUrl() + "/" + id + "/reviews",
+            reviewer, payload.toString());
+        assertEquals(201, reviewed.statusCode(), reviewed.body());
+        var review = mapper.readTree(reviewed.body());
+        return new M3D4C2B2B1Fixture(
+            id, keyId, proposer, reviewer, witness, proposalHash,
+            review.get("reviewEvidenceSha256").asText(),
+            json.get("publicKeySha256").asText());
+    }
+
+    private String m3d4c2b2b1CeremonyUrl(String requestId) {
+        return "http://127.0.0.1:" + port + "/api/projects/" +
+            TEST_PROJECT_ID + "/typed-key-ceremony-commitments/" + requestId;
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode m3d4c2b2b1Body(
+            M3D4C2B2B1Fixture f) {
+        var request = new com.fasterxml.jackson.databind.ObjectMapper()
+                .createObjectNode();
+        request.put("clientRequestId", "witness-" + UUID.randomUUID());
+        request.put("proposalEvidenceSha256", f.proposalHash());
+        request.put("reviewEvidenceSha256", f.reviewHash());
+        request.put("observedKeySha256", f.keyHash());
+        request.put("externalBundleSha256", "e".repeat(64));
+        request.put("externalReference", "offline-evidence-only-" + f.id());
+        return request;
+    }
+
+    @Test
+    void m3d4c2b2b1ThirdWitnessCommitsAuditableHashButCannotActivateKey()
+            throws Exception {
+        var f = m3d4c2b2b1ReviewedProposal();
+        String url = m3d4c2b2b1CeremonyUrl(f.id());
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var context = m3d4bReviewerGet(url + "/context", f.witnessToken());
+        assertEquals(200, context.statusCode(), context.body());
+        var ctx = mapper.readTree(context.body());
+        assertEquals("THIRD_PERSON_EVIDENCE_COMMITMENT_ONLY",
+            ctx.get("state").asText());
+        assertEquals(f.proposalHash(),
+            ctx.get("proposalEvidenceSha256").asText());
+        assertEquals(f.reviewHash(),
+            ctx.get("reviewEvidenceSha256").asText());
+        assertEquals(f.keyHash(),
+            ctx.get("proposedKeySha256").asText());
+        assertFalse(ctx.get("trustedKeyRegistered").asBoolean());
+        assertFalse(ctx.get("canIssueGrant").asBoolean());
+        assertNotEquals(ctx.get("proposerId").asText(),
+            ctx.get("reviewerId").asText());
+        assertNotEquals(ctx.get("proposerId").asText(),
+            ctx.get("witnessId").asText());
+        assertNotEquals(ctx.get("reviewerId").asText(),
+            ctx.get("witnessId").asText());
+
+        var body = m3d4c2b2b1Body(f);
+        var recorded = m3d4b2Post(url, f.witnessToken(), body.toString());
+        assertEquals(201, recorded.statusCode(), recorded.body());
+        var packet = mapper.readTree(recorded.body());
+        assertEquals("EVIDENCE_COMMITTED_PENDING_EXTERNAL_ATTESTATION_NO_TRUST",
+            packet.get("state").asText());
+        assertTrue(packet.get("commitmentSha256").asText().matches("[0-9a-f]{64}"));
+        assertFalse(packet.get("independentlyAttested").asBoolean());
+        assertFalse(packet.get("trustedKeyRegistered").asBoolean());
+        assertFalse(packet.get("canIssueGrant").asBoolean());
+        assertFalse(packet.get("canTransfer").asBoolean());
+        assertFalse(packet.get("canSubmit").asBoolean());
+        assertFalse(recorded.body().contains("public_key_spki"));
+        assertFalse(recorded.body().contains("privateKey"));
+        assertEquals(200, m3d4bReviewerGet(
+            url + "/evidence-packet", f.witnessToken()).statusCode());
+
+        var replay = m3d4b2Post(url, f.witnessToken(), body.toString());
+        assertEquals(201, replay.statusCode(), replay.body());
+        assertEquals(packet.get("recordedAt").asText(),
+            mapper.readTree(replay.body()).get("recordedAt").asText());
+        var changed = body.deepCopy();
+        changed.put("externalBundleSha256", "f".repeat(64));
+        assertEquals(409, m3d4b2Post(
+            url, f.witnessToken(), changed.toString()).statusCode());
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_key_ceremony_commitments
+            WHERE request_id = ?
+            """, Integer.class, UUID.fromString(f.id())));
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_trust_keys WHERE key_id = ?
+            """, Integer.class, f.keyId()));
+    }
+
+    @Test
+    void m3d4c2b2b1SelfWitnessAndStaleEvidenceAreDenied() throws Exception {
+        var f = m3d4c2b2b1ReviewedProposal();
+        String url = m3d4c2b2b1CeremonyUrl(f.id());
+        var body = m3d4c2b2b1Body(f);
+        assertEquals(409, m3d4bReviewerGet(
+            url + "/context", f.reviewerToken()).statusCode());
+        assertEquals(409, m3d4b2Post(
+            url, f.reviewerToken(), body.toString()).statusCode());
+        assertEquals(404, m3d4bReviewerGet(
+            url + "/context", f.proposerToken()).statusCode());
+        var tampered = body.deepCopy();
+        tampered.put("observedKeySha256", "f".repeat(64));
+        assertEquals(409, m3d4b2Post(
+            url, f.witnessToken(), tampered.toString()).statusCode());
+        tampered = body.deepCopy();
+        tampered.put("reviewEvidenceSha256", "f".repeat(64));
+        assertEquals(409, m3d4b2Post(
+            url, f.witnessToken(), tampered.toString()).statusCode());
+
+        UUID id = UUID.fromString(f.id());
+        try {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_key_enrollment_reviews
+                SET disposition = 'REJECTED' WHERE request_id = ?
+                """, id);
+            assertEquals(409, m3d4bReviewerGet(
+                url + "/context", f.witnessToken()).statusCode());
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_key_enrollment_reviews
+                SET disposition = 'REQUIRES_OFFLINE_KEY_CEREMONY'
+                WHERE request_id = ?
+                """, id);
+        }
+        assertEquals(200, m3d4bReviewerGet(
+            url + "/context", f.witnessToken()).statusCode());
+
+        UUID proposer = jdbcTemplate.queryForObject("""
+            SELECT requester_user_id FROM typed_mapping_key_enrollment_requests
+            WHERE id = ?
+            """, UUID.class, id);
+        try {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = FALSE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, proposer);
+            assertEquals(409, m3d4b2Post(
+                url, f.witnessToken(), body.toString()).statusCode());
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = TRUE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, proposer);
+        }
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_key_ceremony_commitments
+            WHERE request_id = ?
+            """, Integer.class, id));
+    }
+
+    @Test
+    void m3d4c2b2b1WitnessAuthorizationAndCommittedHashTamperingFailClosed()
+            throws Exception {
+        var f = m3d4c2b2b1ReviewedProposal();
+        String url = m3d4c2b2b1CeremonyUrl(f.id());
+        var body = m3d4c2b2b1Body(f);
+        var anonymous = m3d4b2Post(url, null, body.toString());
+        assertTrue(anonymous.statusCode() == 401 ||
+                   anonymous.statusCode() == 403);
+        var mobile = m3d4b2Post(url, authorization, body.toString());
+        assertTrue(mobile.statusCode() == 401 ||
+                   mobile.statusCode() == 403);
+        assertEquals(404, m3d4b2Post(
+            "http://127.0.0.1:" + port + "/api/projects/" + UUID.randomUUID() +
+            "/typed-key-ceremony-commitments/" + f.id(),
+            f.witnessToken(), body.toString()).statusCode());
+        var recorded = m3d4b2Post(url, f.witnessToken(), body.toString());
+        assertEquals(201, recorded.statusCode(), recorded.body());
+        UUID requestId = UUID.fromString(f.id());
+        try {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_key_ceremony_commitments
+                SET external_bundle_sha256 = ? WHERE request_id = ?
+                """, "f".repeat(64), requestId);
+            assertEquals(409, m3d4bReviewerGet(
+                url + "/evidence-packet", f.witnessToken()).statusCode());
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_key_ceremony_commitments
+                SET external_bundle_sha256 = ? WHERE request_id = ?
+                """, "e".repeat(64), requestId);
+        }
+        assertEquals(200, m3d4bReviewerGet(
+            url + "/evidence-packet", f.witnessToken()).statusCode());
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_trust_keys WHERE key_id = ?
+            """, Integer.class, f.keyId()));
+    }
+
 }
