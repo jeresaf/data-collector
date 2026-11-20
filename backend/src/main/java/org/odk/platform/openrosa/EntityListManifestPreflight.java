@@ -40,7 +40,8 @@ public final class EntityListManifestPreflight {
             return Optional.empty();
         }
         Optional<List<List<String>>> parsed = parse(csvBytes);
-        if (parsed.isEmpty() || parsed.get().size() < 2 || !validHeader(parsed.get().get(0))\n                || containsQuotedHeader(csvBytes)) {
+        if (parsed.isEmpty() || parsed.get().size() < 2 || !validHeader(parsed.get().get(0))
+                || containsQuotedHeader(csvBytes)) {
             return Optional.empty();
         }
         return type;
@@ -105,7 +106,7 @@ public final class EntityListManifestPreflight {
         // Reject even correctly quoted header identifiers to preserve the
         // initial conservative allowlist until native ODK parser parity is proven.
         for (byte b : csvBytes) {
-            if (b == '\\n' || b == '\\r') {
+            if (b == '\n' || b == '\r') {
                 break;
             }
             if (b == '"') {
