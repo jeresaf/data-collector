@@ -311,7 +311,7 @@ public class TypedMappingRecommendationService {
         }
     }
 
-    private static String digest(
+    static String digest(
             RecommendationContext ctx, String key, ReasonCode reason,
             Map<String, Disposition> decisions) {
         try {
