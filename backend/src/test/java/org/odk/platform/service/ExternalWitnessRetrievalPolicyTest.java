@@ -5,10 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.net.InetAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -282,10 +279,8 @@ class ExternalWitnessRetrievalPolicyTest {
         assertEquals("BLOCKED_EXTERNAL_TRANSPORT_UNAVAILABLE",
                 fetch(dns, t -> {throw new IllegalStateException("TLS failed");})
                     .state());
-        assertEquals("BLOCKED_EXTERNAL_TRANSPORT_UNAVAILABLE",
-                fetch(dns, t -> null).state().equals("BLOCKED_EXTERNAL_TRANSPORT_UNAVAILABLE")
-                    ? "BLOCKED_EXTERNAL_TRANSPORT_UNAVAILABLE"
-                    : "BLOCKED_EXTERNAL_TRANSPORT_POLICY");
+        assertEquals("BLOCKED_EXTERNAL_TRANSPORT_POLICY",
+                fetch(dns, t -> null).state());
     }
 
     @Test
