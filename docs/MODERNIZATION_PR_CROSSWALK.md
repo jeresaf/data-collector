@@ -2,7 +2,7 @@
 
 **Snapshot:** 20 November 2026  
 **Authority:** [Rebaselined U01–U09 roadmap](ROADMAP_2026_REBASELINE.md) and historical GitHub PR metadata.  
-**This is a traceability inventory, NOT a claim of code merge, feature acceptance or release readiness.** Existing legacy PR names are intentionally preserved.
+**This is a traceability inventory, NOT a claim of code merge, feature acceptance or release readiness.** Existing legacy PR names are intentionally preserved. This count excludes the standalone documentation-only roadmap [Draft PR #23](https://github.com/jeresaf/data-collector/pull/23), which was opened during this rebaseline; thus the backend can show 23 open Draft PRs when #23 itself is counted.
 
 ## Current backlog accounting
 
