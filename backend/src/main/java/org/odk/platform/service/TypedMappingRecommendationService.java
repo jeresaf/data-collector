@@ -79,6 +79,8 @@ public class TypedMappingRecommendationService {
 
     private record Existing(UUID id, String hash, ReasonCode reasonCode) { }
 
+    private static final int MAX_RECOMMENDATIONS_PER_REVIEWER_WORK = 10;
+    private static final int MAX_XML_CHARS = 8_388_608;
     private static final Pattern SAFE_PATH = Pattern.compile(
             "/[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*){1,11}");
     private static final Pattern SAFE_KEY = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
@@ -183,6 +185,18 @@ public class TypedMappingRecommendationService {
             return receipt(existing.id(), live, digest, stored.size());
         }
 
+        // Even a valid reviewer must not create unbounded immutable evidence
+        // for the same work item by rotating client request IDs. The READY
+        // work row lock above serializes this count with other writers.
+        Integer priorCount = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM typed_mapping_review_recommendations
+                WHERE work_item_id = ? AND reviewer_user_id = ?
+                """, Integer.class, workId, live.reviewerId());
+        if (priorCount == null || priorCount >= MAX_RECOMMENDATIONS_PER_REVIEWER_WORK) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Reviewer recommendation limit reached for work item");
+        }
+
         UUID recommendationId = UUID.randomUUID();
         try {
             jdbc.update("""
@@ -284,8 +298,9 @@ public class TypedMappingRecommendationService {
     }
 
     private static String sha256(String text) {
-        if (text == null || text.isBlank()) {
-            throw new IllegalArgumentException("Missing authenticated schema or source");
+        if (text == null || text.isBlank() || text.length() > MAX_XML_CHARS) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Historical source or form exceeds safe reviewer fingerprint bounds");
         }
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
