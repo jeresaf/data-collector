@@ -86,11 +86,13 @@
 | **U02** | Android #16–#17; backend #1–#3 Draft | **UNINTEGRATED**; ODK 2026 and generic URL build/actual-server integration not yet accepted |
 | **U03** | Backend #4–#6, Android #18–#20 Draft | **UNINTEGRATED**; versioned amendment/FOLLOW_UP E2E not yet accepted |
 | **U04** | Android #18–#20 and #25–#32 Draft | **UNINTEGRATED**; secure native edit/restart/repeat/media full acceptance not yet completed |
-| **U05** | Legacy Android #15 merged before forward-port; original M18 reference data | **RECONCILIATION GAP**: original seven refresh-related classes/handlers/layout locations are absent or changed at expected paths in 2026 Draft tip; equivalent replacement not yet proven |
+| **U05** | Legacy Android #15 merged before forward-port; original M18 reference data | **CONFIRMED PROTOCOL GAP**: current ODK 2026 has native Entity List refresh, but current backend OpenRosa manifest omits its required `mediaFile type` attribute; independently refreshed old admin-unit API still unverified. [Evidence](U01_T02_ODK_ENTITY_LIST_SEAM.md). |
 | **U06** | Backend #7–#12, Android #21–#24 and #33–#37 Draft | **PARTIAL / FAIL-CLOSED**; no general authorized positive cross-version transfer |
 | **U07** | Backend #13–#22 Draft | **CI-QUALIFIED INERT CONTRACTS ONLY**; no production independent trust root, actual signed log publication, trusted-key activation or positive grant |
 | **U08** | Original OpenRosa submission exists; new protected work integration remains unapproved | **NOT END-TO-END ACCEPTED** |
 | **U09** | Earlier automated CI exists; original M21 physical tests deferred | **BLOCKED FOR PRODUCTION** until owner acceptance, historical migrations, security and actual devices |
+
+**Extended parity evidence:** [Merged legacy PRs #1–#15 migration ledger](U01_T02_LEGACY_ANDROID_CHANGESET_LEDGER.md) covers rejected-entry status/issue prompts, retry with latest XML, repeat constraints and old admin-unit refresh. [Native ODK Entity List / backend manifest mismatch](U01_T02_ODK_ENTITY_LIST_SEAM.md) distinguishes the existing typed CSV importer from currently untyped backend media. **Do not promote ordinary choice CSV to `entityList` without validating entity schema and authorization.**
 
 ## U01-T02 customization reconciliation worklist (not yet certified)
 
