@@ -18,6 +18,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -95,8 +96,9 @@ class OpenRosaAuthorizationLookupFailureTest {
         AppUser appUser = mock(AppUser.class);
         UUID appUserId = UUID.fromString("00000000-0000-0000-0000-000000000043");
         when(appUser.getId()).thenReturn(appUserId);
-        when(currentUserService.getCurrentUser())
-                .thenReturn(Optional.of(appUser));
+        // The @BeforeEach identity mock throws by default. Override it without
+        // invoking the already configured throwing stub during restubbing.
+        doReturn(Optional.of(appUser)).when(currentUserService).getCurrentUser();
         when(appUserProjects.findAssignedFormIdsByAppUserIdAndProjectId(appUserId, PROJECT_ID))
                 .thenThrow(new IllegalStateException("synthetic assignment repository failure"));
     }
