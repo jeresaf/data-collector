@@ -16,6 +16,11 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
+import java.io.ByteArrayInputStream;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import org.odk.platform.service.storage.StorageServiceFactory;
+import org.odk.platform.service.storage.StorageService;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
@@ -70,6 +75,9 @@ class OpenRosaBasicAuthIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private StorageServiceFactory storageServiceFactory;
 
     private String validCredentials;
     private String invalidCredentials;
@@ -855,6 +863,76 @@ class OpenRosaBasicAuthIntegrationTest {
                         .header("Authorization", validCredentials)
                         .accept(MediaType.TEXT_XML))
                 .andExpect(status().is4xxClientError());
+    }
+
+    /**
+     * HTTP-level typed-media regression against production security filters,
+     * dataset repository, storage service, and an isolated transactional
+     * synthetic form-version attachment.
+     */
+    @Test
+    void typedEntityListHonorsBasicAuthAndImmediateAssignmentRevocation() throws Exception {
+        UUID formVersionId = jdbcTemplate.queryForObject(
+                """
+                SELECT fv.id FROM form_versions fv
+                JOIN xforms f ON f.id = fv.form_id
+                WHERE f.project_id = ? AND f.xmlns = ? AND fv.is_latest = true
+                """,
+                (rs, rowNum) -> rs.getObject("id", UUID.class),
+                TEST_PROJECT_ID, TEST_FORM_XMLNS);
+
+        byte[] csv = ("name,label,__version\\n"
+                + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,Household,1\\n")
+                .getBytes(StandardCharsets.UTF_8);
+        String digest = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(csv));
+        String storagePath = "test-u05/" + UUID.randomUUID() + "/households.csv";
+        StorageService storage = storageServiceFactory.getStorageService("local");
+        storage.store(new ByteArrayInputStream(csv), storagePath, "local");
+
+        try {
+            jdbcTemplate.update(
+                    """
+                    INSERT INTO form_external_datasets (
+                        id, form_version_id, dataset_id, title, content_type,
+                        storage_path, storage_driver, content_hash, file_size,
+                        column_definitions, is_active, created_at, updated_at)
+                    VALUES (?, ?, 'households.csv', 'Synthetic Households', 'text/csv',
+                            ?, 'local', ?, ?, '{"odkMediaType":"entityList"}',
+                            true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    UUID.randomUUID(), formVersionId, storagePath, digest, (long) csv.length);
+
+            String manifestUrl = "/v1/projects/" + TEST_PROJECT_ID
+                    + "/forms/" + TEST_FORM_XMLNS + "/manifest";
+            String downloadUrl = "/v1/projects/" + TEST_PROJECT_ID
+                    + "/forms/" + TEST_FORM_XMLNS + "/attachments/households.csv";
+
+            mockMvc.perform(get(manifestUrl).header("Authorization", validCredentials)
+                            .accept(MediaType.TEXT_XML))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("<mediaFile type=\\\"entityList\\\">")));
+
+            mockMvc.perform(get(downloadUrl).header("Authorization", validCredentials))
+                    .andExpect(status().isOk())
+                    .andExpect(content().bytes(csv));
+
+            mockMvc.perform(get(downloadUrl).accept(MediaType.TEXT_XML))
+                    .andExpect(status().isUnauthorized());
+
+            UUID mobileId = jdbcTemplate.queryForObject(
+                    "SELECT id FROM app_users WHERE username = ?",
+                    (rs, rowNum) -> rs.getObject("id", UUID.class), "appuser");
+            jdbcTemplate.update(
+                    "DELETE FROM app_user_projects WHERE app_user_id = ? AND project_id = ?",
+                    mobileId, TEST_PROJECT_ID);
+
+            mockMvc.perform(get(manifestUrl).header("Authorization", validCredentials))
+                    .andExpect(status().isNotFound());
+            mockMvc.perform(get(downloadUrl).header("Authorization", validCredentials))
+                    .andExpect(status().isNotFound());
+        } finally {
+            storage.delete(storagePath);
+        }
     }
 
 }
