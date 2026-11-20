@@ -127,6 +127,8 @@ public class ServerOwnedMappingGrantRegistry {
                   ON recommendation.id = grant.recommendation_id
                  AND recommendation.work_item_id = work.id
                  AND recommendation.project_id = work.project_id
+                JOIN users reviewer ON reviewer.id = grant.original_reviewer_id
+                JOIN users signer ON signer.id = grant.final_signer_id
                 WHERE grant.grant_id = ? AND grant.project_id = ?
                   AND grant.signing_key_id = ?
                   AND work.state = 'READY' AND work.work_type = 'AMENDMENT'
@@ -142,6 +144,35 @@ public class ServerOwnedMappingGrantRegistry {
                   AND recommendation.source_submission_id = src.id
                   AND recommendation.target_form_version_id = target.id
                   AND recommendation.reviewer_user_id = grant.original_reviewer_id
+                  AND reviewer.is_active = TRUE AND reviewer.is_verified = TRUE
+                  AND signer.is_active = TRUE AND signer.is_verified = TRUE
+                  AND reviewer.username <> signer.username
+                  AND LOWER(reviewer.email) <> LOWER(signer.email)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM app_users mobile
+                      WHERE LOWER(mobile.username) IN
+                          (LOWER(reviewer.username), LOWER(signer.username))
+                         OR LOWER(mobile.email) IN
+                          (LOWER(reviewer.email), LOWER(signer.email))
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM project_members pm
+                      JOIN roles role ON role.id = pm.role_id
+                      WHERE pm.project_id = grant.project_id
+                        AND pm.user_id = reviewer.id
+                        AND pm.is_active = TRUE AND role.is_active = TRUE
+                        AND role.name IN ('PROJECT_MANAGER', 'PROJECT_ADMIN')
+                        AND (role.project_id IS NULL OR role.project_id = pm.project_id)
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM project_members pm
+                      JOIN roles role ON role.id = pm.role_id
+                      WHERE pm.project_id = grant.project_id
+                        AND pm.user_id = signer.id
+                        AND pm.is_active = TRUE AND role.is_active = TRUE
+                        AND role.name = 'PROJECT_ADMIN'
+                        AND (role.project_id IS NULL OR role.project_id = pm.project_id)
+                  )
                 """, (rs, i) -> new RegisteredGrant(
                     rs.getObject("grant_id", UUID.class),
                     rs.getObject("project_id", UUID.class),
