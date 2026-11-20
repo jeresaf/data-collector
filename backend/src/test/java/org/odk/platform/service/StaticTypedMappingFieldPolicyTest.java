@@ -81,14 +81,14 @@ class StaticTypedMappingFieldPolicyTest {
         assertEquals("BLOCKED_DYNAMIC_OR_EXTERNAL_FORM",
             StaticTypedMappingFieldPolicy.inspect(
                 form("int"), form("int", "",
-                    "<group relevant=\\"/data/name != ''\\">" +
-                    "<input ref=\\"/data/age\\"><label>Age</label></input>" +
+                    "<group relevant=\"/data/name != ''\">" +
+                    "<input ref=\"/data/age\"><label>Age</label></input>" +
                     "</group>", false),
                 List.of("/data/age")).get(0).state());
         assertEquals("BLOCKED_DYNAMIC_OR_EXTERNAL_FORM",
             StaticTypedMappingFieldPolicy.inspect(
                 form("int"), form("int", "",
-                    "<select1 ref=\\"/data/name\\"><label>Choice</label>" +
+                    "<select1 ref=\"/data/name\"><label>Choice</label>" +
                     "<item><label>A</label><value>a</value></item></select1>", false),
                 List.of("/data/age")).get(0).state());
         assertEquals("BLOCKED_MISSING_OR_AMBIGUOUS_FIELD",
