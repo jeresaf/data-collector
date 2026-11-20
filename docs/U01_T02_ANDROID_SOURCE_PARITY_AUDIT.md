@@ -35,6 +35,19 @@ All **22 individual Draft PR changed-filename lists** were inspected via the Git
 
 **Interpretation:** The 2026 modernization Draft stack does not visibly introduce a dedicated reference-data refresh file/feature by filename. It cannot establish the absence of a replacement in the **ODK upstream forward-port** or in an existing general-purpose entity/dataset client. A repository-wide source/symbol search and functional run are still necessary. This raises the **priority of U05**, but it is not yet a `MISSING` verdict for all possible implementations.
 
+## Native ODK Entities architecture and backend protocol qualification
+
+The latest Android source **does** contain a native ODK Entity List store, download and refresh path. This narrows the initial "missing reference-data" question: it is **not** correct to say ODK 2026 has no general entity synchronization at all.
+
+- ODK parses the `<mediaFile type="entityList">` and `type="approvalEntityList"` **attributes** in `Kxml2OpenRosaResponseParser.kt`.
+- `ServerFormUseCases.kt` checks `mediaFile.type != null`, then hashes/downloads/imports the list through `LocalEntityUseCases` and `EntitiesRepository`. `FormsDataService.downloadUpdates` and `matchFormsWithServer` provide scheduled/form-triggered refresh mechanisms.
+- The Data Collector backend `OpenRosaController.appendManifestFile` currently writes plain `<mediaFile>` nodes **without the Entity List type attribute** for uploaded form external datasets or media. Those files are recognized as ordinary media, not sent through native ODK Entity List ingestion.
+- The backend also has web/admin reference-list CSV and form external-dataset services, but **no demonstrated independent mobile Basic-auth administration-unit refresh equivalent** to the old `ubos-local` path.
+
+**Verified result:** **the current backend and native Entities importer have a protocol mismatch**, even though both possess useful constituent pieces. See the full [U05-T01 integration seam and safe proposal](U01_T02_ODK_ENTITY_LIST_SEAM.md). **Do not mark U05 fully missing or fully implemented**; ordinary CSV media may work, while typed Entity List ingestion requires a validated metadata contract.
+
+Also audited all merged legacy Android PRs #1–#15; prior entry/issue lifecycle, retry-current-XML and repeat-constraint changes were introduced before the ODK forward-port and need independent 2026 behavioral proof. See [merged-change source ledger](U01_T02_LEGACY_ANDROID_CHANGESET_LEDGER.md).
+
 ## Required U01-T02 follow-up verification
 
 1. Search the full forward-port and latest tip for modern entity-list download, background sync, project-role revocation, offline dataset cache and equivalent event paths. A missing *old filename* does not prove no modern implementation.
