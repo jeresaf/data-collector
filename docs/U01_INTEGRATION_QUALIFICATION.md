@@ -12,9 +12,9 @@ Make the 22 backend and 22 Android open modernization Draft PRs safely integrabl
 
 | Task ID | Work | Evidence as of 2026-11-20 | Status |
 |---|---|---|---|
-| **U01-T01** | Enumerate PR stacks, their dependency edges, rename aliases, known CI and tip branches | [Crosswalk](MODERNIZATION_PR_CROSSWALK.md): backend #1–#22, Android #16–#37, 44 Drafts total | **INVENTORY RECORDED**, recheck immediately before integration |
+| **U01-T01** | Enumerate PR stacks, their dependency edges, rename aliases, known CI and tip branches | [Crosswalk](MODERNIZATION_PR_CROSSWALK.md): backend #1–#22 plus U01-T03 #25, Android #16–#37, **45 feature Drafts**, docs-only #23 separate | **INVENTORY UPDATED**, recheck before integration |
 | **U01-T02** | Trace original `ubos-local` custom code, resources, workflows and permissions into the 2026 forward-port and Draft tip | [Initial verified Android source-parity report](U01_T02_ANDROID_SOURCE_PARITY_AUDIT.md): reference-data refresh handlers absent at expected paths since forward-port; generic server URL and separate visit contracts exist. Repo-wide replacement audit still open. | **PARTIAL: evidence recorded, parity not certified** |
-| **U01-T03** | Compare independent backend PR #1 against #2–#22 stack, model split branch roots, identify actual merge conflicts and exact-tip acceptance | [Initial CI/integration findings](U01_T03_CI_BASELINE_AND_PR_INTEGRATION.md): PR #1 test/doc payload already present in tip; PR #2 test fixtures present; standalone main-based documentation CI failed backend + Playwright. | **PARTIAL: conflicts and baseline qualification open** |
+| **U01-T03** | Compare backend PR #1 vs #2–#22, repair identity collision and exact-tip CI | [Initial findings](U01_T03_CI_BASELINE_AND_PR_INTEGRATION.md); PR #2's fixture repair CI PASS; scoped [mobile-principal isolation Draft #25](https://github.com/jeresaf/data-collector/pull/25) and [focused H2+PG15 PASS #44781486149](https://github.com/jeresaf/data-collector/actions/runs/44781486149). Integration and broad CI still to certify. | **PARTIAL: typed identity fix in Draft, no merge** |
 | **U01-T04** | Produce clean owner-reviewed merge/rebase/squash order, migration rehearsal dependencies and rollback | [Proposed, not executed integration sequence](U01_T04_PROPOSED_INTEGRATION_ORDER.md) now records exact backend ancestry (PR #1 divergent, PR #2 ancestor) and Android forward-port divergence, plus all owner gates. | **DRAFT PLAN; approval/complete parity still blocked** |
 | **U01-T05** | Execute integration after explicit owner approval, rerun all CI and prove original feature parity | No integration performed | **BLOCKED ON OWNER APPROVAL** |
 
@@ -69,6 +69,8 @@ These behaviors were introduced/modified in **merged legacy Android PR #15**; th
 
 
 **Verified branch topology:** backend PR #1 → latest tip is **diverged** (159 ahead / 4 behind), while R0 PR #2 → latest tip is **ahead** (156 ahead / 0 behind). Android `ubos-local` → ODK 2026 root is **diverged** (5,570 ahead / 129 behind), while ODK root → latest Android Draft is **ahead** (233 / 0). See [integration order and acceptance gates](U01_T04_PROPOSED_INTEGRATION_ORDER.md).
+
+**New in U01-T03:** [Draft PR #25](https://github.com/jeresaf/data-collector/pull/25) is intentionally based on qualified feature Draft #22, not the red `main` documentation branch. It introduces UUID-bound mobile App User principal and mobile-only Basic lookup to remove web/app same-username collision ambiguity. Its H2 and PostgreSQL 15 **focused security tests passed** on exact initial head `031a3e5ed0321232c40f9fed8af8cb2aebc3b453`. Broader full quality gate, JWT ambiguity and G01–G06 release reviews still apply. This is **not an accepted integration**.
 
 ## Backend integration graph
 
