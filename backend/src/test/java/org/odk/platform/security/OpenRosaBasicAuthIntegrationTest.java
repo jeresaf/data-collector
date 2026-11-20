@@ -881,8 +881,8 @@ class OpenRosaBasicAuthIntegrationTest {
                 (rs, rowNum) -> rs.getObject("id", UUID.class),
                 TEST_PROJECT_ID, TEST_FORM_XMLNS);
 
-        byte[] csv = ("name,label,__version\\n"
-                + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,Household,1\\n")
+        byte[] csv = ("name,label,__version\n"
+                + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,Household,1\n")
                 .getBytes(StandardCharsets.UTF_8);
         String digest = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(csv));
         String storagePath = "test-u05/" + UUID.randomUUID() + "/households.csv";
@@ -910,7 +910,7 @@ class OpenRosaBasicAuthIntegrationTest {
             mockMvc.perform(get(manifestUrl).header("Authorization", validCredentials)
                             .accept(MediaType.TEXT_XML))
                     .andExpect(status().isOk())
-                    .andExpect(content().string(containsString("<mediaFile type=\\\"entityList\\\">")));
+                    .andExpect(content().string(containsString("<mediaFile type=\"entityList\">")));
 
             mockMvc.perform(get(downloadUrl).header("Authorization", validCredentials))
                     .andExpect(status().isOk())
