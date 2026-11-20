@@ -1,0 +1,67 @@
+name: U01-T03 Mobile Principal Isolation Qualification
+
+on:
+  push:
+    branches:
+      - codex/u01-t03-mobile-principal-isolation
+  pull_request:
+    branches:
+      - codex/m3d4c2b2b2c3-restricted-witness-retrieval
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: u01-t03-mobile-identity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-h2:
+    name: Mobile-only authentication, identity collision and OpenRosa on H2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - run: mvn -B -ntp -Dtest=CurrentUserServiceTest,UserDetailsServiceImplTest,OpenRosaBasicAuthFilterTest,OpenRosaBasicAuthIntegrationTest,OpenRosaRealHttpIntegrationTest,SubmissionReplacementServiceTest test
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: u01-t03-mobile-identity-h2
+          path: backend/target/surefire-reports/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  security-postgresql:
+    name: OpenRosa compatibility and record preservation on PostgreSQL 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - run: docker info
+      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpPostgresIT,CurrentUserServiceTest,UserDetailsServiceImplTest,OpenRosaBasicAuthFilterTest test
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: u01-t03-mobile-identity-postgres
+          path: backend/target/surefire-reports/
+          retention-days: 14
+          if-no-files-found: ignore
