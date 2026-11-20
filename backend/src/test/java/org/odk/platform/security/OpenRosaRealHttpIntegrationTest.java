@@ -1294,4 +1294,194 @@ class OpenRosaRealHttpIntegrationTest {
         assertEquals(404, response.statusCode());
     }
 
+    private String m3d4b2Endpoint(String workId) {
+        return "http://127.0.0.1:" + port + "/api/projects/" + TEST_PROJECT_ID +
+            "/record-work-items/" + workId + "/typed-review-recommendations";
+    }
+
+    private HttpResponse<String> m3d4b2Post(
+            String endpoint, String auth, String body) throws Exception {
+        HttpRequest.Builder req = HttpRequest.newBuilder(localUri(endpoint))
+            .timeout(Duration.ofSeconds(20))
+            .header("Content-Type", "application/json");
+        if (auth != null) req.header("Authorization", auth);
+        return client.send(req.POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+            HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode m3d4b2Request(
+            com.fasterxml.jackson.databind.JsonNode ctx, String key, String reason,
+            String path, String disposition) {
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().createObjectNode();
+        json.put("clientRequestId", key);
+        json.put("reasonCode", reason);
+        json.putObject("fieldDecisions").put(path, disposition);
+        json.put("sourceXmlSha256", ctx.get("sourceXmlSha256").asText());
+        json.put("sourceXFormSha256", ctx.get("sourceXFormSha256").asText());
+        json.put("targetXFormSha256", ctx.get("targetXFormSha256").asText());
+        return json;
+    }
+
+    @Test
+    void m3d4b2ReviewerRecommendationsAreImmutableAndDoNotGrantTransfers() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String originalInstance = "uuid:" + UUID.randomUUID();
+        var first = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", originalInstance, null,
+                "M3D4B2 SYNTHETIC PRIVATE HOUSEHOLD ANSWER")), null);
+        assertEquals(201, first.statusCode(), first.body());
+        UUID original = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?",
+            UUID.class, originalInstance);
+        var created = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(original, targetVersion, "AMENDMENT", null,
+                "m3d4b2-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode(), created.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(created.body()).get("id").asText();
+        String endpoint = m3d4b2Endpoint(workId);
+        String reviewerToken = m3d4bReviewerToken();
+
+        var contextResponse = m3d4bReviewerGet(endpoint + "/context", reviewerToken);
+        assertEquals(200, contextResponse.statusCode(), contextResponse.body());
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var ctx = mapper.readTree(contextResponse.body());
+        assertEquals("REVIEW_RECOMMENDATION_ONLY", ctx.get("state").asText());
+        assertEquals(originalInstance, ctx.get("sourceInstanceId").asText());
+        assertTrue(ctx.get("sourceXmlSha256").asText().matches("[0-9a-f]{64}"));
+        assertTrue(ctx.get("sourceXFormSha256").asText().matches("[0-9a-f]{64}"));
+        assertTrue(ctx.get("targetXFormSha256").asText().matches("[0-9a-f]{64}"));
+        assertFalse(ctx.get("canApproveMapping").asBoolean());
+        assertFalse(ctx.get("canTransfer").asBoolean());
+        assertFalse(ctx.get("canSubmit").asBoolean());
+        assertFalse(contextResponse.body().contains("SYNTHETIC PRIVATE HOUSEHOLD ANSWER"));
+        assertFalse(contextResponse.body().contains("<data"));
+
+        String key = "review-" + UUID.randomUUID();
+        var body = m3d4b2Request(ctx, key, "EXPLICIT_RULE_REVIEW_NEEDED",
+            "/data/name", "ESCALATE_FOR_RULE_REVIEW");
+        var recorded = m3d4b2Post(endpoint, reviewerToken, body.toString());
+        assertEquals(201, recorded.statusCode(), recorded.body());
+        var receipt = mapper.readTree(recorded.body());
+        assertEquals("RECORDED_NON_AUTHORITATIVE", receipt.get("state").asText());
+        assertEquals(1, receipt.get("reviewedPathCount").asInt());
+        assertFalse(receipt.get("canApproveMapping").asBoolean());
+        assertFalse(receipt.get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(receipt.get("canTransfer").asBoolean());
+        assertFalse(receipt.get("canSubmit").asBoolean());
+        assertTrue(receipt.get("evidenceSha256").asText().matches("[0-9a-f]{64}"));
+        assertFalse(recorded.body().contains("SYNTHETIC PRIVATE HOUSEHOLD ANSWER"));
+
+        var replay = m3d4b2Post(endpoint, reviewerToken, body.toString());
+        assertEquals(201, replay.statusCode(), replay.body());
+        assertEquals(receipt.get("recommendationId").asText(),
+            mapper.readTree(replay.body()).get("recommendationId").asText());
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_review_recommendations
+            WHERE work_item_id = ? AND client_request_id = ?
+            """, Integer.class, UUID.fromString(workId), key));
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_review_fields f
+            JOIN typed_mapping_review_recommendations r ON r.id = f.recommendation_id
+            WHERE r.work_item_id = ? AND f.target_path = '/data/name'
+              AND f.disposition = 'ESCALATE_FOR_RULE_REVIEW'
+            """, Integer.class, UUID.fromString(workId)));
+
+        var changed = m3d4b2Request(ctx, key, "DO_NOT_TRANSFER",
+            "/data/name", "LEAVE_EMPTY");
+        var conflict = m3d4b2Post(endpoint, reviewerToken, changed.toString());
+        assertEquals(409, conflict.statusCode(), conflict.body());
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_review_recommendations
+            WHERE work_item_id = ?
+            """, Integer.class, UUID.fromString(workId)));
+
+        var drift = m3d4b2Request(ctx, "stale-" + UUID.randomUUID(),
+            "REENTER_REQUIRED", "/data/name", "REENTER");
+        drift.put("sourceXmlSha256", "f".repeat(64));
+        var rejected = m3d4b2Post(endpoint, reviewerToken, drift.toString());
+        assertEquals(409, rejected.statusCode(), rejected.body());
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_review_recommendations
+            WHERE work_item_id = ?
+            """, Integer.class, UUID.fromString(workId)));
+    }
+
+    @Test
+    void m3d4b2RejectsUnknownPathsAndRevokedReviewerWithoutWritingEvidence()
+            throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String originalInstance = "uuid:" + UUID.randomUUID();
+        var first = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", originalInstance, null, "Review restrictions")), null);
+        assertEquals(201, first.statusCode(), first.body());
+        UUID sourceId = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?",
+            UUID.class, originalInstance);
+        var created = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(sourceId, targetVersion, "AMENDMENT", null,
+                "m3d4b2-deny-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode(), created.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(created.body()).get("id").asText();
+        String endpoint = m3d4b2Endpoint(workId);
+        String token = m3d4bReviewerToken();
+        var ctxResponse = m3d4bReviewerGet(endpoint + "/context", token);
+        assertEquals(200, ctxResponse.statusCode(), ctxResponse.body());
+        var ctx = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(ctxResponse.body());
+        String requestKey = "deny-" + UUID.randomUUID();
+
+        var unsafe = m3d4b2Request(ctx, requestKey,
+            "REENTER_REQUIRED", "/data/../private", "REENTER");
+        var invalid = m3d4b2Post(endpoint, token, unsafe.toString());
+        assertEquals(400, invalid.statusCode());
+        var fakeRule = m3d4b2Request(ctx, requestKey,
+            "EXPLICIT_RULE_REVIEW_NEEDED", "/data/name", "APPROVE_TRANSFER");
+        var forbiddenRule = m3d4b2Post(endpoint, token, fakeRule.toString());
+        assertEquals(400, forbiddenRule.statusCode());
+        var unauthorized = m3d4b2Post(endpoint, authorization,
+            m3d4b2Request(ctx, requestKey, "REENTER_REQUIRED",
+                "/data/name", "REENTER").toString());
+        assertTrue(unauthorized.statusCode() == 401 ||
+            unauthorized.statusCode() == 403);
+        var noToken = m3d4b2Post(endpoint, null,
+            m3d4b2Request(ctx, requestKey, "REENTER_REQUIRED",
+                "/data/name", "REENTER").toString());
+        assertTrue(noToken.statusCode() == 401 || noToken.statusCode() == 403);
+
+        UUID reviewerId = jdbcTemplate.queryForObject(
+            "SELECT id FROM users WHERE username = 'm3d4b_independent_web_reviewer'",
+            UUID.class);
+        try {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = FALSE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, reviewerId);
+            var revoked = m3d4b2Post(endpoint, token,
+                m3d4b2Request(ctx, requestKey, "REENTER_REQUIRED",
+                    "/data/name", "REENTER").toString());
+            assertEquals(404, revoked.statusCode());
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = TRUE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, reviewerId);
+        }
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_review_recommendations
+            WHERE work_item_id = ?
+            """, Integer.class, UUID.fromString(workId)));
+
+        var visit = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(sourceId, targetVersion, "FOLLOW_UP",
+                "visit-" + UUID.randomUUID(), "m3d4b2-follow-" + UUID.randomUUID()), null);
+        assertEquals(201, visit.statusCode(), visit.body());
+        String visitId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(visit.body()).get("id").asText();
+        var followContext = m3d4bReviewerGet(
+            m3d4b2Endpoint(visitId) + "/context", token);
+        assertEquals(404, followContext.statusCode());
+    }
+
 }
