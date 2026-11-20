@@ -1503,4 +1503,260 @@ class OpenRosaRealHttpIntegrationTest {
         assertEquals(404, followContext.statusCode());
     }
 
+    private String m3d4b2bFinalSignerToken() {
+        // Creates the benign JWT-login role+permission from previous synthetic
+        // fixture, which is distinct from project-admin reviewer authorization.
+        m3d4bReviewerToken();
+        String name = "m3d4b2b_final_web_authorizer";
+        String email = "m3d4b2b-final-signer@example.test";
+        UUID owner = ensureFixtureOwner();
+        List<UUID> known = jdbcTemplate.query(
+            "SELECT id FROM users WHERE username = ?",
+            (rs, idx) -> rs.getObject("id", UUID.class), name);
+        UUID signer = known.isEmpty() ? UUID.randomUUID() : known.get(0);
+        if (known.isEmpty()) {
+            jdbcTemplate.update("""
+                INSERT INTO users (id, username, email, password_hash,
+                   first_name, last_name, is_active, is_verified,
+                   failed_login_attempts, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'Final', 'Authorizer', TRUE, TRUE, 0,
+                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, signer, name, email,
+                passwordEncoder.encode("final-signer-synthetic-test-only"));
+        } else {
+            jdbcTemplate.update("""
+                UPDATE users SET is_active = TRUE, is_verified = TRUE,
+                    email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+                """, email, signer);
+        }
+        UUID role = jdbcTemplate.query("""
+                SELECT id FROM roles WHERE name = 'M3D4B1_TEST_LOGIN_ROLE'
+                """, (rs, idx) -> rs.getObject("id", UUID.class)).get(0);
+        Integer hasLoginRole = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM user_roles
+                WHERE user_id = ? AND role_id = ? AND project_id IS NULL
+                """, Integer.class, signer, role);
+        if (hasLoginRole == null || hasLoginRole == 0) {
+            jdbcTemplate.update("""
+                INSERT INTO user_roles (id, user_id, role_id, assigned_by)
+                VALUES (?, ?, ?, ?)
+                """, UUID.randomUUID(), signer, role, owner);
+        }
+        List<UUID> projectAdminRoles = jdbcTemplate.query("""
+                SELECT id FROM roles WHERE name = 'PROJECT_ADMIN'
+                """, (rs, idx) -> rs.getObject("id", UUID.class));
+        UUID adminRole = projectAdminRoles.isEmpty() ?
+            UUID.randomUUID() : projectAdminRoles.get(0);
+        if (projectAdminRoles.isEmpty()) {
+            jdbcTemplate.update("""
+                INSERT INTO roles (id, name, display_name, is_system, is_active,
+                                   created_at, updated_at)
+                VALUES (?, 'PROJECT_ADMIN', 'Project administrator', TRUE, TRUE,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, adminRole);
+        }
+        var memberships = jdbcTemplate.query("""
+                SELECT id FROM project_members
+                WHERE project_id = ? AND user_id = ? AND role_id = ?
+                """, (rs, idx) -> rs.getObject("id", UUID.class),
+                TEST_PROJECT_ID, signer, adminRole);
+        if (memberships.isEmpty()) {
+            jdbcTemplate.update("""
+                INSERT INTO project_members
+                  (id, project_id, user_id, role_id, assigned_by,
+                   is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, TRUE,
+                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, UUID.randomUUID(), TEST_PROJECT_ID, signer, adminRole, owner);
+        } else {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = TRUE,
+                    updated_at = CURRENT_TIMESTAMP WHERE id = ?
+                """, memberships.get(0));
+        }
+        return "Bearer " + jwtService.generateToken(
+            userDetailsService.loadUserByUsername(name));
+    }
+
+    private record M3D4B2BFixture(
+        String workId, String recommendationId,
+        String recommendationSha256, String originalInstanceId,
+        String reviewerToken, String signerToken) { }
+
+    private M3D4B2BFixture m3d4b2bFixture() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String sourceInstance = "uuid:" + UUID.randomUUID();
+        var first = sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", sourceInstance, null,
+                "M3D4B2B NONDISCLOSABLE TEST ANSWER")), null);
+        assertEquals(201, first.statusCode(), first.body());
+        UUID original = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?",
+            UUID.class, sourceInstance);
+        var created = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(original, targetVersion, "AMENDMENT", null,
+                "m3d4b2b-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode(), created.body());
+        String workId = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(created.body()).get("id").asText();
+        String reviewerToken = m3d4bReviewerToken();
+        String signerToken = m3d4b2bFinalSignerToken();
+        var contextResponse = m3d4bReviewerGet(
+            m3d4b2Endpoint(workId) + "/context", reviewerToken);
+        assertEquals(200, contextResponse.statusCode(), contextResponse.body());
+        var ctx = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(contextResponse.body());
+        var recommendation = m3d4b2Request(ctx,
+            "m3d4b2b-recommend-" + UUID.randomUUID(), "EXPLICIT_RULE_REVIEW_NEEDED",
+            "/data/name", "ESCALATE_FOR_RULE_REVIEW");
+        var recorded = m3d4b2Post(
+            m3d4b2Endpoint(workId), reviewerToken, recommendation.toString());
+        assertEquals(201, recorded.statusCode(), recorded.body());
+        var evidence = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(recorded.body());
+        return new M3D4B2BFixture(workId,
+            evidence.get("recommendationId").asText(),
+            evidence.get("evidenceSha256").asText(), sourceInstance,
+            reviewerToken, signerToken);
+    }
+
+    private String m3d4b2bUrl(M3D4B2BFixture f) {
+        return "http://127.0.0.1:" + port + "/api/projects/" +
+            TEST_PROJECT_ID + "/record-work-items/" + f.workId() +
+            "/typed-review-final-denials/" + f.recommendationId();
+    }
+
+    @Test
+    void m3d4b2bIndependentFinalAdminDenialIsIdempotentAndCannotGrant() throws Exception {
+        M3D4B2BFixture f = m3d4b2bFixture();
+        String endpoint = m3d4b2bUrl(f);
+        var eligibility = m3d4bReviewerGet(
+            endpoint + "/eligibility", f.signerToken());
+        assertEquals(200, eligibility.statusCode(), eligibility.body());
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var eligible = mapper.readTree(eligibility.body());
+        assertEquals("ELIGIBLE_TO_DENY_ONLY", eligible.get("state").asText());
+        assertEquals(f.recommendationSha256(),
+            eligible.get("recommendationEvidenceSha256").asText());
+        assertNotEquals(eligible.get("originalReviewerId").asText(),
+            eligible.get("finalAuthorizerId").asText());
+        assertFalse(eligible.get("canApproveMapping").asBoolean());
+        assertFalse(eligible.get("canTransfer").asBoolean());
+        assertFalse(eligible.get("canSubmit").asBoolean());
+        assertFalse(eligibility.body().contains("NONDISCLOSABLE TEST ANSWER"));
+        assertFalse(eligibility.body().contains("<data"));
+
+        var payload = mapper.createObjectNode();
+        payload.put("clientRequestId", "deny-" + UUID.randomUUID());
+        payload.put("reasonCode", "SCHEMA_UNSAFE");
+        payload.put("recommendationEvidenceSha256", f.recommendationSha256());
+        var denied = m3d4b2Post(endpoint, f.signerToken(), payload.toString());
+        assertEquals(201, denied.statusCode(), denied.body());
+        var receipt = mapper.readTree(denied.body());
+        assertEquals("DENIED_NO_MAPPING_GRANT", receipt.get("state").asText());
+        assertFalse(receipt.get("canApproveMapping").asBoolean());
+        assertFalse(receipt.get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(receipt.get("canTransfer").asBoolean());
+        assertFalse(receipt.get("canSubmit").asBoolean());
+        assertTrue(receipt.get("denialEvidenceSha256").asText().matches("[0-9a-f]{64}"));
+
+        var replay = m3d4b2Post(endpoint, f.signerToken(), payload.toString());
+        assertEquals(201, replay.statusCode(), replay.body());
+        assertEquals(receipt.get("denialId").asText(),
+            mapper.readTree(replay.body()).get("denialId").asText());
+
+        var changed = payload.deepCopy();
+        changed.put("reasonCode", "CONSENT_UNCLEAR");
+        assertEquals(409, m3d4b2Post(
+            endpoint, f.signerToken(), changed.toString()).statusCode());
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_final_denials
+            WHERE work_item_id = ?
+            """, Integer.class, UUID.fromString(f.workId())));
+        assertEquals(1, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_review_recommendations
+            WHERE id = ?
+            """, Integer.class, UUID.fromString(f.recommendationId())));
+    }
+
+    @Test
+    void m3d4b2bSelfDenialAndMobilePrincipalCannotBecomeFinalAuthorizer()
+            throws Exception {
+        M3D4B2BFixture f = m3d4b2bFixture();
+        String endpoint = m3d4b2bUrl(f);
+        var reviewerAsSigner = m3d4bReviewerGet(
+            endpoint + "/eligibility", f.reviewerToken());
+        assertTrue(reviewerAsSigner.statusCode() == 404 ||
+            reviewerAsSigner.statusCode() == 409);
+        var enumerator = m3d4bReviewerGet(endpoint + "/eligibility", authorization);
+        assertTrue(enumerator.statusCode() == 401 ||
+            enumerator.statusCode() == 403);
+        var anonymous = m3d4bReviewerGet(endpoint + "/eligibility", null);
+        assertTrue(anonymous.statusCode() == 401 ||
+            anonymous.statusCode() == 403);
+
+        // The signer qualifies as a project admin, but cannot deny a
+        // recommendation that the same signer wrote under their own JWT.
+        var context = m3d4bReviewerGet(
+            m3d4b2Endpoint(f.workId()) + "/context", f.signerToken());
+        assertEquals(200, context.statusCode(), context.body());
+        var ctx = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(context.body());
+        var ownRecommendation = m3d4b2Post(m3d4b2Endpoint(f.workId()),
+            f.signerToken(), m3d4b2Request(ctx,
+                "signer-written-" + UUID.randomUUID(), "REENTER_REQUIRED",
+                "/data/name", "REENTER").toString());
+        assertEquals(201, ownRecommendation.statusCode(), ownRecommendation.body());
+        var own = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(ownRecommendation.body());
+        String ownUrl = endpoint.substring(0, endpoint.lastIndexOf('/') + 1) +
+            own.get("recommendationId").asText() + "/eligibility";
+        var cannotSignOwn = m3d4bReviewerGet(ownUrl, f.signerToken());
+        assertEquals(409, cannotSignOwn.statusCode());
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_final_denials
+            WHERE work_item_id = ?
+            """, Integer.class, UUID.fromString(f.workId())));
+    }
+
+    @Test
+    void m3d4b2bRevokedFinalAuthorizerAndChangedEvidenceFailClosed()
+            throws Exception {
+        M3D4B2BFixture f = m3d4b2bFixture();
+        String endpoint = m3d4b2bUrl(f);
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var payload = mapper.createObjectNode();
+        payload.put("clientRequestId", "reject-" + UUID.randomUUID());
+        payload.put("reasonCode", "POLICY_NOT_SATISFIED");
+        payload.put("recommendationEvidenceSha256", "f".repeat(64));
+        assertEquals(409, m3d4b2Post(endpoint,
+            f.signerToken(), payload.toString()).statusCode());
+        payload.put("recommendationEvidenceSha256", f.recommendationSha256());
+        payload.put("reasonCode", "APPROVE_TRANSFER");
+        assertEquals(400, m3d4b2Post(endpoint,
+            f.signerToken(), payload.toString()).statusCode());
+        payload.put("reasonCode", "POLICY_NOT_SATISFIED");
+
+        UUID signer = jdbcTemplate.queryForObject(
+            "SELECT id FROM users WHERE username = 'm3d4b2b_final_web_authorizer'",
+            UUID.class);
+        try {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = FALSE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, signer);
+            assertEquals(404, m3d4b2Post(
+                endpoint, f.signerToken(), payload.toString()).statusCode());
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE project_members SET is_active = TRUE
+                WHERE project_id = ? AND user_id = ?
+                """, TEST_PROJECT_ID, signer);
+        }
+        assertEquals(0, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_final_denials
+            WHERE work_item_id = ?
+            """, Integer.class, UUID.fromString(f.workId())));
+    }
+
 }
