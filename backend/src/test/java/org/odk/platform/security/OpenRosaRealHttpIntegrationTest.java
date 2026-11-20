@@ -1848,4 +1848,89 @@ class OpenRosaRealHttpIntegrationTest {
             "Previously recorded independent denial must veto policy inspection");
     }
 
+    private String m3d4b2b2bNativeUrl(M3D4B2BFixture f) {
+        return "http://127.0.0.1:" + port + "/api/projects/" +
+            TEST_PROJECT_ID + "/record-work-items/" + f.workId() +
+            "/typed-native-candidates/" + f.recommendationId();
+    }
+
+    @Test
+    void m3d4b2b2bIndependentSignerSeesOnlyNativeSchemaEvidence()
+            throws Exception {
+        var f = m3d4b2bFixture();
+        String url = m3d4b2b2bNativeUrl(f);
+        var authorized = m3d4bReviewerGet(url, f.signerToken());
+        assertEquals(200, authorized.statusCode(), authorized.body());
+        var result = new com.fasterxml.jackson.databind.ObjectMapper()
+            .readTree(authorized.body());
+        assertEquals("ADVISORY_NATIVE_SCHEMA_PROOF_ONLY_NO_GRANT",
+            result.get("state").asText());
+        assertEquals(f.recommendationId(), result.get("recommendationId").asText());
+        assertNotEquals(result.get("originatingReviewerId").asText(),
+            result.get("independentSignerId").asText());
+        assertEquals(1, result.get("fields").size());
+        assertEquals("/data/name", result.get("fields").get(0)
+            .get("targetPath").asText());
+        assertTrue(result.get("fields").get(0).get("state").asText().matches(
+            "(NATIVE_SAME_PATH_TYPE_CANDIDATE_ONLY|BLOCKED_NATIVE_.*|BLOCKED_STATIC_.*)"));
+        assertFalse(result.get("canApproveMapping").asBoolean());
+        assertFalse(result.get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(result.get("canIssueGrant").asBoolean());
+        assertFalse(result.get("canTransfer").asBoolean());
+        assertFalse(result.get("canFinalize").asBoolean());
+        assertFalse(result.get("canSubmit").asBoolean());
+        assertFalse(result.get("fields").get(0)
+            .get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(result.get("fields").get(0).get("canTransfer").asBoolean());
+        assertFalse(authorized.body().contains("NONDISCLOSABLE TEST ANSWER"));
+        assertFalse(authorized.body().contains("<data"));
+        assertFalse(authorized.body().contains("<h:html"));
+
+        var reviewer = m3d4bReviewerGet(url, f.reviewerToken());
+        assertTrue(reviewer.statusCode() == 404 || reviewer.statusCode() == 409);
+        var mobile = m3d4bReviewerGet(url, authorization);
+        assertTrue(mobile.statusCode() == 401 || mobile.statusCode() == 403);
+        var anonymous = m3d4bReviewerGet(url, null);
+        assertTrue(anonymous.statusCode() == 401 || anonymous.statusCode() == 403);
+        var noIssue = m3d4b2Post(url, f.signerToken(),
+            "{\"canIssueGrant\":true,\"canTransfer\":true}");
+        assertTrue(noIssue.statusCode() == 404 || noIssue.statusCode() == 405);
+    }
+
+    @Test
+    void m3d4b2b2bChangedRecommendationOrFinalDenialVetoesNativeProof()
+            throws Exception {
+        var f = m3d4b2bFixture();
+        String url = m3d4b2b2bNativeUrl(f);
+        UUID reviewId = UUID.fromString(f.recommendationId());
+
+        try {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_review_fields SET disposition = 'LEAVE_EMPTY'
+                WHERE recommendation_id = ? AND target_path = '/data/name'
+                """, reviewId);
+            var corrupted = m3d4bReviewerGet(url, f.signerToken());
+            assertEquals(409, corrupted.statusCode(),
+                "Modified reviewer fields must fail digest validation");
+        } finally {
+            jdbcTemplate.update("""
+                UPDATE typed_mapping_review_fields
+                SET disposition = 'ESCALATE_FOR_RULE_REVIEW'
+                WHERE recommendation_id = ? AND target_path = '/data/name'
+                """, reviewId);
+        }
+        assertEquals(200, m3d4bReviewerGet(url, f.signerToken()).statusCode());
+        var payload = new com.fasterxml.jackson.databind.ObjectMapper()
+            .createObjectNode();
+        payload.put("clientRequestId", "native-veto-" + UUID.randomUUID());
+        payload.put("reasonCode", "SCHEMA_UNSAFE");
+        payload.put("recommendationEvidenceSha256", f.recommendationSha256());
+        var denied = m3d4b2Post(
+            m3d4b2bUrl(f), f.signerToken(), payload.toString());
+        assertEquals(201, denied.statusCode(), denied.body());
+        assertEquals(409, m3d4bReviewerGet(
+            url, f.signerToken()).statusCode(),
+            "Independent final denial is a veto even for native candidates");
+    }
+
 }
