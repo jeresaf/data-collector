@@ -1405,6 +1405,25 @@ class OpenRosaRealHttpIntegrationTest {
             SELECT COUNT(*) FROM typed_mapping_review_recommendations
             WHERE work_item_id = ?
             """, Integer.class, UUID.fromString(workId)));
+
+        // A reviewer can add a few append-only corrections, but cannot
+        // exhaust the database by rotating valid idempotency request keys.
+        for (int n = 0; n < 9; n++) {
+            var additional = m3d4b2Request(ctx,
+                "bounded-" + UUID.randomUUID() + "-" + n,
+                "REENTER_REQUIRED", "/data/name", "REENTER");
+            var stored = m3d4b2Post(endpoint, reviewerToken, additional.toString());
+            assertEquals(201, stored.statusCode(), stored.body());
+        }
+        var overflow = m3d4b2Request(ctx,
+            "overflow-" + UUID.randomUUID(),
+            "REENTER_REQUIRED", "/data/name", "REENTER");
+        var tooMany = m3d4b2Post(endpoint, reviewerToken, overflow.toString());
+        assertEquals(409, tooMany.statusCode(), tooMany.body());
+        assertEquals(10, jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM typed_mapping_review_recommendations
+            WHERE work_item_id = ?
+            """, Integer.class, UUID.fromString(workId)));
     }
 
     @Test
