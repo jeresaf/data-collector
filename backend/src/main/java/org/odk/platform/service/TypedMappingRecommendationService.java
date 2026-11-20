@@ -13,7 +13,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -131,9 +130,11 @@ public class TypedMappingRecommendationService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Escalation reason and field decisions disagree");
         }
-        if (!List.of(request.sourceXmlSha256(), request.sourceXFormSha256(),
-                request.targetXFormSha256()).stream().allMatch(
-                        value -> value != null && SHA256.matcher(value).matches())) {
+        if (request.sourceXmlSha256() == null || request.sourceXFormSha256() == null ||
+                request.targetXFormSha256() == null ||
+                !SHA256.matcher(request.sourceXmlSha256()).matches() ||
+                !SHA256.matcher(request.sourceXFormSha256()).matches() ||
+                !SHA256.matcher(request.targetXFormSha256()).matches()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Exact source and target fingerprints are required");
         }
