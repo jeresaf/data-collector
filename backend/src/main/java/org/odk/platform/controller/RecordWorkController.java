@@ -54,6 +54,16 @@ public class RecordWorkController {
         return ResponseEntity.status(201).body(service.create(projectId, request));
     }
 
+    /**
+     * Read-only, explicit denial until a separate trusted mapping-rule
+     * issuer, approval chain and expiry/revocation checks are implemented.
+     */
+    @GetMapping("/record-work-items/{workId}/typed-mapping-authority")
+    public RecordWorkService.TypedMappingAuthority typedMappingAuthority(
+            @PathVariable UUID projectId, @PathVariable UUID workId) {
+        return service.typedMappingAuthority(projectId, workId);
+    }
+
     @GetMapping("/record-work-items/{workId}/prepare")
     public Preparation prepare(@PathVariable UUID projectId,
                                @PathVariable UUID workId) {
