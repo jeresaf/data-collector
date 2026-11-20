@@ -30,7 +30,7 @@ public final class StaticTypedMappingFieldPolicy {
         "/[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*){1,11}");
     private static final Set<String> DYNAMIC = Set.of(
         "repeat", "itemset", "setvalue", "setfocus", "action", "output",
-        "submission", "load", "upload", "trigger");
+        "submission", "load", "upload", "trigger", "select", "select1");
     private static final Set<String> UNSAFE_BIND = Set.of(
         "calculate", "relevant", "constraint", "required", "readonly",
         "preload", "preloadParams", "count");
@@ -175,9 +175,12 @@ public final class StaticTypedMappingFieldPolicy {
             }
             // No external XPath/helper namespace or dynamic model action
             // can be silently treated as a plain same-path scalar.
-            NodeList binds = xModel.getElementsByTagNameNS(XF, "bind");
-            for (int i = 0; i < binds.getLength(); i++) {
-                if (unsafeAttributes((Element) binds.item(i))) safe = false;
+            // Group/control-level XForms restrictions may apply even when
+            // no <bind> exists for an otherwise simple scalar input.
+            // Inspect every XForms element, not only direct bind nodes.
+            NodeList elements = doc.getElementsByTagNameNS(XF, "*");
+            for (int i = 0; i < elements.getLength(); i++) {
+                if (unsafeAttributes((Element) elements.item(i))) safe = false;
             }
             return new Model(data, xModel, doc, safe);
         } catch (Exception exception) {
