@@ -1,10 +1,10 @@
 package org.odk.platform.service;
 
 import lombok.RequiredArgsConstructor;
-import org.odk.platform.domain.User;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,12 +44,30 @@ public class TypedMappingReviewerEligibilityService {
         // Never treat a mobile AppUser Basic login or a username collision as a reviewer.
         if (authHeader == null || !authHeader.startsWith("Bearer ") ||
                 authentication == null || !authentication.isAuthenticated() ||
-                !(authentication.getPrincipal() instanceof User principal) ||
-                principal.getId() == null) {
+                !(authentication.getPrincipal() instanceof UserDetails principal)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "Independent web reviewer identity required");
         }
-        UUID reviewerId = principal.getId();
+        // The JWT filter intentionally stores a Spring Security UserDetails,
+        // NOT the JPA User entity. Resolve current web identity from the DB.
+        // Imported web/mobile username collisions are denied: JWT subjects
+        // currently contain a username, not a principal namespace.
+        List<UUID> currentWebUser = jdbc.query("""
+                SELECT u.id FROM users u
+                WHERE u.username = ? AND u.is_active = TRUE
+                  AND u.is_verified = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM app_users a
+                      WHERE LOWER(a.username) = LOWER(u.username)
+                         OR LOWER(a.email) = LOWER(u.email)
+                  )
+                """, (rs, idx) -> rs.getObject("id", UUID.class),
+                principal.getUsername());
+        if (currentWebUser.size() != 1) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Independent web reviewer identity required");
+        }
+        UUID reviewerId = currentWebUser.get(0);
 
         // A current database check is mandatory: an old JWT must not retain
         // review eligibility after deactivation, loss of project membership or
