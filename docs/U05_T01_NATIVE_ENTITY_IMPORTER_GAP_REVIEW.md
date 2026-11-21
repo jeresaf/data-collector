@@ -237,6 +237,12 @@ The opt-in seal's package-scoped `validateAndSealAuthorizedOutcome` now returns 
 
 **Remaining gaps:** no review-ID-free event correlation; exceptions from database reads, authorization or transaction operations can still bypass automated classified-denial records; the review decision register still provides only boolean transaction rejection; and no production audit publisher/HTTP integration exists. No deletion, tombstone, production migration, or release is activated.
 
+## Review-decision transaction outcome classification — exact-head CI pending
+
+The inactive `JdbcEntityListRemovalReviewRegister.decideAuthorizedOutcome` now returns bounded `DecisionOutcome` values `DECIDED`, `INVALID_STATE`, `SELF_ACTION` and `PERMISSION_DENIED` from the same review-row-locked PostgreSQL transaction. The existing boolean `decideAuthorized` remains a compatibility wrapper. `EntityListAuthenticatedReviewService` uses the result to classify its immutable separate-transaction denial evidence, rather than treating every false transaction result as a permission failure. The pending integration tests assert rejected self-review, denied transactional permission and terminal-state replay classifications, as well as preserved denial evidence.
+
+**Scope remains deliberately narrow:** missing review-ID correlation, unexpected exception-path security audit, dedicated reviewer/executor delegation policy and production HTTP/DB integrations are unresolved. The review register is still unregistered and cannot publish, tombstone or delete Entity List data.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
