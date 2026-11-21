@@ -107,13 +107,13 @@ public final class JdbcEntityListRemovalApprovalSeal {
                                 || !key.formId().equals(candidate.evidence().formId())
                                 || !key.filename().equals(candidate.evidence().filename())) {
                             connection.rollback();
-                            return false;
+                            return ValidationOutcome.EVIDENCE_MISMATCH;
                         }
                     }
                 }
                 if (!authorization.mayInitialize(connection, executorId, key)) {
                     connection.rollback();
-                    return false;
+                    return ValidationOutcome.PERMISSION_DENIED;
                 }
                 // Lock current head to prevent concurrent audited CAS updates.
                 // The five-column FK ensures its exact revision/digest exists.
@@ -125,7 +125,7 @@ public final class JdbcEntityListRemovalApprovalSeal {
                         if (!row.next() || row.getLong("revision") != expectedRevision
                                 || !expectedSha.equals(row.getString("sha256"))) {
                             connection.rollback();
-                            return false;
+                            return ValidationOutcome.STALE_HEAD;
                         }
                     }
                 }
@@ -160,7 +160,7 @@ public final class JdbcEntityListRemovalApprovalSeal {
                         || request.get().expectedHead().revision() != expectedRevision
                         || !request.get().expectedHead().sha256().equals(expectedSha)) {
                     connection.rollback();
-                    return false;
+                    return ValidationOutcome.EVIDENCE_MISMATCH;
                 }
                 // Unique review_id prevents approval reuse. This is a receipt
                 // ONLY: no change to the current head or immutable history.
@@ -179,7 +179,7 @@ public final class JdbcEntityListRemovalApprovalSeal {
                     insert.setString(8, candidate.evidence().sha256());
                     if (insert.executeUpdate() != 1) {
                         connection.rollback();
-                        return false;
+                        return ValidationOutcome.REPLAY;
                     }
                 }
                 connection.commit();
