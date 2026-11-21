@@ -93,6 +93,12 @@ This is a test-side adapter, not an authorization system. Real user/project perm
 
 This is **not authorized production infrastructure**: the caller must still enforce permissions and trusted initialization, the backing tables require independently reviewed migration and immutable audit constraints, and disaster recovery/approval/tombstone integration are incomplete. The test creates tables only in a disposable PostgreSQL schema. Do not enable publication or reference refresh on this evidence alone.
 
+## Candidate PostgreSQL schema constraints — test resource only
+
+A **non-migrating** schema candidate now lives at `backend/src/test/resources/entity-list-ledger-schema-postgres.sql`. It proposes a composite project/form/list/revision history key; positive revisions and row counts; typed media, canonical filename, MD5 and SHA-256 format checks; a *deferred* head-to-history foreign key so conditional head CAS and revision insertion can commit together; and an append-only history trigger rejecting SQL UPDATE/DELETE. The new `EntityListPostgresSchemaContractIT` executes that candidate in a disposable PostgreSQL schema, tests the opt-in JDBC store against it, rejects attempted history rewrites/deletions, and verifies an orphan head cannot commit. CI explicitly selects this test.
+
+The trigger protects against ordinary SQL writes in that database role; it does **not** prove protection from a superuser, deliberate DDL, backup loss, external object-storage failure, or compromise of the trusted administrative process. It is not an installed Flyway migration and does not establish signed approval, database role separation, startup/upgrade compatibility, recovery, or safe production activation.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
