@@ -44,8 +44,13 @@ public final class JdbcEntityListSnapshotStore
         if (!validKey(key)) {
             return Optional.empty();
         }
-        String sql = "SELECT h.revision, r.media_type, r.md5, r.sha256, r.row_count, r.payload "
-                + "FROM entity_list_snapshot_heads h JOIN entity_list_snapshot_history r "
+        // LEFT JOIN is deliberate: an existing head with missing, orphaned,
+        // or digest-mismatched history must fail closed rather than appearing
+        // to be an uninitialized list eligible for a new bootstrap.
+        String sql = "SELECT h.revision, h.sha256 AS head_sha256, "
+                + "r.revision AS history_revision, r.media_type, r.md5, "
+                + "r.sha256, r.row_count, r.payload "
+                + "FROM entity_list_snapshot_heads h LEFT JOIN entity_list_snapshot_history r "
                 + "ON r.project_id=h.project_id AND r.form_id=h.form_id "
                 + "AND r.filename=h.filename AND r.revision=h.revision "
                 + "AND r.sha256=h.sha256 "
@@ -56,6 +61,10 @@ public final class JdbcEntityListSnapshotStore
             try (ResultSet row = statement.executeQuery()) {
                 if (!row.next()) {
                     return Optional.empty();
+                }
+                if (row.getObject("history_revision") == null) {
+                    throw new IllegalStateException(
+                            "Entity List snapshot head has no matching immutable revision and digest");
                 }
                 var evidence = new EntityListSnapshotEvidence.Snapshot(
                         key.projectId(), key.formId(), key.filename(),
