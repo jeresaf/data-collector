@@ -343,4 +343,122 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, fixture.historyCount());
     }
 
+    @Test
+    void realNamedProjectTablesGateBootstrapAndHonorRevokedMembership() throws Exception {
+        var fixture = new Fixture();
+        UUID manager = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000320");
+        UUID otherProject = UUID.fromString("00000000-0000-0000-0000-000000000399");
+        UUID role = UUID.fromString("00000000-0000-0000-0000-000000000321");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        // Minimal real-named table fixture. The authoritative production
+        // Flyway chain is separately qualified in PostgreSqlContainerMigrationIT.
+        try (Connection c = fixture.source.getConnection();
+             var ddl = c.createStatement()) {
+            ddl.execute("CREATE TABLE users (id UUID PRIMARY KEY, is_active BOOLEAN NOT NULL)");
+            ddl.execute("CREATE TABLE projects (id UUID PRIMARY KEY, "
+                    + "owner_id UUID NOT NULL, created_by_id UUID NOT NULL, is_active BOOLEAN NOT NULL)");
+            ddl.execute("CREATE TABLE xforms (id UUID PRIMARY KEY, project_id UUID NOT NULL, "
+                    + "is_active BOOLEAN NOT NULL)");
+            ddl.execute("CREATE TABLE roles (id UUID PRIMARY KEY, name TEXT NOT NULL, "
+                    + "is_active BOOLEAN NOT NULL)");
+            ddl.execute("CREATE TABLE project_members (id UUID PRIMARY KEY, "
+                    + "project_id UUID NOT NULL, user_id UUID NOT NULL, role_id UUID NOT NULL, "
+                    + "is_active BOOLEAN NOT NULL)");
+            ddl.execute("INSERT INTO users VALUES ('" + manager + "', TRUE), ('" + owner + "', TRUE)");
+            ddl.execute("INSERT INTO projects VALUES ('" + PROJECT + "', '" + owner
+                    + "', '" + owner + "', TRUE), ('" + otherProject + "', '" + owner
+                    + "', '" + owner + "', TRUE)");
+            ddl.execute("INSERT INTO xforms VALUES ('" + FORM + "', '" + PROJECT + "', TRUE)");
+            ddl.execute("INSERT INTO roles VALUES ('" + role + "', 'PROJECT_MANAGER', TRUE)");
+            ddl.execute("INSERT INTO project_members VALUES ('" + UUID.randomUUID()
+                    + "', '" + PROJECT + "', '" + manager + "', '" + role + "', TRUE)");
+        }
+        var transactionalGate = new JdbcEntityListSnapshotPermissionGate();
+        var bootstrap = new JdbcEntityListSnapshotBootstrap(fixture.source,
+                (actor, requestedKey) -> manager.equals(actor) && key.equals(requestedKey));
+        var metadata = Map.<String, Object>of("odkMediaType", "entityList");
+
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement()) {
+            statement.executeUpdate("UPDATE project_members SET is_active=FALSE WHERE user_id='"
+                    + manager + "'");
+        }
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.DENIED,
+                bootstrap.initializeWithTransactionAuthorization(
+                        manager, key, metadata, ORIGINAL, md5(ORIGINAL), 1L, transactionalGate));
+        assertEquals(0, fixture.historyCount());
+
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement()) {
+            statement.executeUpdate("UPDATE project_members SET is_active=TRUE WHERE user_id='"
+                    + manager + "'");
+            statement.executeUpdate("UPDATE roles SET is_active=FALSE WHERE id='" + role + "'");
+        }
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.DENIED,
+                bootstrap.initializeWithTransactionAuthorization(
+                        manager, key, metadata, ORIGINAL, md5(ORIGINAL), 1L, transactionalGate));
+        assertEquals(0, fixture.historyCount());
+
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement()) {
+            statement.executeUpdate("UPDATE roles SET is_active=TRUE WHERE id='" + role + "'");
+            statement.executeUpdate("UPDATE xforms SET is_active=FALSE WHERE id='" + FORM + "'");
+        }
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.DENIED,
+                bootstrap.initializeWithTransactionAuthorization(
+                        manager, key, metadata, ORIGINAL, md5(ORIGINAL), 1L, transactionalGate));
+
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement()) {
+            statement.executeUpdate("UPDATE xforms SET is_active=TRUE WHERE id='" + FORM + "'");
+            statement.executeUpdate("UPDATE users SET is_active=FALSE WHERE id='" + manager + "'");
+        }
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.DENIED,
+                bootstrap.initializeWithTransactionAuthorization(
+                        manager, key, metadata, ORIGINAL, md5(ORIGINAL), 1L, transactionalGate));
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement()) {
+            statement.executeUpdate("UPDATE users SET is_active=TRUE WHERE id='" + manager + "'");
+        }
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.INITIALIZED,
+                bootstrap.initializeWithTransactionAuthorization(
+                        manager, key, metadata, ORIGINAL, md5(ORIGINAL), 1L, transactionalGate));
+        assertEquals(1, fixture.historyCount());
+
+        // Even an authorized owner cannot bootstrap the form under another project.
+        var foreignKey = new EntityListSnapshotLedgerCoordinator.Key(otherProject, FORM, "other.csv");
+        try (Connection c = fixture.source.getConnection()) {
+            c.setAutoCommit(false);
+            assertFalse(transactionalGate.mayInitialize(c, owner, foreignKey));
+            c.rollback();
+        }
+    }
+
+    @Test
+    void realNamedTableGateRejectsAutoCommitAndInactiveProject() throws Exception {
+        var fixture = new Fixture();
+        UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000320");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        try (Connection c = fixture.source.getConnection();
+             var ddl = c.createStatement()) {
+            ddl.execute("CREATE TABLE users (id UUID PRIMARY KEY, is_active BOOLEAN NOT NULL)");
+            ddl.execute("CREATE TABLE projects (id UUID PRIMARY KEY, "
+                    + "owner_id UUID NOT NULL, created_by_id UUID NOT NULL, is_active BOOLEAN NOT NULL)");
+            ddl.execute("CREATE TABLE xforms (id UUID PRIMARY KEY, project_id UUID NOT NULL, "
+                    + "is_active BOOLEAN NOT NULL)");
+            ddl.execute("INSERT INTO users VALUES ('" + owner + "', TRUE)");
+            ddl.execute("INSERT INTO projects VALUES ('" + PROJECT + "', '" + owner
+                    + "', '" + owner + "', FALSE)");
+            ddl.execute("INSERT INTO xforms VALUES ('" + FORM + "', '" + PROJECT + "', TRUE)");
+        }
+        var gate = new JdbcEntityListSnapshotPermissionGate();
+        try (Connection c = fixture.source.getConnection()) {
+            assertFalse(gate.mayInitialize(c, owner, key));
+            c.setAutoCommit(false);
+            assertFalse(gate.mayInitialize(c, owner, key));
+            c.rollback();
+        }
+    }
+
 }
