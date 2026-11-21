@@ -813,19 +813,22 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(evidence.missingIds(), pending.missingIds());
         assertFalse(register.decide(reviewId, requester,
                 JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
-        assertFalse(register.decideAuthorized(reviewId, requester,
-                JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
-                (connection, actor, scope) -> true));
-        assertFalse(register.decideAuthorized(reviewId, reviewer,
-                JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
-                (connection, actor, scope) -> false));
+        assertEquals(JdbcEntityListRemovalReviewRegister.DecisionOutcome.SELF_ACTION,
+                register.decideAuthorizedOutcome(reviewId, requester,
+                        JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
+                        (connection, actor, scope) -> true));
+        assertEquals(JdbcEntityListRemovalReviewRegister.DecisionOutcome.PERMISSION_DENIED,
+                register.decideAuthorizedOutcome(reviewId, reviewer,
+                        JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
+                        (connection, actor, scope) -> false));
         assertEquals("PENDING", register.get(reviewId).state());
         assertTrue(register.decideAuthorized(reviewId, reviewer,
                 JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
                 (connection, actor, scope) -> reviewer.equals(actor) && key.equals(scope)));
-        assertFalse(register.decideAuthorized(reviewId, UUID.randomUUID(),
-                JdbcEntityListRemovalReviewRegister.Decision.REJECTED,
-                (connection, actor, scope) -> true));
+        assertEquals(JdbcEntityListRemovalReviewRegister.DecisionOutcome.INVALID_STATE,
+                register.decideAuthorizedOutcome(reviewId, UUID.randomUUID(),
+                        JdbcEntityListRemovalReviewRegister.Decision.REJECTED,
+                        (connection, actor, scope) -> true));
         assertEquals("APPROVED", register.get(reviewId).state());
         assertEquals(reviewer, register.get(reviewId).reviewer());
 
@@ -936,6 +939,17 @@ class EntityListPostgresSchemaContractIT {
         org.mockito.Mockito.when(policy.mayInitialize(reviewer, key)).thenReturn(true);
         assertFalse(service.decide(id, JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
         assertEquals("PENDING", register.get(id).state());
+        try (Connection auditConnection = fixture.source.getConnection();
+             var auditQuery = auditConnection.prepareStatement(
+                     "SELECT reason FROM entity_list_denial_evidence "
+                             + "WHERE review_id=? AND operation='REVIEW_DECISION' "
+                             + "ORDER BY occurred_at DESC LIMIT 1")) {
+            auditQuery.setObject(1, id);
+            try (var event = auditQuery.executeQuery()) {
+                assertTrue(event.next());
+                assertEquals("PERMISSION_DENIED", event.getString("reason"));
+            }
+        }
 
         org.mockito.Mockito.when(gate.mayInitialize(
                 org.mockito.ArgumentMatchers.any(Connection.class),
