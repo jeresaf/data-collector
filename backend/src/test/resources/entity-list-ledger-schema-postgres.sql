@@ -297,3 +297,21 @@ CREATE TABLE entity_list_custodian_change_readiness (
 CREATE TRIGGER entity_list_custodian_readiness_immutable
 BEFORE UPDATE OR DELETE ON entity_list_custodian_change_readiness
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Only the inactive, separately authorized custody execution component
+-- consumes readiness. The receipt itself is immutable.
+CREATE TABLE entity_list_custodian_change_executions (
+    proposal_id UUID PRIMARY KEY
+        REFERENCES entity_list_custodian_change_readiness(proposal_id),
+    executed_by UUID NOT NULL,
+    action VARCHAR(8) NOT NULL CHECK (action IN ('APPOINT','REVOKE')),
+    project_id UUID NOT NULL,
+    subject_id UUID NOT NULL,
+    executed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (executed_by <> subject_id)
+);
+-- split
+CREATE TRIGGER entity_list_custodian_execution_immutable
+BEFORE UPDATE OR DELETE ON entity_list_custodian_change_executions
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
