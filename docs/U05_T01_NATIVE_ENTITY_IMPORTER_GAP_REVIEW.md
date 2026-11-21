@@ -129,6 +129,12 @@ A disposable PostgreSQL test creates a **minimal table-shaped fixture using thos
 
 This test does **not** install the Entity List ledger schema, activate the bootstrap, add an HTTP endpoint, prove cross-connection revocation races, or record immutable actor audit evidence. Actual request identity, lock-order enforcement across all revocation writers, approved production migration and deletion/tombstone decisions remain blocked.
 
+## Opt-in immutable actor audit — exact-head CI pending
+
+`JdbcEntityListSnapshotBootstrap.initializeWithTransactionAudit(...)` adds a **strict opt-in** entry point requiring both an in-transaction authorization callback and an in-transaction audit callback. `JdbcEntityListSnapshotAuditWriter` records the actor ID, project/form/list scope, server-assigned revision 1, SHA-256 digest and `INITIALIZED` event on the **same JDBC connection and transaction** as snapshot history and head. If audit insertion fails, the first snapshot is rolled back. The disposable PostgreSQL schema adds an audit table with a historical revision foreign key and append-only update/delete trigger. Integration tests cover denied initialization (no audit), successful initialization (one event), identical retry (no extra event), mutation rejection and audit write failure (no head/history). None of these components is registered as a Spring service or Flyway migration.
+
+**Scope limit:** This provides successful-initialization evidence only, not a full append/review/denial audit trail or a cryptographically signed tamper-evident log. Rollback and rejection attempts are not represented in the same committed audit table. The actor still requires binding to actual request authentication and the real-row permission gate; the transaction uses test-only audit schema. A separate security event channel is needed for denied/invalid requests. No production DB, deletion approval, integrity protocol or Android client behavior is changed.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
