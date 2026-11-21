@@ -24,6 +24,14 @@ import java.util.Optional;
  */
 public final class JdbcEntityListSnapshotStore
         implements EntityListSnapshotLedgerCoordinator.Store {
+    /** Writes the append event in the same transaction as history and head. */
+    @FunctionalInterface
+    public interface TransactionAppendAudit {
+        void recordAppended(Connection connection, java.util.UUID actor,
+                EntityListSnapshotLedgerCoordinator.Key key,
+                EntityListSnapshotEvidence.Snapshot evidence) throws SQLException;
+    }
+
     private final DataSource dataSource;
 
     public JdbcEntityListSnapshotStore(DataSource dataSource) {
@@ -72,6 +80,37 @@ public final class JdbcEntityListSnapshotStore
             EntityListSnapshotLedgerCoordinator.Key key,
             EntityListSnapshotLedgerCoordinator.Head expected,
             EntityListSnapshotLedgerCoordinator.Head proposed) {
+        return appendInternal(key, expected, proposed, null, null, null);
+    }
+
+    /**
+     * Strict opt-in append with permission recheck and immutable audit in the
+     * exact database transaction. This method is NOT called by production
+     * controllers; the basic Store interface remains unaudited/inactive.
+     */
+    public boolean compareAndAppendAudited(
+            EntityListSnapshotLedgerCoordinator.Key key,
+            EntityListSnapshotLedgerCoordinator.Head expected,
+            EntityListSnapshotLedgerCoordinator.Head proposed,
+            java.util.UUID authenticatedActorId,
+            JdbcEntityListSnapshotBootstrap.TransactionAuthorization authorization,
+            TransactionAppendAudit audit) {
+        java.util.Objects.requireNonNull(authorization);
+        java.util.Objects.requireNonNull(audit);
+        if (authenticatedActorId == null) {
+            return false;
+        }
+        return appendInternal(key, expected, proposed,
+                authenticatedActorId, authorization, audit);
+    }
+
+    private boolean appendInternal(
+            EntityListSnapshotLedgerCoordinator.Key key,
+            EntityListSnapshotLedgerCoordinator.Head expected,
+            EntityListSnapshotLedgerCoordinator.Head proposed,
+            java.util.UUID authenticatedActorId,
+            JdbcEntityListSnapshotBootstrap.TransactionAuthorization authorization,
+            TransactionAppendAudit audit) {
         if (!validKey(key) || expected == null || proposed == null
                 || !validEvidence(key, expected.evidence(), expected.bytes())
                 || !validEvidence(key, proposed.evidence(), proposed.bytes())
@@ -92,6 +131,12 @@ public final class JdbcEntityListSnapshotStore
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
+                if (authorization != null
+                        && !authorization.mayInitialize(
+                                connection, authenticatedActorId, key)) {
+                    connection.rollback();
+                    return false;
+                }
                 String cas = "UPDATE entity_list_snapshot_heads SET revision=?, sha256=? "
                         + "WHERE project_id=? AND form_id=? AND filename=? "
                         + "AND revision=? AND sha256=?";
@@ -121,6 +166,10 @@ public final class JdbcEntityListSnapshotStore
                     statement.setLong(8, evidence.rowCount());
                     statement.setBytes(9, proposed.bytes());
                     statement.executeUpdate();
+                }
+                if (audit != null) {
+                    audit.recordAppended(
+                            connection, authenticatedActorId, key, proposed.evidence());
                 }
                 connection.commit();
                 return true;
