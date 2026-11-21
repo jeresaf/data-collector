@@ -2159,4 +2159,165 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, fixture.historyCount());
     }
 
+    @Test
+    void custodianReadinessIsOneUseRequiresFourDistinctActiveCustodiansAndNeverExecutes()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID initiator = UUID.randomUUID();
+        UUID witnessA = UUID.randomUUID();
+        UUID witnessB = UUID.randomUUID();
+        UUID validator = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        UUID proposal = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        var actor = new java.util.concurrent.atomic.AtomicReference<>(validator);
+        org.mockito.Mockito.when(user.getId()).thenAnswer(invocation -> actor.get());
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        try (Connection c = fixture.source.getConnection()) {
+            try (var grant = c.prepareStatement(
+                    "INSERT INTO entity_list_grant_custodians "
+                            + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+                for (UUID id : new UUID[]{initiator,witnessA,witnessB,validator}) {
+                    grant.setObject(1, PROJECT);
+                    grant.setObject(2, id);
+                    assertEquals(1, grant.executeUpdate());
+                }
+            }
+            try (var pending = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_proposals "
+                            + "(id,project_id,form_id,filename,subject_id,initiated_by,action,state) "
+                            + "VALUES (?,?,?,?,?,?,'APPOINT','ENDORSED')")) {
+                pending.setObject(1, proposal);
+                pending.setObject(2, PROJECT);
+                pending.setObject(3, FORM);
+                pending.setString(4, FILENAME);
+                pending.setObject(5, subject);
+                pending.setObject(6, initiator);
+                assertEquals(1, pending.executeUpdate());
+            }
+            try (var witnesses = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_witnesses "
+                            + "(proposal_id,witness_id) VALUES (?,?)")) {
+                for (UUID witness : new UUID[]{witnessA,witnessB}) {
+                    witnesses.setObject(1, proposal);
+                    witnesses.setObject(2, witness);
+                    assertEquals(1, witnesses.executeUpdate());
+                }
+            }
+        }
+        var seal = new EntityListCustodianReadinessSeal(fixture.source, current,
+                (connection, identity, scope) -> key.equals(scope));
+        actor.set(initiator);
+        assertFalse(seal.seal(proposal)); // proposer cannot validate
+        actor.set(witnessA);
+        assertFalse(seal.seal(proposal)); // witness cannot validate
+        actor.set(validator);
+        assertTrue(seal.seal(proposal));
+        assertFalse(seal.seal(proposal)); // no second receipt / no replay
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement()) {
+            try (var readiness = statement.executeQuery(
+                    "SELECT proposal_id,validated_by FROM entity_list_custodian_change_readiness")) {
+                assertTrue(readiness.next());
+                assertEquals(proposal, readiness.getObject("proposal_id", UUID.class));
+                assertEquals(validator, readiness.getObject("validated_by", UUID.class));
+                assertFalse(readiness.next());
+            }
+            try (var custody = statement.executeQuery(
+                    "SELECT COUNT(*) FROM entity_list_grant_custodians "
+                            + "WHERE custodian_id='" + subject + "'")) {
+                assertTrue(custody.next());
+                assertEquals(0L, custody.getLong(1)); // receipt cannot appoint subject
+            }
+            assertThrows(SQLException.class, () -> statement.executeUpdate(
+                    "DELETE FROM entity_list_custodian_change_readiness"));
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void custodianReadinessRejectsExpiredOrRevokedWitnessEvidence()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID initiator = UUID.randomUUID();
+        UUID witnessA = UUID.randomUUID();
+        UUID witnessB = UUID.randomUUID();
+        UUID validator = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        UUID expired = UUID.randomUUID();
+        UUID revoked = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(validator);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        try (Connection c = fixture.source.getConnection()) {
+            try (var grant = c.prepareStatement(
+                    "INSERT INTO entity_list_grant_custodians "
+                            + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+                for (UUID id : new UUID[]{initiator,witnessA,witnessB,validator}) {
+                    grant.setObject(1, PROJECT);
+                    grant.setObject(2, id);
+                    assertEquals(1, grant.executeUpdate());
+                }
+            }
+            try (var pending = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_proposals "
+                            + "(id,project_id,form_id,filename,subject_id,initiated_by,"
+                            + "action,state,created_at) VALUES "
+                            + "(?,?,?,?,?,?,'REVOKE','ENDORSED',?)")) {
+                for (UUID id : new UUID[]{expired,revoked}) {
+                    pending.setObject(1, id);
+                    pending.setObject(2, PROJECT);
+                    pending.setObject(3, FORM);
+                    pending.setString(4, FILENAME);
+                    pending.setObject(5, subject);
+                    pending.setObject(6, initiator);
+                    pending.setObject(7, java.sql.Timestamp.from(
+                            java.time.Instant.now().minusSeconds(
+                                    id.equals(expired) ? 90000 : 30)));
+                    assertEquals(1, pending.executeUpdate());
+                }
+            }
+            try (var witnesses = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_witnesses "
+                            + "(proposal_id,witness_id) VALUES (?,?)")) {
+                for (UUID id : new UUID[]{expired,revoked}) {
+                    for (UUID witness : new UUID[]{witnessA,witnessB}) {
+                        witnesses.setObject(1, id);
+                        witnesses.setObject(2, witness);
+                        assertEquals(1, witnesses.executeUpdate());
+                    }
+                }
+            }
+            try (var revoke = c.prepareStatement(
+                    "UPDATE entity_list_grant_custodians SET is_active=FALSE "
+                            + "WHERE project_id=? AND custodian_id=?")) {
+                revoke.setObject(1, PROJECT);
+                revoke.setObject(2, witnessA);
+                assertEquals(1, revoke.executeUpdate());
+            }
+        }
+        var seal = new EntityListCustodianReadinessSeal(fixture.source, current,
+                (connection, identity, scope) -> key.equals(scope));
+        assertFalse(seal.seal(expired));
+        assertFalse(seal.seal(revoked));
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement();
+             var rows = statement.executeQuery(
+                     "SELECT COUNT(*) FROM entity_list_custodian_change_readiness")) {
+            assertTrue(rows.next());
+            assertEquals(0L, rows.getLong(1));
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
 }
