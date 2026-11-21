@@ -139,6 +139,45 @@ public final class EntityListManifestPreflight {
     }
 
     /**
+     * Computes the ids that disappear between two fully validated, hash-bound
+     * snapshots of the SAME explicit Entity List type. This is an inert review
+     * primitive: it does not authorize or publish removals, mutate entities,
+     * supply tombstones, or enable sync. Callers must obtain trusted prior
+     * snapshots and an independently approved deletion policy.
+     *
+     * <p>An empty result means a proven no-removal transition; Optional.empty()
+     * means the comparison cannot be trusted (invalid snapshot, different type,
+     * or mismatched recorded hash). Never interpret an unqualified comparison
+     * as permission to delete.</p>
+     */
+    public static Optional<Set<UUID>> removedIdsBetweenVerifiedSnapshots(
+            Map<String, Object> previousMetadata, byte[] previousBytes, String previousHash,
+            Map<String, Object> nextMetadata, byte[] nextBytes, String nextHash) {
+        Optional<String> previousType = verifiedCandidate(previousMetadata, previousBytes, previousHash);
+        Optional<String> nextType = verifiedCandidate(nextMetadata, nextBytes, nextHash);
+        if (previousType.isEmpty() || nextType.isEmpty() || !previousType.equals(nextType)) {
+            return Optional.empty();
+        }
+        Optional<List<List<String>>> previousRows = parse(previousBytes);
+        Optional<List<List<String>>> nextRows = parse(nextBytes);
+        if (previousRows.isEmpty() || nextRows.isEmpty()) {
+            return Optional.empty();
+        }
+        Set<UUID> removed = entityIds(previousRows.get());
+        removed.removeAll(entityIds(nextRows.get()));
+        return Optional.of(Set.copyOf(removed));
+    }
+
+    private static Set<UUID> entityIds(List<List<String>> rows) {
+        int idIndex = rows.get(0).indexOf("name");
+        Set<UUID> ids = new HashSet<>();
+        for (int i = 1; i < rows.size(); i++) {
+            ids.add(UUID.fromString(rows.get(i).get(idIndex)));
+        }
+        return ids;
+    }
+
+    /**
      * Collect derives the local list name from filename.substringBefore(".csv").
      * Allow one canonical lowercase extension and a stable, unambiguous base.
      * This is deliberately stricter than ordinary form-media filenames.
