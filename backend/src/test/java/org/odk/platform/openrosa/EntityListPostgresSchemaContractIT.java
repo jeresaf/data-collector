@@ -2912,4 +2912,100 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, scenario.fixture.historyCount());
     }
 
+    @Test
+    void independentReconciliationClientsObserveRollbackThenExactlyOneRetry()
+            throws Exception {
+        var scenario = new CustodyExecutionScenario("APPOINT", 10, false);
+        var scope = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var webUser = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(webUser.getId()).thenReturn(scenario.officer);
+        org.mockito.Mockito.when(webUser.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(identity.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(webUser));
+        var first = new EntityListCustodianExecutionReconciliation(
+                scenario.fixture.source, identity, (connection, actor, key) ->
+                        scenario.officer.equals(actor) && scope.equals(key));
+        var second = new EntityListCustodianExecutionReconciliation(
+                scenario.fixture.source, identity, (connection, actor, key) ->
+                        scenario.officer.equals(actor) && scope.equals(key));
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try (Connection uncertain = scenario.fixture.source.getConnection()) {
+            uncertain.setAutoCommit(false);
+            try (var lock = uncertain.prepareStatement(
+                    "SELECT id FROM entity_list_custodian_change_proposals "
+                            + "WHERE id=? FOR UPDATE")) {
+                lock.setObject(1, scenario.proposal);
+                try (var rows = lock.executeQuery()) {
+                    assertTrue(rows.next());
+                }
+            }
+            try (var appointment = uncertain.prepareStatement(
+                    "INSERT INTO entity_list_grant_custodians "
+                            + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+                appointment.setObject(1, PROJECT);
+                appointment.setObject(2, scenario.subject);
+                assertEquals(1, appointment.executeUpdate());
+            }
+            try (var receipt = uncertain.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_executions "
+                            + "(proposal_id,executed_by,action,project_id,subject_id) "
+                            + "VALUES (?,?,'APPOINT',?,?)")) {
+                receipt.setObject(1, scenario.proposal);
+                receipt.setObject(2, scenario.officer);
+                receipt.setObject(3, PROJECT);
+                receipt.setObject(4, scenario.subject);
+                assertEquals(1, receipt.executeUpdate());
+            }
+
+            var a = pool.submit(() -> first.check(scenario.proposal));
+            var b = pool.submit(() -> second.check(scenario.proposal));
+            java.util.concurrent.TimeUnit.MILLISECONDS.sleep(200);
+            assertFalse(a.isDone());
+            assertFalse(b.isDone());
+
+            // Both clients entered while the transaction outcome was
+            // unknown. Rollback makes the state transition and receipt
+            // disappear together before either reader can conclude.
+            uncertain.rollback();
+            assertEquals(EntityListCustodianExecutionReconciliation.Status.NOT_COMMITTED,
+                    a.get(15, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(EntityListCustodianExecutionReconciliation.Status.NOT_COMMITTED,
+                    b.get(15, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(0L, scenario.executionCount());
+        assertEquals(4L, scenario.activeCustodianCount());
+        assertTrue(scenario.executor.execute(scenario.proposal));
+        assertEquals(1L, scenario.executionCount());
+        assertEquals(5L, scenario.activeCustodianCount());
+        assertEquals(EntityListCustodianExecutionReconciliation.Status.COMMITTED,
+                first.check(scenario.proposal));
+        assertEquals(EntityListCustodianExecutionReconciliation.Status.COMMITTED,
+                second.check(scenario.proposal));
+        assertFalse(scenario.executor.execute(scenario.proposal));
+        assertEquals(0, scenario.fixture.historyCount());
+    }
+
+    @Test
+    void reconciliationDoesNotMistakeUnknownProposalForUncommittedExecution()
+            throws Exception {
+        var scenario = new CustodyExecutionScenario("APPOINT", 10, false);
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var webUser = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(webUser.getId()).thenReturn(scenario.officer);
+        org.mockito.Mockito.when(webUser.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(identity.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(webUser));
+        var recovery = new EntityListCustodianExecutionReconciliation(
+                scenario.fixture.source, identity, (connection, actor, key) -> true);
+        assertEquals(EntityListCustodianExecutionReconciliation.Status.UNKNOWN_PROPOSAL,
+                recovery.check(UUID.randomUUID()));
+        assertEquals(0L, scenario.executionCount());
+        assertEquals(4L, scenario.activeCustodianCount());
+    }
+
 }
