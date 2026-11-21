@@ -14,17 +14,33 @@ import java.util.UUID;
  * rollback attempts need a separate non-transactional security event log.
  */
 public final class JdbcEntityListSnapshotAuditWriter
-        implements JdbcEntityListSnapshotBootstrap.TransactionAudit {
+        implements JdbcEntityListSnapshotBootstrap.TransactionAudit,
+        JdbcEntityListSnapshotStore.TransactionAppendAudit {
     @Override
     public void recordInitialized(Connection connection, UUID authenticatedActorId,
             EntityListSnapshotLedgerCoordinator.Key key,
             EntityListSnapshotEvidence.Snapshot evidence) throws SQLException {
+        record(connection, authenticatedActorId, key, evidence, "INITIALIZED", true);
+    }
+
+    @Override
+    public void recordAppended(Connection connection, UUID authenticatedActorId,
+            EntityListSnapshotLedgerCoordinator.Key key,
+            EntityListSnapshotEvidence.Snapshot evidence) throws SQLException {
+        record(connection, authenticatedActorId, key, evidence, "APPENDED", false);
+    }
+
+    private void record(Connection connection, UUID authenticatedActorId,
+            EntityListSnapshotLedgerCoordinator.Key key,
+            EntityListSnapshotEvidence.Snapshot evidence, String event, boolean first)
+            throws SQLException {
         if (connection == null || connection.getAutoCommit()
                 || authenticatedActorId == null || key == null || evidence == null
                 || !key.projectId().equals(evidence.projectId())
                 || !key.formId().equals(evidence.formId())
                 || !key.filename().equals(evidence.filename())
-                || evidence.revision() != 1L) {
+                || evidence.revision() < (first ? 1L : 2L)
+                || (first && evidence.revision() != 1L)) {
             throw new SQLException("Invalid transaction-scoped initialization audit");
         }
         String sql = "INSERT INTO entity_list_snapshot_audit "
@@ -37,7 +53,7 @@ public final class JdbcEntityListSnapshotAuditWriter
             insert.setString(4, key.filename());
             insert.setLong(5, evidence.revision());
             insert.setString(6, evidence.sha256());
-            insert.setString(7, "INITIALIZED");
+            insert.setString(7, event);
             if (insert.executeUpdate() != 1) {
                 throw new SQLException("Initialization audit insert did not write exactly one row");
             }
