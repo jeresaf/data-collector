@@ -701,4 +701,41 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(1, fixture.historyCount());
     }
 
+    @Test
+    void digestMismatchedHeadFailsClosedInsteadOfLookingUninitialized() throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var store = new JdbcEntityListSnapshotStore(fixture.source);
+        assertEquals(1L, store.currentHead(key).orElseThrow().evidence().revision());
+
+        // The isolated candidate FK validates revision existence but does
+        // not include SHA-256, so a damaged head digest can otherwise pass
+        // database constraints. This must never look like "not initialized".
+        try (Connection connection = fixture.source.getConnection();
+             var sql = connection.prepareStatement(
+                     "UPDATE entity_list_snapshot_heads SET sha256=? "
+                             + "WHERE project_id=? AND form_id=? AND filename=?")) {
+            sql.setString(1, "a".repeat(64));
+            sql.setObject(2, PROJECT);
+            sql.setObject(3, FORM);
+            sql.setString(4, FILENAME);
+            assertEquals(1, sql.executeUpdate());
+        }
+        assertThrows(IllegalStateException.class, () -> store.currentHead(key));
+        assertThrows(IllegalStateException.class, () ->
+                EntityListSnapshotLedgerCoordinator.propose(
+                        store, key, Map.of("odkMediaType", "entityList"),
+                        SECOND, md5(SECOND), 1L));
+        assertEquals(1, fixture.historyCount());
+    }
+
+    @Test
+    void absentHeadRemainsDistinctFromCorruptHead() throws Exception {
+        var fixture = new Fixture();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        assertTrue(new JdbcEntityListSnapshotStore(fixture.source)
+                .currentHead(key).isEmpty());
+    }
+
 }
