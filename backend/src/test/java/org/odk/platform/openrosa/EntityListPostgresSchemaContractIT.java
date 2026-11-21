@@ -1448,4 +1448,78 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, fixture.historyCount());
     }
 
+    @Test
+    void independentRemovalDelegationsRequireExplicitActiveRoleAndManagerAuthority()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID actor = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var reviewer = new JdbcEntityListRemovalRoleGate(
+                (connection, identity, scope) -> actor.equals(identity) && key.equals(scope),
+                JdbcEntityListRemovalRoleGate.Role.REVIEWER);
+        var executor = new JdbcEntityListRemovalRoleGate(
+                (connection, identity, scope) -> actor.equals(identity) && key.equals(scope),
+                JdbcEntityListRemovalRoleGate.Role.EXECUTOR);
+        var deniedManager = new JdbcEntityListRemovalRoleGate(
+                (connection, identity, scope) -> false,
+                JdbcEntityListRemovalRoleGate.Role.REVIEWER);
+        try (Connection connection = fixture.source.getConnection()) {
+            connection.setAutoCommit(false);
+            assertFalse(reviewer.mayInitialize(connection, actor, key));
+            assertFalse(executor.mayInitialize(connection, actor, key));
+            try (var insert = connection.prepareStatement(
+                    "INSERT INTO entity_list_removal_role_grants "
+                            + "(project_id,user_id,role_name,is_active) VALUES (?,?,?,TRUE)")) {
+                insert.setObject(1, PROJECT);
+                insert.setObject(2, actor);
+                insert.setString(3, "REVIEWER");
+                assertEquals(1, insert.executeUpdate());
+            }
+            assertTrue(reviewer.mayInitialize(connection, actor, key));
+            assertFalse(executor.mayInitialize(connection, actor, key));
+            assertFalse(deniedManager.mayInitialize(connection, actor, key));
+            try (var insert = connection.prepareStatement(
+                    "INSERT INTO entity_list_removal_role_grants "
+                            + "(project_id,user_id,role_name,is_active) VALUES (?,?,?,TRUE)")) {
+                insert.setObject(1, PROJECT);
+                insert.setObject(2, actor);
+                insert.setString(3, "EXECUTOR");
+                assertEquals(1, insert.executeUpdate());
+            }
+            assertTrue(executor.mayInitialize(connection, actor, key));
+            try (var revoke = connection.prepareStatement(
+                    "UPDATE entity_list_removal_role_grants SET is_active=FALSE "
+                            + "WHERE project_id=? AND user_id=? AND role_name=?")) {
+                revoke.setObject(1, PROJECT);
+                revoke.setObject(2, actor);
+                revoke.setString(3, "REVIEWER");
+                assertEquals(1, revoke.executeUpdate());
+            }
+            assertFalse(reviewer.mayInitialize(connection, actor, key));
+            assertTrue(executor.mayInitialize(connection, actor, key));
+            assertFalse(executor.mayInitialize(connection, UUID.randomUUID(), key));
+            connection.rollback(); // disposable isolated authorization evidence only
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void authenticatedFacadesRejectIncorrectDelegationRoleAtConstruction() throws Exception {
+        var fixture = new Fixture();
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
+        var writer = new JdbcEntityListDenialEvidenceWriter(fixture.source);
+        var register = new JdbcEntityListRemovalReviewRegister(fixture.source);
+        var seal = new JdbcEntityListRemovalApprovalSeal(fixture.source);
+        var reviewerRole = roleGate(JdbcEntityListRemovalRoleGate.Role.REVIEWER);
+        var executorRole = roleGate(JdbcEntityListRemovalRoleGate.Role.EXECUTOR);
+        assertThrows(IllegalArgumentException.class, () ->
+                new EntityListAuthenticatedReviewService(
+                        identity, policy, executorRole, register, writer));
+        assertThrows(IllegalArgumentException.class, () ->
+                new EntityListAuthenticatedSealService(
+                        identity, policy, reviewerRole, register, seal, writer));
+    }
+
 }
