@@ -1218,4 +1218,43 @@ class EntityListPostgresSchemaContractIT {
                         JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED));
     }
 
+    @Test
+    void authenticatedReviewDenialFailsClosedWhenMandatoryJournalUnavailable() throws Exception {
+        var fixture = new Fixture();
+        UUID reviewId = UUID.randomUUID();
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var facade = new EntityListAuthenticatedReviewService(
+                identity,
+                org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class),
+                org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class),
+                new JdbcEntityListRemovalReviewRegister(fixture.source),
+                new JdbcEntityListDenialEvidenceWriter(fixture.source));
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement()) {
+            statement.execute("DROP TABLE entity_list_denial_evidence");
+        }
+        assertThrows(IllegalStateException.class, () ->
+                facade.decide(reviewId,
+                        JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+    }
+
+    @Test
+    void authenticatedSealDenialFailsClosedWhenMandatoryJournalUnavailable() throws Exception {
+        var fixture = new Fixture();
+        var facade = new EntityListAuthenticatedSealService(
+                org.mockito.Mockito.mock(org.odk.platform.security.CurrentUserService.class),
+                org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class),
+                org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class),
+                new JdbcEntityListRemovalReviewRegister(fixture.source),
+                new JdbcEntityListRemovalApprovalSeal(fixture.source),
+                new JdbcEntityListDenialEvidenceWriter(fixture.source));
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement()) {
+            statement.execute("DROP TABLE entity_list_denial_evidence");
+        }
+        assertThrows(IllegalStateException.class, () ->
+                facade.validateApprovedReview(UUID.randomUUID(), null));
+    }
+
 }
