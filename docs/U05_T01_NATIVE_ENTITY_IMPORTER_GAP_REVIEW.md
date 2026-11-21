@@ -29,6 +29,12 @@ This is a source review; it is not evidence of an Android instrumented or device
 | Large dataset and empty-list deletion semantics | Bounded-memory/size and deletion-policy tests | BLOCKED |
 | Independent periodic admin-unit refresh | Project-scoped reference version lifecycle + native cache refresh | NOT IMPLEMENTED |
 
+## Inactive deletion-diff review helper
+
+`EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(...)` compares the canonical entity identifiers in two **separately MD5-verified, structurally valid** CSV snapshots of the same explicit type. It returns an optional set of IDs missing from the newer snapshot. If either digest is wrong, either CSV invalid, or the types differ, comparison fails closed. The method is **not wired into the manifest, download route, reference update lifecycle, deletion approval, or any production action**.
+
+This helper supports a future removal approval report; it cannot establish trusted historical snapshots, prove the client's currently cached inventory, interpret server tombstones, or make omitted IDs safe to delete. Until those controls and native importer behavior are qualified, an omission must not be interpreted as authority to delete a household or administrative entity.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
