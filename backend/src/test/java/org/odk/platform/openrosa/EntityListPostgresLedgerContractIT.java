@@ -389,6 +389,11 @@ class EntityListPostgresLedgerContractIT {
                     + "revision BIGINT NOT NULL, media_type TEXT NOT NULL, md5 TEXT NOT NULL, "
                     + "sha256 TEXT NOT NULL, row_count BIGINT NOT NULL, payload BYTEA NOT NULL, "
                     + "PRIMARY KEY(project_id,form_id,filename,revision))");
+            sql.execute("CREATE TABLE " + schema + ".entity_list_snapshot_audit ("
+                    + "actor_id UUID NOT NULL, project_id UUID NOT NULL, form_id UUID NOT NULL, "
+                    + "filename TEXT NOT NULL, revision BIGINT NOT NULL, sha256 TEXT NOT NULL, "
+                    + "event_type TEXT NOT NULL, "
+                    + "PRIMARY KEY(project_id,form_id,filename,revision,event_type))");
         }
         org.postgresql.ds.PGSimpleDataSource dataSource = new org.postgresql.ds.PGSimpleDataSource();
         dataSource.setUrl(POSTGRES.getJdbcUrl());
@@ -422,15 +427,25 @@ class EntityListPostgresLedgerContractIT {
         }
         var store = new JdbcEntityListSnapshotStore(dataSource);
         assertTrue(java.util.Arrays.equals(OLD, store.currentHead(KEY).orElseThrow().bytes()));
-        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.APPENDED,
-                EntityListSnapshotLedgerCoordinator.propose(
-                        store, KEY, TYPE, UPDATED, md5(UPDATED), 2L).outcome());
-        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.UNCHANGED,
-                EntityListSnapshotLedgerCoordinator.propose(
-                        store, KEY, TYPE, UPDATED, md5(UPDATED), 2L).outcome());
-        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.REMOVAL_APPROVAL_REQUIRED,
-                EntityListSnapshotLedgerCoordinator.propose(
-                        store, KEY, TYPE, REMOVAL, md5(REMOVAL), 1L).outcome());
+        var firstHead = store.currentHead(KEY).orElseThrow();
+        var secondEvidence = EntityListSnapshotEvidence.fromVerifiedBytes(
+                PROJECT, FORM, KEY.filename(), 2L, TYPE, UPDATED, md5(UPDATED), 2L)
+                .orElseThrow();
+        var secondHead = new EntityListSnapshotLedgerCoordinator.Head(secondEvidence, UPDATED);
+        assertTrue(!store.compareAndAppend(KEY, firstHead, secondHead));
+        assertEquals(1L, store.currentHead(KEY).orElseThrow().evidence().revision());
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        assertTrue(store.compareAndAppendAudited(KEY, firstHead, secondHead, actor,
+                (connection, identity, scope) -> actor.equals(identity) && KEY.equals(scope),
+                new JdbcEntityListSnapshotAuditWriter()));
+        assertTrue(!store.compareAndAppendAudited(KEY, firstHead, secondHead, actor,
+                (connection, identity, scope) -> true, new JdbcEntityListSnapshotAuditWriter()));
+        var missing = EntityListSnapshotEvidence.fromVerifiedBytes(
+                PROJECT, FORM, KEY.filename(), 3L, TYPE, REMOVAL, md5(REMOVAL), 1L)
+                .orElseThrow();
+        assertTrue(!store.compareAndAppendAudited(KEY, secondHead,
+                new EntityListSnapshotLedgerCoordinator.Head(missing, REMOVAL), actor,
+                (connection, identity, scope) -> true, new JdbcEntityListSnapshotAuditWriter()));
         var current = store.currentHead(KEY).orElseThrow();
         var unauthorizedRemoval = EntityListSnapshotEvidence.fromVerifiedBytes(
                 PROJECT, FORM, KEY.filename(), current.evidence().revision() + 1,
