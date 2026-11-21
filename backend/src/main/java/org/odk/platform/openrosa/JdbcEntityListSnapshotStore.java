@@ -80,6 +80,15 @@ public final class JdbcEntityListSnapshotStore
                 || !expected.evidence().mediaType().equals(proposed.evidence().mediaType())) {
             return false;
         }
+        // Fail closed even for callers bypassing the coordinator: a removal
+        // cannot be appended through the opt-in store before an independent
+        // approved-deletion transaction/service exists.
+        var review = EntityListSnapshotRevisionPolicy.assess(
+                expected.evidence(), expected.bytes(),
+                proposed.evidence(), proposed.bytes());
+        if (review.status() != EntityListSnapshotRevisionPolicy.Status.READY_FOR_LEDGER_APPEND) {
+            return false;
+        }
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
