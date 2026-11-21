@@ -255,3 +255,33 @@ CREATE TABLE entity_list_custodian_change_witnesses (
 CREATE TRIGGER entity_list_custodian_witness_immutable
 BEFORE UPDATE OR DELETE ON entity_list_custodian_change_witnesses
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Proposal evidence cannot be edited; only the one-way quorum state
+-- transition PENDING -> ENDORSED is permitted.
+CREATE FUNCTION prevent_entity_list_custodian_proposal_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.id IS DISTINCT FROM NEW.id
+       OR OLD.project_id IS DISTINCT FROM NEW.project_id
+       OR OLD.form_id IS DISTINCT FROM NEW.form_id
+       OR OLD.filename IS DISTINCT FROM NEW.filename
+       OR OLD.subject_id IS DISTINCT FROM NEW.subject_id
+       OR OLD.initiated_by IS DISTINCT FROM NEW.initiated_by
+       OR OLD.action IS DISTINCT FROM NEW.action
+       OR OLD.created_at IS DISTINCT FROM NEW.created_at
+       OR OLD.state <> 'PENDING'
+       OR NEW.state <> 'ENDORSED' THEN
+        RAISE EXCEPTION 'Custodian proposal evidence is immutable';
+    END IF;
+    RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+-- split
+CREATE TRIGGER entity_list_custodian_proposal_immutable
+BEFORE UPDATE ON entity_list_custodian_change_proposals
+FOR EACH ROW EXECUTE FUNCTION prevent_entity_list_custodian_proposal_mutation();
+-- split
+CREATE TRIGGER entity_list_custodian_proposal_no_delete
+BEFORE DELETE ON entity_list_custodian_change_proposals
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
