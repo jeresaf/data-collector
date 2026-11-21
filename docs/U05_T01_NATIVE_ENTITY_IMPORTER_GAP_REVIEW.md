@@ -165,6 +165,12 @@ The two-connection `EntityListPostgresRevocationRaceIT` tests now execute the **
 
 **Limitations:** the fixture is not the full Flyway database, the `@Transactional` proxy is not active because the service is explicitly constructed for the independent test connection, and the existing audit service is mocked. This checks actual service SQL and locking behavior, not controller security, Spring transaction-manager integration, global role revocation, user deactivation, project archival, or cross-service lock ordering. Those remain unverified and must not be implied by a green result.
 
+## Spring-managed membership removal on full Flyway PostgreSQL — pending CI
+
+`PostgreSqlContainerMigrationIT.springTransactionalMemberRemovalWaitsForAuthorizedPublisherOnMigratedSchema` uses the actual Spring-managed, AOP-proxied `ProjectMemberService.removeMember()` against the **complete Flyway-created PostgreSQL Testcontainer**. It creates synthetic, committed web-user, project, form and manager membership records; a separate JDBC connection evaluates `JdbcEntityListSnapshotPermissionGate` and retains its authorization locks; the proxied membership removal starts on another thread, must block on its membership UPDATE until the publisher releases the transaction, then completes and permanently revokes the synthetic member's authority. Test fixtures are deleted in dependency order. This adds evidence for Spring transaction wiring as opposed to the previous manually constructed service.
+
+**Still not qualified:** This specifically tests membership removal with a lock held by the publication authorization gate; it does not perform an actual audited snapshot append in the full migrated application schema, does not activate the Entity List ledger tables, and does not establish corresponding lock ordering for role deactivation, project archival, user deactivation, or role reassignment. A missing/failed audit of denied requests remains a release blocker.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
