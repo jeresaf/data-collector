@@ -177,6 +177,12 @@ The two-connection `EntityListPostgresRevocationRaceIT` tests now execute the **
 
 **Limitations:** this is a database locking contract and **not** proof every role/user/project administration service uses those updates or consistent lock ordering. A production database and actual endpoint were not modified. Existing preflight-based authorization remains a separate application-layer check; the mandatory authenticated audited publication service remains unregistered. Never treat isolated lock-timeout assertions as deletion authorization or release approval.
 
+## Fail-closed mismatched snapshot head digest — pending exact-head CI
+
+The opt-in `JdbcEntityListSnapshotStore.currentHead()` now uses a `LEFT JOIN` between the authoritative head row and its immutable history row on project, form, filename, revision **and SHA-256**. If the head row exists but the referenced digest/revision has no matching history, it raises `IllegalStateException` rather than returning `Optional.empty()`. A genuinely absent head continues to return empty. This distinction is essential: corruption must never be treated as a safe invitation to bootstrap a new revision-1 list. A disposable PostgreSQL test deliberately changes the head SHA-256 to a valid-format but wrong digest, then requires both reading the head and proposing an append to fail closed with no mutation.
+
+The **test-only** schema currently has a head-to-history foreign key for scope and revision, but not for SHA-256; this test exercises that integrity gap and the JDBC runtime defense. A future approved production schema should also enforce the digest relationship with database constraints where possible. No migration or application endpoint is activated.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
