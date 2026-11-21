@@ -217,4 +217,11 @@ class OpenRosaTypedEntityManifestTest {
         verifyNoInteractions(storage);
     }
 
+    @Test
+    void ambiguousTypedFilenameIsNotAdvertisedAsEntityList() {
+        dataset.setDatasetId("households.csv.backup.csv");
+        assertFalse(manifest().contains("<mediaFile"));
+        verifyNoInteractions(storage);
+    }
+
 }
