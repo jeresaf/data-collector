@@ -139,6 +139,27 @@ public final class EntityListManifestPreflight {
     }
 
     /**
+     * Checks the uploader-declared record count against the exact verified CSV
+     * bytes. The header is not a data record. Missing counts preserve legacy
+     * qualified typed datasets, but a supplied non-positive or mismatched
+     * count must fail closed; this never authorizes a deletion.
+     */
+    public static Optional<String> verifiedCandidate(
+            Map<String, Object> metadata, byte[] csvBytes, String recordedHash,
+            Long expectedRowCount) {
+        Optional<String> eligible = verifiedCandidate(metadata, csvBytes, recordedHash);
+        if (eligible.isEmpty() || expectedRowCount == null) {
+            return eligible;
+        }
+        if (expectedRowCount <= 0) {
+            return Optional.empty();
+        }
+        Optional<List<List<String>>> rows = parse(csvBytes);
+        return rows.isPresent() && (long) rows.get().size() - 1L == expectedRowCount
+                ? eligible : Optional.empty();
+    }
+
+    /**
      * Computes the ids that disappear between two fully validated, hash-bound
      * snapshots of the SAME named Entity List and explicit type. This is an inert review
      * primitive: it does not authorize or publish removals, mutate entities,
