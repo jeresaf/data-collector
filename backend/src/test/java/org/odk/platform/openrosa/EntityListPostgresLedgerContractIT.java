@@ -160,6 +160,14 @@ class EntityListPostgresLedgerContractIT {
         public boolean compareAndAppend(EntityListSnapshotLedgerCoordinator.Key key,
                 EntityListSnapshotLedgerCoordinator.Head expected,
                 EntityListSnapshotLedgerCoordinator.Head proposed) {
+            // A durable Store must independently verify that both immutable
+            // descriptors belong to the exact scoped key being updated.
+            if (key == null || expected == null || proposed == null
+                    || !scopedTo(key, expected.evidence())
+                    || !scopedTo(key, proposed.evidence())
+                    || proposed.evidence().revision() != expected.evidence().revision() + 1) {
+                return false;
+            }
             try (Connection c = connect()) {
                 c.setAutoCommit(false);
                 try {
@@ -195,6 +203,15 @@ class EntityListPostgresLedgerContractIT {
             } catch (SQLException e) {
                 throw new IllegalStateException("SQL contract append failed", e);
             }
+        }
+
+        private static boolean scopedTo(
+                EntityListSnapshotLedgerCoordinator.Key key,
+                EntityListSnapshotEvidence.Snapshot evidence) {
+            return evidence != null
+                    && key.projectId().equals(evidence.projectId())
+                    && key.formId().equals(evidence.formId())
+                    && key.filename().equals(evidence.filename());
         }
 
         void injectConflictingRevisionTwo() throws Exception {
@@ -322,6 +339,38 @@ class EntityListPostgresLedgerContractIT {
                 OLD, store.currentHead(KEY).orElseThrow().bytes()));
         assertEquals(2, store.historyCount());
         assertTrue(java.util.Arrays.equals(OLD, store.historyAt(1).bytes()));
+    }
+
+    @Test
+    void mismatchedProjectFormOrFilenameCannotBeAppendedThroughStorePort() throws Exception {
+        var store = new JdbcFixtureStore();
+        var expected = store.currentHead(KEY).orElseThrow();
+        var next = EntityListSnapshotEvidence.fromVerifiedBytes(
+                PROJECT, FORM, KEY.filename(), 2L, TYPE, UPDATED, md5(UPDATED), 2L)
+                .orElseThrow();
+        var valid = new EntityListSnapshotLedgerCoordinator.Head(next, UPDATED);
+        UUID otherProject = UUID.fromString("00000000-0000-0000-0000-000000000399");
+        UUID otherForm = UUID.fromString("00000000-0000-0000-0000-000000000398");
+        for (var forged : new EntityListSnapshotEvidence.Snapshot[] {
+                new EntityListSnapshotEvidence.Snapshot(otherProject, FORM,
+                        KEY.filename(), next.mediaType(), 2L, next.md5(),
+                        next.sha256(), next.rowCount()),
+                new EntityListSnapshotEvidence.Snapshot(PROJECT, otherForm,
+                        KEY.filename(), next.mediaType(), 2L, next.md5(),
+                        next.sha256(), next.rowCount()),
+                new EntityListSnapshotEvidence.Snapshot(PROJECT, FORM,
+                        "other.csv", next.mediaType(), 2L, next.md5(),
+                        next.sha256(), next.rowCount())
+        }) {
+            assertTrue(!store.compareAndAppend(KEY, expected,
+                    new EntityListSnapshotLedgerCoordinator.Head(forged, UPDATED)));
+        }
+        var foreignKey = new EntityListSnapshotLedgerCoordinator.Key(
+                otherProject, FORM, KEY.filename());
+        assertTrue(store.currentHead(foreignKey).isEmpty());
+        assertTrue(!store.compareAndAppend(foreignKey, expected, valid));
+        assertEquals(1, store.historyCount());
+        assertEquals(1L, store.currentHead(KEY).orElseThrow().evidence().revision());
     }
 
 }
