@@ -39,6 +39,14 @@ This helper supports a future removal approval report; it cannot establish trust
 
 For explicitly typed datasets, backend manifest and download now reject a non-null `rowCount` that does not equal the number of parsed CSV data records (the header is excluded). Zero/negative counts are invalid. Missing `rowCount` retains compatibility with older qualified datasets. This limits accidental incomplete publishes **only when the uploader has provided a trustworthy count**; a maliciously or incorrectly revised `rowCount` can still match truncated data. A trusted immutable prior snapshot and explicit deletion authorization remain required before automatic refresh.
 
+## Review-only snapshot evidence envelope
+
+`EntityListSnapshotEvidence` creates a deterministic snapshot descriptor only after verifying typed CSV bytes, the recorded MD5 and a positive declared row count. The descriptor includes **project ID, form ID, canonical list filename, media type, monotonic revision, MD5, SHA-256 and row count**. Its review-only comparison recomputes both digests and denies cross-project, cross-form, cross-list, cross-type, stale-revision and altered-content transitions.
+
+**Important trust boundary:** revision numbers and project/form identifiers are caller-supplied. This helper is NOT authoritative storage or proof of permission. An attacker or incorrect producer could construct internally consistent evidence for truncated content. Trusted snapshot persistence must assign revisions atomically, retain immutable original bytes and metadata, enforce per-project/form/list access, record creator/approval, and prohibit rewriting historical rows. No endpoint currently calls this helper, and no database schema or production data changes are introduced here.
+
+Before publishing an `integrityUrl` or permitting any approved removal, establish an auditable transition ledger and deletion-decision lifecycle: proposed → reviewed → approved/rejected, with explicit owner and distinct verifier, maximum removal threshold, retention policy, and rollback/restore evidence. In particular, neither a merely missing CSV row nor an unapproved review report constitutes a server tombstone.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
