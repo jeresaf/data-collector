@@ -2496,4 +2496,185 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, fixture.historyCount());
     }
 
+    private static final class CustodyExecutionScenario {
+        final Fixture fixture;
+        final UUID proposer = UUID.randomUUID();
+        final UUID witnessA = UUID.randomUUID();
+        final UUID witnessB = UUID.randomUUID();
+        final UUID validator = UUID.randomUUID();
+        final UUID officer = UUID.randomUUID();
+        final UUID subject = UUID.randomUUID();
+        final UUID proposal = UUID.randomUUID();
+        final EntityListCustodianChangeExecutor executor;
+
+        CustodyExecutionScenario(String action, long ageSeconds, boolean fifthCustodian)
+                throws Exception {
+            fixture = new Fixture();
+            var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+            var identity = org.mockito.Mockito.mock(
+                    org.odk.platform.security.CurrentUserService.class);
+            var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+            org.mockito.Mockito.when(user.getId()).thenReturn(officer);
+            org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+            org.mockito.Mockito.when(identity.getCurrentWebUser())
+                    .thenReturn(java.util.Optional.of(user));
+            executor = new EntityListCustodianChangeExecutor(fixture.source, identity,
+                    (connection, actor, scope) -> officer.equals(actor) && key.equals(scope));
+            try (Connection c = fixture.source.getConnection()) {
+                try (var grant = c.prepareStatement(
+                        "INSERT INTO entity_list_grant_custodians "
+                                + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+                    for (UUID custodian : new UUID[]{proposer,witnessA,witnessB,validator}) {
+                        grant.setObject(1, PROJECT);
+                        grant.setObject(2, custodian);
+                        assertEquals(1, grant.executeUpdate());
+                    }
+                    if (fifthCustodian) {
+                        grant.setObject(1, PROJECT);
+                        grant.setObject(2, subject);
+                        assertEquals(1, grant.executeUpdate());
+                    }
+                }
+                try (var grant = c.prepareStatement(
+                        "INSERT INTO entity_list_custodian_execution_officers "
+                                + "(project_id,officer_id,is_active) VALUES (?,?,TRUE)")) {
+                    grant.setObject(1, PROJECT);
+                    grant.setObject(2, officer);
+                    assertEquals(1, grant.executeUpdate());
+                }
+                try (var p = c.prepareStatement(
+                        "INSERT INTO entity_list_custodian_change_proposals "
+                                + "(id,project_id,form_id,filename,subject_id,initiated_by,"
+                                + "action,state,created_at) "
+                                + "VALUES (?,?,?,?,?,?,?,'ENDORSED',?)")) {
+                    p.setObject(1, proposal);
+                    p.setObject(2, PROJECT);
+                    p.setObject(3, FORM);
+                    p.setString(4, FILENAME);
+                    p.setObject(5, subject);
+                    p.setObject(6, proposer);
+                    p.setString(7, action);
+                    p.setObject(8, java.sql.Timestamp.from(
+                            java.time.Instant.now().minusSeconds(ageSeconds)));
+                    assertEquals(1, p.executeUpdate());
+                }
+                try (var w = c.prepareStatement(
+                        "INSERT INTO entity_list_custodian_change_witnesses "
+                                + "(proposal_id,witness_id) VALUES (?,?)")) {
+                    for (UUID witness : new UUID[]{witnessA,witnessB}) {
+                        w.setObject(1, proposal);
+                        w.setObject(2, witness);
+                        assertEquals(1, w.executeUpdate());
+                    }
+                }
+                try (var seal = c.prepareStatement(
+                        "INSERT INTO entity_list_custodian_change_readiness "
+                                + "(proposal_id,validated_by) VALUES (?,?)")) {
+                    seal.setObject(1, proposal);
+                    seal.setObject(2, validator);
+                    assertEquals(1, seal.executeUpdate());
+                }
+            }
+        }
+
+        long executionCount() throws Exception {
+            try (Connection c = fixture.source.getConnection();
+                 var s = c.createStatement();
+                 var r = s.executeQuery(
+                         "SELECT COUNT(*) FROM entity_list_custodian_change_executions")) {
+                r.next();
+                return r.getLong(1);
+            }
+        }
+
+        long activeCustodianCount() throws Exception {
+            try (Connection c = fixture.source.getConnection();
+                 var s = c.createStatement();
+                 var r = s.executeQuery(
+                         "SELECT COUNT(*) FROM entity_list_grant_custodians "
+                                 + "WHERE is_active=TRUE")) {
+                r.next();
+                return r.getLong(1);
+            }
+        }
+    }
+
+    @Test
+    void custodyExecutionRejectsExpiredAndRevokedOfficerOrWitnessWithoutWrites()
+            throws Exception {
+        var expired = new CustodyExecutionScenario("APPOINT", 90000, false);
+        assertFalse(expired.executor.execute(expired.proposal));
+        assertEquals(0L, expired.executionCount());
+        assertEquals(4L, expired.activeCustodianCount());
+
+        var officerRevoked = new CustodyExecutionScenario("APPOINT", 10, false);
+        try (Connection c = officerRevoked.fixture.source.getConnection();
+             var revoke = c.prepareStatement(
+                     "UPDATE entity_list_custodian_execution_officers "
+                             + "SET is_active=FALSE WHERE officer_id=?")) {
+            revoke.setObject(1, officerRevoked.officer);
+            assertEquals(1, revoke.executeUpdate());
+        }
+        assertFalse(officerRevoked.executor.execute(officerRevoked.proposal));
+        assertEquals(0L, officerRevoked.executionCount());
+        assertEquals(4L, officerRevoked.activeCustodianCount());
+
+        var witnessRevoked = new CustodyExecutionScenario("APPOINT", 10, false);
+        try (Connection c = witnessRevoked.fixture.source.getConnection();
+             var revoke = c.prepareStatement(
+                     "UPDATE entity_list_grant_custodians "
+                             + "SET is_active=FALSE WHERE custodian_id=?")) {
+            revoke.setObject(1, witnessRevoked.witnessA);
+            assertEquals(1, revoke.executeUpdate());
+        }
+        assertFalse(witnessRevoked.executor.execute(witnessRevoked.proposal));
+        assertEquals(0L, witnessRevoked.executionCount());
+        assertEquals(3L, witnessRevoked.activeCustodianCount());
+        assertEquals(0, witnessRevoked.fixture.historyCount());
+    }
+
+    @Test
+    void custodyExecutionPreservesFourCustodianFloorUnderRevocation()
+            throws Exception {
+        var onlyFour = new CustodyExecutionScenario("REVOKE", 10, false);
+        assertFalse(onlyFour.executor.execute(onlyFour.proposal));
+        assertEquals(4L, onlyFour.activeCustodianCount());
+        assertEquals(0L, onlyFour.executionCount());
+
+        var five = new CustodyExecutionScenario("REVOKE", 10, true);
+        assertTrue(five.executor.execute(five.proposal));
+        assertEquals(4L, five.activeCustodianCount());
+        assertEquals(1L, five.executionCount());
+        assertFalse(five.executor.execute(five.proposal));
+        assertEquals(1L, five.executionCount());
+        assertEquals(0, five.fixture.historyCount());
+    }
+
+    @Test
+    void racingCustodyExecutorsCommitExactlyOneExecutionReceipt()
+            throws Exception {
+        var scenario = new CustodyExecutionScenario("APPOINT", 10, false);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var first = pool.submit(() -> {
+                start.await();
+                return scenario.executor.execute(scenario.proposal);
+            });
+            var second = pool.submit(() -> {
+                start.await();
+                return scenario.executor.execute(scenario.proposal);
+            });
+            start.countDown();
+            boolean a = first.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            boolean b = second.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(a ^ b);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(1L, scenario.executionCount());
+        assertEquals(5L, scenario.activeCustodianCount());
+        assertEquals(0, scenario.fixture.historyCount());
+    }
+
 }
