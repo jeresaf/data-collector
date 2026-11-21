@@ -105,6 +105,12 @@ The trigger protects against ordinary SQL writes in that database role; it does 
 
 This callback is **not itself a wired authentication system**. No live Spring Security identity lookup, tenant roles, project/form assignment revocation, tamper-evident actor audit, approval authority or deployment migration exists yet; the application never instantiates this class. Before production wiring, resolve the trusted principal from server context, use a centrally enforced project-scoped authorization service, record actor/reason/decision in immutable history, and validate privilege revocation inside the transactional boundary.
 
+## Opt-in existing web-permission adapter — pending CI
+
+`EntityListSnapshotWebAuthorization` now implements the earlier `JdbcEntityListSnapshotBootstrap.Authorization` interface using actual application interfaces. It requires the supplied actor UUID to match `CurrentUserService.getCurrentWebUser()`, a current active web user, an active project, a currently active form belonging to that exact project, and `WebFormAssignmentService.canManageProjectForms(project, actor)`. It deliberately grants no blanket mobile-account or ordinary form-assignment permission, and it does not infer administrator privileges from client input. Unit tests cover valid manager, spoofed actor, missing/inactive principal, missing project/form, and revoked manager rights.
+
+**Not active:** This adapter has no `@Service`, no injected live bootstrap or new route. The caller-supplied actor still needs binding to trusted request context. The `canManageProjectForms` service is checked before opening a separate JDBC transaction, so a privilege change between check and commit is not yet prevented. A production bootstrap must revalidate under one authorized transaction/lock, capture an immutable actor decision and verify actual user/project role scope before activation.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
