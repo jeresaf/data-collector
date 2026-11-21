@@ -211,10 +211,12 @@ class EntityListManifestPreflightTest {
         Map<String, Object> entityList = Map.of("odkMediaType", "entityList");
         assertEquals(Optional.of(java.util.Set.of(java.util.UUID.fromString(removedId))),
                 EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
-                        entityList, previous, previousHash, entityList, next, nextHash));
+                        "households.csv", entityList, previous, previousHash,
+                        "households.csv", entityList, next, nextHash));
         assertEquals(Optional.of(java.util.Set.of()),
                 EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
-                        entityList, next, nextHash, entityList, previous, previousHash));
+                        "households.csv", entityList, next, nextHash,
+                        "households.csv", entityList, previous, previousHash));
     }
 
     @Test
@@ -228,14 +230,40 @@ class EntityListManifestPreflightTest {
         Map<String, Object> entity = Map.of("odkMediaType", "entityList");
         Map<String, Object> approval = Map.of("odkMediaType", "approvalEntityList");
         assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
-                entity, first, firstHash, entity, second, firstHash).isEmpty());
+                "households.csv", entity, first, firstHash,
+                "households.csv", entity, second, firstHash).isEmpty());
         assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
-                entity, first, firstHash, approval, second, secondHash).isEmpty());
+                "households.csv", entity, first, firstHash,
+                "households.csv", approval, second, secondHash).isEmpty());
         assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
-                entity, first, null, entity, second, secondHash).isEmpty());
+                "households.csv", entity, first, null,
+                "households.csv", entity, second, secondHash).isEmpty());
         assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
-                entity, first, firstHash, entity, "name,label,__version\n".getBytes(StandardCharsets.UTF_8),
+                "households.csv", entity, first, firstHash,
+                "households.csv", entity, "name,label,__version\n".getBytes(StandardCharsets.UTF_8),
                 secondHash).isEmpty());
+    }
+
+    @Test
+    void removalComparisonRejectsDifferentListNamesAndVersionRollback() throws Exception {
+        String id = "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad";
+        byte[] previous = ("name,label,__version\n" + id + ",Current,4\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] rollback = ("name,label,__version\n" + id + ",Stale,3\n")
+                .getBytes(StandardCharsets.UTF_8);
+        String oldHash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(previous));
+        String rollbackHash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(rollback));
+        Map<String, Object> entity = Map.of("odkMediaType", "entityList");
+
+        assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
+                "households.csv", entity, previous, oldHash,
+                "villages.csv", entity, rollback, rollbackHash).isEmpty());
+        assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
+                "households.csv.backup.csv", entity, previous, oldHash,
+                "households.csv.backup.csv", entity, rollback, rollbackHash).isEmpty());
+        assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
+                "households.csv", entity, previous, oldHash,
+                "households.csv", entity, rollback, rollbackHash).isEmpty());
     }
 
 }
