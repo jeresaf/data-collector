@@ -59,6 +59,12 @@ Authoritative ledger and deletion workflow remain pending: immutable project/for
 
 This is **not yet server-controlled revision assignment**. The head and proposed revision are supplied to the policy by its caller, and no database transaction, compare-and-swap lock, unique key, immutable byte archive or approval ledger currently calls or backs it. Production implementation must obtain the current head under an authorized project/list-scoped transaction, assign exactly `head.revision + 1` within that transaction, use a uniqueness constraint on (project, form, list, revision), persist original immutable bytes and chained digests, and reserve publication until an independently approved removal decision exists. Never trust a revision or authority supplied by an uploader.
 
+## Unwired atomic ledger coordinator contract
+
+`EntityListSnapshotLedgerCoordinator` now defines a narrowly scoped `Store` port with `currentHead` and **atomic** `compareAndAppend`, and a pure coordinator that derives candidate revision `head.revision + 1` rather than trusting a caller-provided proposal revision. It rejects uninitialized lists, invalid bytes/digests/counts, cross-list head conflicts and revision overflow; byte-identical retries return `UNCHANGED`, verified non-removal changes can request `compareAndAppend`, and every proposed missing entity results in `REMOVAL_APPROVAL_REQUIRED` without any append attempt. A test-only synchronized fake exercises concurrent proposals and verifies a single accepted append.
+
+This is **NOT durable trusted history**. There is no production `Store` implementation, authorization, bootstrap, SQL locking, audit trail, approval path, endpoint or refresh integration. The fake is process-local and has no crash, restart, multi-node or transaction durability. An actual database implementation must atomically compare current revision and digest, reserve an immutable revision per project/form/list, keep payloads and evidence durable and append-only, reject race losers, and reconcile storage/database transaction failures. Crucially, mere `READY_FOR_LEDGER_APPEND` is not publication authority; the API must enforce independent authentication and permissions.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
