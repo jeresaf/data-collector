@@ -38,3 +38,23 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER entity_list_history_immutable
 BEFORE UPDATE OR DELETE ON entity_list_snapshot_history
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Test-only candidate audit; no production migration.
+CREATE TABLE entity_list_snapshot_audit (
+    actor_id UUID NOT NULL,
+    project_id UUID NOT NULL,
+    form_id UUID NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    revision BIGINT NOT NULL,
+    sha256 VARCHAR(64) NOT NULL,
+    event_type VARCHAR(32) NOT NULL CHECK (event_type = 'INITIALIZED'),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (project_id, form_id, filename, revision, event_type),
+    FOREIGN KEY (project_id, form_id, filename, revision)
+        REFERENCES entity_list_snapshot_history(project_id, form_id, filename, revision)
+);
+-- split
+CREATE TRIGGER entity_list_audit_immutable
+BEFORE UPDATE OR DELETE ON entity_list_snapshot_audit
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
