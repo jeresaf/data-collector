@@ -42,14 +42,27 @@ public final class JdbcEntityListRemovalApprovalSeal {
         return false;
     }
 
+    enum ValidationOutcome {
+        SEALED, INVALID_STATE, SELF_ACTION, EVIDENCE_MISMATCH,
+        PERMISSION_DENIED, STALE_HEAD, REPLAY
+    }
+
     boolean validateAndSealAuthorized(
+            UUID reviewId, UUID executorId,
+            EntityListSnapshotLedgerCoordinator.Head candidate,
+            JdbcEntityListSnapshotBootstrap.TransactionAuthorization authorization) {
+        return validateAndSealAuthorizedOutcome(reviewId, executorId, candidate, authorization)
+                == ValidationOutcome.SEALED;
+    }
+
+    ValidationOutcome validateAndSealAuthorizedOutcome(
             UUID reviewId, UUID executorId,
             EntityListSnapshotLedgerCoordinator.Head candidate,
             JdbcEntityListSnapshotBootstrap.TransactionAuthorization authorization) {
         Objects.requireNonNull(authorization);
         if (reviewId == null || executorId == null || candidate == null
                 || candidate.evidence() == null || candidate.bytes() == null) {
-            return false;
+            return ValidationOutcome.EVIDENCE_MISMATCH;
         }
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
@@ -69,11 +82,14 @@ public final class JdbcEntityListRemovalApprovalSeal {
                     try (ResultSet row = stmt.executeQuery()) {
                         if (!row.next()
                                 || !"APPROVED".equals(row.getString("state"))
-                                || row.getObject("reviewed_by") == null
-                                || executorId.equals(row.getObject("requested_by", UUID.class))
+                                || row.getObject("reviewed_by") == null) {
+                            connection.rollback();
+                            return ValidationOutcome.INVALID_STATE;
+                        }
+                        if (executorId.equals(row.getObject("requested_by", UUID.class))
                                 || executorId.equals(row.getObject("reviewed_by", UUID.class))) {
                             connection.rollback();
-                            return false;
+                            return ValidationOutcome.SELF_ACTION;
                         }
                         requester = row.getObject("requested_by", UUID.class);
                         key = new EntityListSnapshotLedgerCoordinator.Key(
@@ -167,7 +183,7 @@ public final class JdbcEntityListRemovalApprovalSeal {
                     }
                 }
                 connection.commit();
-                return true;
+                return ValidationOutcome.SEALED;
             } catch (SQLException | RuntimeException failure) {
                 try {
                     connection.rollback();
