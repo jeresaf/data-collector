@@ -140,7 +140,7 @@ public final class EntityListManifestPreflight {
 
     /**
      * Computes the ids that disappear between two fully validated, hash-bound
-     * snapshots of the SAME explicit Entity List type. This is an inert review
+     * snapshots of the SAME named Entity List and explicit type. This is an inert review
      * primitive: it does not authorize or publish removals, mutate entities,
      * supply tombstones, or enable sync. Callers must obtain trusted prior
      * snapshots and an independently approved deletion policy.
@@ -151,8 +151,14 @@ public final class EntityListManifestPreflight {
      * as permission to delete.</p>
      */
     public static Optional<Set<UUID>> removedIdsBetweenVerifiedSnapshots(
-            Map<String, Object> previousMetadata, byte[] previousBytes, String previousHash,
-            Map<String, Object> nextMetadata, byte[] nextBytes, String nextHash) {
+            String previousFilename, Map<String, Object> previousMetadata,
+            byte[] previousBytes, String previousHash,
+            String nextFilename, Map<String, Object> nextMetadata,
+            byte[] nextBytes, String nextHash) {
+        // Never compare snapshots from different lists or ambiguous identities.
+        if (!validTypedFilename(previousFilename) || !previousFilename.equals(nextFilename)) {
+            return Optional.empty();
+        }
         Optional<String> previousType = verifiedCandidate(previousMetadata, previousBytes, previousHash);
         Optional<String> nextType = verifiedCandidate(nextMetadata, nextBytes, nextHash);
         if (previousType.isEmpty() || nextType.isEmpty() || !previousType.equals(nextType)) {
@@ -163,18 +169,30 @@ public final class EntityListManifestPreflight {
         if (previousRows.isEmpty() || nextRows.isEmpty()) {
             return Optional.empty();
         }
-        Set<UUID> removed = entityIds(previousRows.get());
-        removed.removeAll(entityIds(nextRows.get()));
+        Map<UUID, Integer> oldVersions = entityVersions(previousRows.get());
+        Map<UUID, Integer> newVersions = entityVersions(nextRows.get());
+        // A stale or rolled-back entity version must not be used as a deletion
+        // baseline. Compare only forward-moving snapshots of one named list.
+        for (Map.Entry<UUID, Integer> version : oldVersions.entrySet()) {
+            Integer nextVersion = newVersions.get(version.getKey());
+            if (nextVersion != null && nextVersion < version.getValue()) {
+                return Optional.empty();
+            }
+        }
+        Set<UUID> removed = new HashSet<>(oldVersions.keySet());
+        removed.removeAll(newVersions.keySet());
         return Optional.of(Set.copyOf(removed));
     }
 
-    private static Set<UUID> entityIds(List<List<String>> rows) {
+    private static Map<UUID, Integer> entityVersions(List<List<String>> rows) {
         int idIndex = rows.get(0).indexOf("name");
-        Set<UUID> ids = new HashSet<>();
+        int versionIndex = rows.get(0).indexOf("__version");
+        Map<UUID, Integer> versions = new java.util.HashMap<>();
         for (int i = 1; i < rows.size(); i++) {
-            ids.add(UUID.fromString(rows.get(i).get(idIndex)));
+            List<String> row = rows.get(i);
+            versions.put(UUID.fromString(row.get(idIndex)), Integer.parseInt(row.get(versionIndex)));
         }
-        return ids;
+        return versions;
     }
 
     /**
