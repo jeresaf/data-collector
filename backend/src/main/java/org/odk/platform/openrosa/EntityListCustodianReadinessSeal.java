@@ -82,8 +82,8 @@ public final class EntityListCustodianReadinessSeal {
                         "SELECT initiated_by,subject_id FROM entity_list_custodian_change_proposals "
                                 + "WHERE id=? AND project_id=? AND form_id=? AND filename=? "
                                 + "AND state='ENDORSED' "
-                                + "AND created_at > CURRENT_TIMESTAMP - INTERVAL '24 hours' "
-                                + "AND created_at <= CURRENT_TIMESTAMP FOR UPDATE")) {
+                                + "AND created_at > clock_timestamp() - INTERVAL '24 hours' "
+                                + "AND created_at <= clock_timestamp() FOR UPDATE")) {
                     lock.setObject(1, proposalId);
                     lock.setObject(2, key.projectId());
                     lock.setObject(3, key.formId());
