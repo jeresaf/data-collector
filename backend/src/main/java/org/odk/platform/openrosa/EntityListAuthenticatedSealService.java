@@ -39,7 +39,9 @@ public final class EntityListAuthenticatedSealService {
         if (reviewId == null) {
             return deny(null, null, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
         }
-        var current = currentUserService.getCurrentWebUser();
+        var current = EntityListDenialExceptionAudit.call(denials, reviewId, null,
+                JdbcEntityListDenialEvidenceWriter.Operation.APPROVAL_VALIDATION,
+                currentUserService::getCurrentWebUser);
         if (current.isEmpty() || current.get().getId() == null) {
             return deny(reviewId, null, JdbcEntityListDenialEvidenceWriter.Reason.UNAUTHENTICATED);
         }
@@ -50,18 +52,24 @@ public final class EntityListAuthenticatedSealService {
         if (candidate == null || candidate.evidence() == null) {
             return deny(reviewId, executor, JdbcEntityListDenialEvidenceWriter.Reason.EVIDENCE_MISMATCH);
         }
-        var review = register.get(reviewId);
+        var review = EntityListDenialExceptionAudit.call(denials, reviewId, executor,
+                JdbcEntityListDenialEvidenceWriter.Operation.APPROVAL_VALIDATION,
+                () -> register.get(reviewId));
         if (review == null || !"APPROVED".equals(review.state()) || review.reviewer() == null) {
             return deny(reviewId, executor, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
         }
         if (executor.equals(review.requester()) || executor.equals(review.reviewer())) {
             return deny(reviewId, executor, JdbcEntityListDenialEvidenceWriter.Reason.SELF_ACTION);
         }
-        if (!webAuthorization.mayInitialize(executor, review.key())) {
+        if (!EntityListDenialExceptionAudit.call(denials, reviewId, executor,
+                JdbcEntityListDenialEvidenceWriter.Operation.APPROVAL_VALIDATION,
+                () -> webAuthorization.mayInitialize(executor, review.key()))) {
             return deny(reviewId, executor, JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED);
         }
-        var outcome = seal.validateAndSealAuthorizedOutcome(
-                reviewId, executor, candidate, transactionAuthorization);
+        var outcome = EntityListDenialExceptionAudit.call(denials, reviewId, executor,
+                JdbcEntityListDenialEvidenceWriter.Operation.APPROVAL_VALIDATION,
+                () -> seal.validateAndSealAuthorizedOutcome(
+                        reviewId, executor, candidate, transactionAuthorization));
         if (outcome == JdbcEntityListRemovalApprovalSeal.ValidationOutcome.SEALED) {
             return true;
         }
