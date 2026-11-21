@@ -87,6 +87,12 @@ The disposable PostgreSQL `Store` fixture now refuses a conditional append if th
 
 This is a test-side adapter, not an authorization system. Real user/project permissions, project reassignment, secure bootstrap, immutable evidence history and a production PostgreSQL implementation remain open. A successful test does not authorize downloads or removals.
 
+## Opt-in JDBC store (no production wiring)
+
+`JdbcEntityListSnapshotStore` is a reusable JDBC implementation of the ledger `Store` contract, with conditional revision/hash CAS and historical revision insertion in the **same SQL transaction**. It is deliberately **not a Spring bean**, creates no tables, has no Flyway migration, and cannot bootstrap its own first revision. It expects separately provisioned `entity_list_snapshot_heads` and `entity_list_snapshot_history` tables. A new disposable PostgreSQL test exercises its own read/append/retry path, historical payload preservation, project lookup separation and denial of removals. To guard against direct store calls bypassing the coordinator, the JDBC adapter independently requires a validated `READY_FOR_LEDGER_APPEND` review before writing.
+
+This is **not authorized production infrastructure**: the caller must still enforce permissions and trusted initialization, the backing tables require independently reviewed migration and immutable audit constraints, and disaster recovery/approval/tombstone integration are incomplete. The test creates tables only in a disposable PostgreSQL schema. Do not enable publication or reference refresh on this evidence alone.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
