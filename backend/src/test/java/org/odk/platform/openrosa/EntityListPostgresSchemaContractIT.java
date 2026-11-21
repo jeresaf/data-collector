@@ -193,4 +193,75 @@ class EntityListPostgresSchemaContractIT {
         }
         assertEquals(1, fixture.historyCount());
     }
+    @Test
+    void explicitAuthorizedBootstrapCreatesOnlyFirstTrustedRevision() throws Exception {
+        var fixture = new Fixture();
+        UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        UUID outsider = UUID.fromString("00000000-0000-0000-0000-000000000311");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var authorizer = (JdbcEntityListSnapshotBootstrap.Authorization)
+                (actor, requestedKey) -> owner.equals(actor) && key.equals(requestedKey);
+        var bootstrap = new JdbcEntityListSnapshotBootstrap(fixture.source, authorizer);
+        var metadata = Map.<String, Object>of("odkMediaType", "entityList");
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.DENIED,
+                bootstrap.initialize(outsider, key, metadata, ORIGINAL, md5(ORIGINAL), 1L));
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.INVALID,
+                bootstrap.initialize(owner, key, metadata, ORIGINAL, md5(SECOND), 1L));
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.INVALID,
+                bootstrap.initialize(owner, key, metadata, ORIGINAL, md5(ORIGINAL), 2L));
+        assertEquals(0, fixture.historyCount());
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.INITIALIZED,
+                bootstrap.initialize(owner, key, metadata, ORIGINAL, md5(ORIGINAL), 1L));
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.ALREADY_INITIALIZED,
+                bootstrap.initialize(owner, key, metadata, ORIGINAL, md5(ORIGINAL), 1L));
+        assertEquals(1, fixture.historyCount());
+        var head = new JdbcEntityListSnapshotStore(fixture.source).currentHead(key).orElseThrow();
+        assertEquals(1L, head.evidence().revision());
+        assertTrue(Arrays.equals(ORIGINAL, head.bytes()));
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.DENIED,
+                bootstrap.initialize(outsider, key, metadata, SECOND, md5(SECOND), 1L));
+    }
+
+    @Test
+    void concurrentAuthorizedBootstrapHasExactlyOneSuccessfulInitializer() throws Exception {
+        var fixture = new Fixture();
+        UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var bootstrap = new JdbcEntityListSnapshotBootstrap(fixture.source,
+                (actor, requestedKey) -> owner.equals(actor) && key.equals(requestedKey));
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var completed = new java.util.concurrent.CountDownLatch(4);
+        var accepted = new java.util.concurrent.atomic.AtomicInteger();
+        var failures = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+        try {
+            for (int i = 0; i < 4; i++) {
+                pool.execute(() -> {
+                    try {
+                        start.await();
+                        var outcome = bootstrap.initialize(owner, key,
+                                Map.of("odkMediaType", "entityList"),
+                                ORIGINAL, md5(ORIGINAL), 1L);
+                        if (outcome == JdbcEntityListSnapshotBootstrap.Outcome.INITIALIZED) {
+                            accepted.incrementAndGet();
+                        } else if (outcome != JdbcEntityListSnapshotBootstrap.Outcome.ALREADY_INITIALIZED) {
+                            failures.add(new AssertionError("Unexpected outcome: " + outcome));
+                        }
+                    } catch (Throwable error) {
+                        failures.add(error);
+                    } finally {
+                        completed.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(completed.await(20, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(failures.isEmpty(), failures.toString());
+            assertEquals(1, accepted.get());
+            assertEquals(1, fixture.historyCount());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
 }
