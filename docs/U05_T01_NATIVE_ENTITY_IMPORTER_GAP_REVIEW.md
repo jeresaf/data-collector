@@ -117,6 +117,12 @@ This callback is **not itself a wired authentication system**. No live Spring Se
 
 **Important remaining limitations:** the test permission table is synthetic, not the actual `projects`, `users`, `project_members`, `roles` and `xforms` permission graph. The default `initialize(...)` remains an inactive legacy preflight-only path. Nothing is wired to an HTTP endpoint. Production must make the transactional gate mandatory, derive actor identity from the actual security context, lock every relevant row (including revocation writers), and retain actor/decision audit in the same transaction. Merely adding a callback does not by itself prevent every revocation race.
 
+## Real table permission gate — isolated PostgreSQL tests, pending CI
+
+`JdbcEntityListSnapshotPermissionGate` implements the opt-in **transaction-scoped** authorization interface against real application SQL table names `users`, `projects`, `xforms`, `project_members` and `roles`. It requires a current transaction (`autoCommit=false`), locks the actor and active project/form using `FOR UPDATE`, and permits an active project owner/creator or an active project member with an active `PROJECT_ADMIN`/`PROJECT_MANAGER` role. The member/role path locks both rows with `FOR UPDATE OF pm,r`. It never trusts a role name or actor identity submitted by the client.
+
+A disposable PostgreSQL test creates a **minimal table-shaped fixture using those application table names** and verifies denied membership/role revocations, inactive form/user, valid manager initialization, foreign-project form denial, inactive project and autocommit refusal. It does **not** yet run the new gate against the complete, seeded production Flyway schema and does not bind the actual request principal to this transaction. Owner/creator writes or role/membership revocations must obey a documented common lock order; immutable actor audit and signed approval are absent. The component is not registered as a bean, endpoint or deployed permission service.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
