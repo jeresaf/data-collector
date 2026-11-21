@@ -47,6 +47,12 @@ For explicitly typed datasets, backend manifest and download now reject a non-nu
 
 Before publishing an `integrityUrl` or permitting any approved removal, establish an auditable transition ledger and deletion-decision lifecycle: proposed → reviewed → approved/rejected, with explicit owner and distinct verifier, maximum removal threshold, retention policy, and rollback/restore evidence. In particular, neither a merely missing CSV row nor an unapproved review report constitutes a server tombstone.
 
+## Advisory transition review classifier (inactive)
+
+`EntityListTransitionReview.inspect(...)` combines the verified snapshot envelope with a read-only classification of proposed changes. A trusted, valid transition with no missing IDs is reported as `NO_REMOVALS_OBSERVED` (**not** approved for publication). **Every** transition with missing IDs is labeled `REMOVAL_REVIEW_REQUIRED`; missing 10 or more IDs, or at least one quarter of the prior list, generates a `BULK_REMOVAL_REVIEW_REQUIRED` warning. These are diagnostic, deliberately non-configurable preliminary review thresholds, **not approval or denial limits**. Invalid or untrusted snapshot evidence produces no classification. The class has no storage, controller, tombstone or delete integration.
+
+Authoritative ledger and deletion workflow remain pending: immutable project/form/list-scoped snapshots, trusted atomic revision allocation, append-only review decisions with identifiable approver and separation of duties, rollback records, and client-side native ingestion tests. A valid review report must never be treated as consent to publish, remove cached entities, or issue deleted-state responses.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
