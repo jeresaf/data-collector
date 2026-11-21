@@ -400,6 +400,147 @@ class PostgreSqlContainerMigrationIT {
         }
     }
 
+
+    @Test
+    void snapshotPermissionLocksGuardOtherRevocationWritersOnMigratedSchema()
+            throws Exception {
+        // All tables below come from the complete production Flyway chain.
+        // Only disposable test rows are committed. Global role deactivation
+        // is tested inside a rolled-back transaction.
+        UUID owner = jdbcTemplate.queryForObject(
+                "SELECT id FROM users WHERE username='admin'", UUID.class);
+        UUID managerRole = jdbcTemplate.queryForObject(
+                "SELECT id FROM roles WHERE name='PROJECT_MANAGER'", UUID.class);
+        UUID viewerRole = jdbcTemplate.queryForObject(
+                "SELECT id FROM roles WHERE name='VIEWER'", UUID.class);
+        UUID actor = UUID.randomUUID();
+        UUID project = UUID.randomUUID();
+        UUID form = UUID.randomUUID();
+        UUID member = UUID.randomUUID();
+        String unique = UUID.randomUUID().toString().replace("-", "");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(project, form, "households.csv");
+        var gate = new JdbcEntityListSnapshotPermissionGate();
+
+        jdbcTemplate.update("INSERT INTO users (id,username,email,password_hash) VALUES (?,?,?,?)",
+                actor, "u05_rev_" + unique, unique + "@test.invalid", "test-only");
+        try {
+            jdbcTemplate.update(
+                    "INSERT INTO projects (id,name,owner_id,created_by_id) VALUES (?,?,?,?)",
+                    project, "U05 row-lock test " + unique, owner, owner);
+            jdbcTemplate.update(
+                    "INSERT INTO xforms (id,title,project_id,created_by_id) VALUES (?,?,?,?)",
+                    form, "U05 form", project, owner);
+            jdbcTemplate.update(
+                    "INSERT INTO project_members(id,project_id,user_id,role_id) VALUES (?,?,?,?)",
+                    member, project, actor, managerRole);
+
+            try (Connection publisher = dataSource.getConnection();
+                 Connection revoker = dataSource.getConnection()) {
+                publisher.setAutoCommit(false);
+                revoker.setAutoCommit(false);
+                try {
+                    org.junit.jupiter.api.Assertions.assertTrue(
+                            gate.mayInitialize(publisher, actor, key));
+
+                    // A revocation writer on a different connection cannot
+                    // change any of the four locked authority sources while
+                    // a publisher has acquired its in-transaction permission.
+                    assertRevocationBlocked(revoker,
+                            "UPDATE users SET is_active=FALSE WHERE id=?", actor);
+                    assertRevocationBlocked(revoker,
+                            "UPDATE projects SET is_active=FALSE WHERE id=?", project);
+                    assertRevocationBlocked(revoker,
+                            "UPDATE project_members SET role_id=? WHERE id=?",
+                            viewerRole, member);
+                    assertRevocationBlocked(revoker,
+                            "UPDATE roles SET is_active=FALSE WHERE id=?", managerRole);
+                } finally {
+                    publisher.rollback();
+                    revoker.rollback();
+                }
+            }
+
+            // Each committed revocation must cause the gate to deny new
+            // authorization on an independent transaction.
+            jdbcTemplate.update("UPDATE users SET is_active=FALSE WHERE id=?", actor);
+            assertSnapshotPermissionDenied(gate, actor, key);
+            jdbcTemplate.update("UPDATE users SET is_active=TRUE WHERE id=?", actor);
+
+            jdbcTemplate.update("UPDATE projects SET is_active=FALSE WHERE id=?", project);
+            assertSnapshotPermissionDenied(gate, actor, key);
+            jdbcTemplate.update("UPDATE projects SET is_active=TRUE WHERE id=?", project);
+
+            jdbcTemplate.update("UPDATE project_members SET role_id=? WHERE id=?",
+                    viewerRole, member);
+            assertSnapshotPermissionDenied(gate, actor, key);
+            jdbcTemplate.update("UPDATE project_members SET role_id=? WHERE id=?",
+                    managerRole, member);
+
+            // Do not commit a change to a globally seeded role, even inside
+            // the disposable database. A same-connection transactional read
+            // confirms denial and then restores the role by rollback.
+            try (Connection roleChange = dataSource.getConnection()) {
+                roleChange.setAutoCommit(false);
+                try (var sql = roleChange.prepareStatement(
+                        "UPDATE roles SET is_active=FALSE WHERE id=?")) {
+                    sql.setObject(1, managerRole);
+                    org.junit.jupiter.api.Assertions.assertEquals(1, sql.executeUpdate());
+                }
+                org.junit.jupiter.api.Assertions.assertFalse(
+                        gate.mayInitialize(roleChange, actor, key));
+                roleChange.rollback();
+            }
+            assertSnapshotPermissionAllowed(gate, actor, key);
+        } finally {
+            jdbcTemplate.update("DELETE FROM project_members WHERE id=?", member);
+            jdbcTemplate.update("DELETE FROM xforms WHERE id=?", form);
+            jdbcTemplate.update("DELETE FROM projects WHERE id=?", project);
+            jdbcTemplate.update("DELETE FROM users WHERE id=?", actor);
+        }
+    }
+
+    private void assertRevocationBlocked(Connection revoker, String sql, Object... args)
+            throws Exception {
+        // PostgreSQL returns 55P03 on lock_timeout while trying to UPDATE
+        // any row already locked by the publisher's authorization gate.
+        try (var timeout = revoker.createStatement()) {
+            timeout.execute("SET LOCAL lock_timeout='300ms'");
+        }
+        try (var update = revoker.prepareStatement(sql)) {
+            for (int i = 0; i < args.length; i++) {
+                update.setObject(i + 1, args[i]);
+            }
+            java.sql.SQLException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                    java.sql.SQLException.class, update::executeUpdate);
+            org.junit.jupiter.api.Assertions.assertEquals("55P03", failure.getSQLState());
+        }
+        // lock_timeout leaves this transaction aborted. Clear it before the
+        // next independent blocked update, without touching publisher locks.
+        revoker.rollback();
+    }
+
+    private void assertSnapshotPermissionDenied(
+            JdbcEntityListSnapshotPermissionGate gate, UUID actor,
+            EntityListSnapshotLedgerCoordinator.Key key) throws Exception {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            org.junit.jupiter.api.Assertions.assertFalse(
+                    gate.mayInitialize(connection, actor, key));
+            connection.rollback();
+        }
+    }
+
+    private void assertSnapshotPermissionAllowed(
+            JdbcEntityListSnapshotPermissionGate gate, UUID actor,
+            EntityListSnapshotLedgerCoordinator.Key key) throws Exception {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    gate.mayInitialize(connection, actor, key));
+            connection.rollback();
+        }
+    }
+
     private void assertTableExists(String tableName) {
         Boolean exists = jdbcTemplate.queryForObject("""
                 SELECT to_regclass('public.' || ?) IS NOT NULL
