@@ -138,6 +138,16 @@ public final class EntityListManifestPreflight {
         }
     }
 
+    /**
+     * Collect derives the local list name from filename.substringBefore(".csv").
+     * Allow one canonical lowercase extension and a stable, unambiguous base.
+     * This is deliberately stricter than ordinary form-media filenames.
+     */
+    public static boolean validTypedFilename(String filename) {
+        return filename != null && filename.length() <= 255
+                && filename.matches("[A-Za-z0-9][A-Za-z0-9_-]*\\.csv");
+    }
+
     private static boolean containsQuotedHeader(byte[] csvBytes) {
         // Reject even correctly quoted header identifiers to preserve the
         // initial conservative allowlist until native ODK parser parity is proven.
