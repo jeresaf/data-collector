@@ -56,9 +56,17 @@ public final class EntityListAuthenticatedReviewService {
         if (!webAuthorization.mayInitialize(reviewer, request.key())) {
             return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED);
         }
-        boolean accepted = register.decideAuthorized(
+        var outcome = register.decideAuthorizedOutcome(
                 reviewId, reviewer, decision, transactionAuthorization);
-        return accepted || deny(reviewId, reviewer,
-                JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED);
+        if (outcome == JdbcEntityListRemovalReviewRegister.DecisionOutcome.DECIDED) {
+            return true;
+        }
+        JdbcEntityListDenialEvidenceWriter.Reason reason = switch (outcome) {
+            case INVALID_STATE -> JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE;
+            case SELF_ACTION -> JdbcEntityListDenialEvidenceWriter.Reason.SELF_ACTION;
+            case PERMISSION_DENIED -> JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED;
+            case DECIDED -> throw new IllegalStateException("Successful review cannot be denied");
+        };
+        return deny(reviewId, reviewer, reason);
     }
 }
