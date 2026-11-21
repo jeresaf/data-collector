@@ -461,4 +461,81 @@ class EntityListPostgresSchemaContractIT {
         }
     }
 
+    @Test
+    void auditedInitializationCommitsExactlyOneImmutableActorEvent() throws Exception {
+        var fixture = new Fixture();
+        UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var bootstrap = new JdbcEntityListSnapshotBootstrap(fixture.source,
+                (actor, target) -> owner.equals(actor) && key.equals(target));
+        var alwaysAuthorized = (JdbcEntityListSnapshotBootstrap.TransactionAuthorization)
+                (connection, actor, target) -> owner.equals(actor) && key.equals(target);
+        var audit = new JdbcEntityListSnapshotAuditWriter();
+        var meta = Map.<String, Object>of("odkMediaType", "entityList");
+
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.DENIED,
+                bootstrap.initializeWithTransactionAudit(
+                        owner, key, meta, ORIGINAL, md5(ORIGINAL), 1L,
+                        (connection, actor, target) -> false, audit));
+        assertEquals(0, fixture.historyCount());
+
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.INITIALIZED,
+                bootstrap.initializeWithTransactionAudit(
+                        owner, key, meta, ORIGINAL, md5(ORIGINAL), 1L,
+                        alwaysAuthorized, audit));
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.ALREADY_INITIALIZED,
+                bootstrap.initializeWithTransactionAudit(
+                        owner, key, meta, ORIGINAL, md5(ORIGINAL), 1L,
+                        alwaysAuthorized, audit));
+
+        try (Connection connection = fixture.source.getConnection();
+             var query = connection.prepareStatement(
+                     "SELECT actor_id,revision,sha256,event_type FROM entity_list_snapshot_audit");
+             var rows = query.executeQuery()) {
+            assertTrue(rows.next());
+            assertEquals(owner, rows.getObject("actor_id", UUID.class));
+            assertEquals(1L, rows.getLong("revision"));
+            assertEquals(fixture.snapshot(1L, ORIGINAL).sha256(), rows.getString("sha256"));
+            assertEquals("INITIALIZED", rows.getString("event_type"));
+            assertFalse(rows.next());
+        }
+        try (Connection connection = fixture.source.getConnection();
+             var statement = connection.createStatement()) {
+            assertThrows(SQLException.class, () ->
+                    statement.executeUpdate("DELETE FROM entity_list_snapshot_audit"));
+            assertThrows(SQLException.class, () ->
+                    statement.executeUpdate(
+                            "UPDATE entity_list_snapshot_audit SET event_type='INITIALIZED'"));
+        }
+        assertEquals(1, fixture.historyCount());
+    }
+
+    @Test
+    void failedAuditInsertRollsBackSnapshotHistoryAndHead() throws Exception {
+        var fixture = new Fixture();
+        UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var bootstrap = new JdbcEntityListSnapshotBootstrap(fixture.source,
+                (actor, target) -> owner.equals(actor) && key.equals(target));
+        // Simulate missing / unavailable audit storage while head and history
+        // exist. Failure must prevent partial commit.
+        try (Connection connection = fixture.source.getConnection();
+             var statement = connection.createStatement()) {
+            statement.execute("DROP TABLE entity_list_snapshot_audit");
+        }
+        assertThrows(IllegalStateException.class, () ->
+                bootstrap.initializeWithTransactionAudit(
+                        owner, key, Map.of("odkMediaType", "entityList"),
+                        ORIGINAL, md5(ORIGINAL), 1L,
+                        (connection, actor, target) -> true,
+                        new JdbcEntityListSnapshotAuditWriter()));
+        assertEquals(0, fixture.historyCount());
+        try (Connection connection = fixture.source.getConnection();
+             var statement = connection.createStatement();
+             var rows = statement.executeQuery("SELECT COUNT(*) FROM entity_list_snapshot_heads")) {
+            assertTrue(rows.next());
+            assertEquals(0, rows.getInt(1));
+        }
+    }
+
 }
