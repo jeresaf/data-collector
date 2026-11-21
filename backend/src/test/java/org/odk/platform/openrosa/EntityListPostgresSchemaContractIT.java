@@ -1897,4 +1897,130 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, fixture.historyCount());
     }
 
+    @Test
+    void independentCustodianAtomicallyAppointsRevokesAndReappointsGrantAdministrator()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID custodian = UUID.randomUUID();
+        UUID administrator = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var webUser = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(webUser.getId()).thenReturn(custodian);
+        org.mockito.Mockito.when(webUser.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(webUser));
+        var custody = new EntityListGrantAdministratorCustody(
+                fixture.source, current, (connection, actor, scope) ->
+                        custodian.equals(actor) && key.equals(scope));
+        var deniedManager = new EntityListGrantAdministratorCustody(
+                fixture.source, current, (connection, actor, scope) -> false);
+        assertFalse(custody.change(key, administrator,
+                EntityListGrantAdministratorCustody.Change.APPOINT));
+        try (Connection c = fixture.source.getConnection();
+             var insert = c.prepareStatement(
+                     "INSERT INTO entity_list_grant_custodians "
+                             + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+            insert.setObject(1, PROJECT);
+            insert.setObject(2, custodian);
+            assertEquals(1, insert.executeUpdate());
+        }
+        assertFalse(deniedManager.change(key, administrator,
+                EntityListGrantAdministratorCustody.Change.APPOINT));
+        assertFalse(custody.change(key, custodian,
+                EntityListGrantAdministratorCustody.Change.APPOINT));
+        assertFalse(custody.change(key, administrator,
+                EntityListGrantAdministratorCustody.Change.REVOKE));
+        assertTrue(custody.change(key, administrator,
+                EntityListGrantAdministratorCustody.Change.APPOINT));
+        assertFalse(custody.change(key, administrator,
+                EntityListGrantAdministratorCustody.Change.APPOINT));
+        assertTrue(custody.change(key, administrator,
+                EntityListGrantAdministratorCustody.Change.REVOKE));
+        assertFalse(custody.change(key, administrator,
+                EntityListGrantAdministratorCustody.Change.REVOKE));
+        assertTrue(custody.change(key, administrator,
+                EntityListGrantAdministratorCustody.Change.APPOINT));
+        try (Connection c = fixture.source.getConnection();
+             var q = c.createStatement()) {
+            try (var events = q.executeQuery(
+                    "SELECT action,custodian_id,administrator_id "
+                            + "FROM entity_list_grant_administrator_audit")) {
+                int count = 0;
+                int appointments = 0;
+                int revocations = 0;
+                while (events.next()) {
+                    count++;
+                    if ("APPOINT".equals(events.getString("action"))) appointments++;
+                    if ("REVOKE".equals(events.getString("action"))) revocations++;
+                    assertEquals(custodian, events.getObject("custodian_id", UUID.class));
+                    assertEquals(administrator, events.getObject("administrator_id", UUID.class));
+                }
+                assertEquals(3, count);
+                assertEquals(2, appointments);
+                assertEquals(1, revocations);
+            }
+            try (var active = q.executeQuery(
+                    "SELECT is_active FROM entity_list_removal_grant_administrators")) {
+                assertTrue(active.next());
+                assertTrue(active.getBoolean(1));
+                assertFalse(active.next());
+            }
+            assertThrows(SQLException.class, () -> q.executeUpdate(
+                    "DELETE FROM entity_list_grant_administrator_audit"));
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void custodianRevocationAndAuditFailureBothFailClosed() throws Exception {
+        var fixture = new Fixture();
+        UUID custodian = UUID.randomUUID();
+        UUID administrator = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var webUser = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(webUser.getId()).thenReturn(custodian);
+        org.mockito.Mockito.when(webUser.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(webUser));
+        var custody = new EntityListGrantAdministratorCustody(
+                fixture.source, current, (connection, actor, scope) -> true);
+        try (Connection c = fixture.source.getConnection();
+             var insert = c.prepareStatement(
+                     "INSERT INTO entity_list_grant_custodians "
+                             + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+            insert.setObject(1, PROJECT);
+            insert.setObject(2, custodian);
+            assertEquals(1, insert.executeUpdate());
+        }
+        try (Connection c = fixture.source.getConnection();
+             var q = c.createStatement()) {
+            q.execute("DROP TABLE entity_list_grant_administrator_audit");
+        }
+        assertThrows(IllegalStateException.class, () ->
+                custody.change(key, administrator,
+                        EntityListGrantAdministratorCustody.Change.APPOINT));
+        try (Connection c = fixture.source.getConnection();
+             var check = c.createStatement();
+             var rows = check.executeQuery(
+                     "SELECT COUNT(*) FROM entity_list_removal_grant_administrators")) {
+            assertTrue(rows.next());
+            assertEquals(0L, rows.getLong(1));
+        }
+        try (Connection c = fixture.source.getConnection();
+             var disable = c.prepareStatement(
+                     "UPDATE entity_list_grant_custodians SET is_active=FALSE "
+                             + "WHERE project_id=? AND custodian_id=?")) {
+            disable.setObject(1, PROJECT);
+            disable.setObject(2, custodian);
+            assertEquals(1, disable.executeUpdate());
+        }
+        assertFalse(custody.change(key, administrator,
+                EntityListGrantAdministratorCustody.Change.APPOINT));
+        assertEquals(0, fixture.historyCount());
+    }
+
 }
