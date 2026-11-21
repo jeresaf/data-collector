@@ -192,4 +192,29 @@ class OpenRosaTypedEntityManifestTest {
         verifyNoInteractions(storage);
     }
 
+    @Test
+    void approvalEntityListUsesDistinctManifestTypeAndRetainsExactBytes() throws Exception {
+        dataset.setColumnDefinitions(Map.of(
+                EntityListManifestPreflight.METADATA_KEY, "approvalEntityList"));
+        assertTrue(manifest().contains("<mediaFile type=\"approvalEntityList\">"));
+        var result = download();
+        assertEquals(200, result.getStatusCode().value());
+        assertArrayEquals(VALID, result.getBody().getInputStream().readAllBytes());
+    }
+
+    @Test
+    void unknownExplicitMediaTypeIsNotSilentlyDowngradedToOrdinaryCsv() {
+        dataset.setColumnDefinitions(Map.of(
+                EntityListManifestPreflight.METADATA_KEY, "futureUnsupportedType"));
+        assertFalse(manifest().contains("<mediaFile"));
+        assertEquals(404, download().getStatusCode().value());
+    }
+
+    @Test
+    void typedDatasetWithoutCsvFilenameIsDeniedBeforeStorage() {
+        dataset.setDatasetId("households.json");
+        assertFalse(manifest().contains("<mediaFile"));
+        verifyNoInteractions(storage);
+    }
+
 }
