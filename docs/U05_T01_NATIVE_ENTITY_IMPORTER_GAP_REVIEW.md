@@ -189,6 +189,12 @@ The **disposable PostgreSQL candidate schema only** now adds `UNIQUE(project_id,
 
 PostgreSQL tests verify a mismatched head digest raises FK SQLSTATE `23503` at commit, and an audit event with the wrong digest also raises `23503`. A separate regression explicitly removes the new head FK **inside its isolated test schema only**, corrupts the head, and confirms the JDBC reader continues to raise an integrity error instead of misclassifying the list as uninitialized. This demonstrates both database enforcement and defense in depth.
 
+## Immutable removal-review evidence envelope — exact-head CI pending
+
+`EntityListRemovalReviewRequest.prepare(...)` creates a **pure, inactive review envelope** only for a verified snapshot transition with `REQUIRES_REMOVAL_APPROVAL`. It records the requester UUID (a **claim**, not proof of authentication), nonblank bounded justification, exact trusted head revision/SHA-256, exact proposed revision/SHA-256 and a defensive immutable copy of missing Entity IDs. `matchesForReview(...)` recomputes the complete missing-ID set and verifies the request is still tied to the identical expected head and candidate after any intervening revision/digest change; different requester, forged bytes, wrong project/form, no-removal change or altered justification cannot reuse the previous request. JUnit tests cover these outcomes.
+
+**This is not an approval process**: there is no persistent request row, authenticated HTTP principal binding, separate reviewer identity, decision audit, expiry, approval signature, CAS-based commit, tombstone issuance or Android deletion. No code path enables removals or changes the fail-closed `JdbcEntityListSnapshotStore` revision policy. Next steps require a reviewed persistent request state machine and a transactional, separately authorized commit protocol; until then missing IDs remain protected.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
