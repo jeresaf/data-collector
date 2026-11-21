@@ -373,4 +373,79 @@ class EntityListPostgresLedgerContractIT {
         assertEquals(1L, store.currentHead(KEY).orElseThrow().evidence().revision());
     }
 
+    @Test
+    void optInJdbcStoreUsesPostgresTransactionsAndRetainsHistory() throws Exception {
+        String schema = "store_" + UUID.randomUUID().toString().replace("-", "");
+        try (Connection c = DriverManager.getConnection(
+                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+             var sql = c.createStatement()) {
+            sql.execute("CREATE SCHEMA " + schema);
+            sql.execute("CREATE TABLE " + schema + ".entity_list_snapshot_heads ("
+                    + "project_id UUID NOT NULL, form_id UUID NOT NULL, filename TEXT NOT NULL, "
+                    + "revision BIGINT NOT NULL, sha256 TEXT NOT NULL, "
+                    + "PRIMARY KEY(project_id,form_id,filename))");
+            sql.execute("CREATE TABLE " + schema + ".entity_list_snapshot_history ("
+                    + "project_id UUID NOT NULL, form_id UUID NOT NULL, filename TEXT NOT NULL, "
+                    + "revision BIGINT NOT NULL, media_type TEXT NOT NULL, md5 TEXT NOT NULL, "
+                    + "sha256 TEXT NOT NULL, row_count BIGINT NOT NULL, payload BYTEA NOT NULL, "
+                    + "PRIMARY KEY(project_id,form_id,filename,revision))");
+        }
+        org.postgresql.ds.PGSimpleDataSource dataSource = new org.postgresql.ds.PGSimpleDataSource();
+        dataSource.setUrl(POSTGRES.getJdbcUrl());
+        dataSource.setUser(POSTGRES.getUsername());
+        dataSource.setPassword(POSTGRES.getPassword());
+        dataSource.setCurrentSchema(schema);
+        var first = EntityListSnapshotEvidence.fromVerifiedBytes(
+                PROJECT, FORM, KEY.filename(), 1L, TYPE, OLD, md5(OLD), 2L).orElseThrow();
+        try (Connection c = dataSource.getConnection()) {
+            c.setAutoCommit(false);
+            try (var head = c.prepareStatement("INSERT INTO entity_list_snapshot_heads VALUES (?,?,?,?,?)");
+                 var history = c.prepareStatement("INSERT INTO entity_list_snapshot_history VALUES (?,?,?,?,?,?,?,?,?)")) {
+                head.setObject(1, PROJECT);
+                head.setObject(2, FORM);
+                head.setString(3, KEY.filename());
+                head.setLong(4, first.revision());
+                head.setString(5, first.sha256());
+                head.executeUpdate();
+                history.setObject(1, PROJECT);
+                history.setObject(2, FORM);
+                history.setString(3, KEY.filename());
+                history.setLong(4, first.revision());
+                history.setString(5, first.mediaType());
+                history.setString(6, first.md5());
+                history.setString(7, first.sha256());
+                history.setLong(8, first.rowCount());
+                history.setBytes(9, OLD);
+                history.executeUpdate();
+                c.commit();
+            }
+        }
+        var store = new JdbcEntityListSnapshotStore(dataSource);
+        assertTrue(java.util.Arrays.equals(OLD, store.currentHead(KEY).orElseThrow().bytes()));
+        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.APPENDED,
+                EntityListSnapshotLedgerCoordinator.propose(
+                        store, KEY, TYPE, UPDATED, md5(UPDATED), 2L).outcome());
+        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.UNCHANGED,
+                EntityListSnapshotLedgerCoordinator.propose(
+                        store, KEY, TYPE, UPDATED, md5(UPDATED), 2L).outcome());
+        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.REMOVAL_APPROVAL_REQUIRED,
+                EntityListSnapshotLedgerCoordinator.propose(
+                        store, KEY, TYPE, REMOVAL, md5(REMOVAL), 1L).outcome());
+        var otherProject = new EntityListSnapshotLedgerCoordinator.Key(
+                UUID.fromString("00000000-0000-0000-0000-000000000399"), FORM, KEY.filename());
+        assertTrue(store.currentHead(otherProject).isEmpty());
+        try (Connection c = dataSource.getConnection();
+             var query = c.prepareStatement(
+                     "SELECT revision,payload FROM entity_list_snapshot_history ORDER BY revision");
+             var results = query.executeQuery()) {
+            assertTrue(results.next());
+            assertEquals(1L, results.getLong(1));
+            assertTrue(java.util.Arrays.equals(OLD, results.getBytes(2)));
+            assertTrue(results.next());
+            assertEquals(2L, results.getLong(1));
+            assertTrue(java.util.Arrays.equals(UPDATED, results.getBytes(2)));
+            assertTrue(!results.next());
+        }
+    }
+
 }
