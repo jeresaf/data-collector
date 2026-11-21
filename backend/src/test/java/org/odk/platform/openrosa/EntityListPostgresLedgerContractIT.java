@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * PostgreSQL Testcontainers adapter for contract testing. Not a production component,
@@ -196,6 +197,18 @@ class EntityListPostgresLedgerContractIT {
             }
         }
 
+        void injectConflictingRevisionTwo() throws Exception {
+            var conflicting = EntityListSnapshotEvidence.fromVerifiedBytes(
+                    PROJECT, FORM, KEY.filename(), 2L, TYPE,
+                    UPDATED, md5(UPDATED), 2L).orElseThrow();
+            try (Connection c = connect();
+                 var p = c.prepareStatement(
+                         "INSERT INTO history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+                bindHistory(p, conflicting, UPDATED);
+                p.executeUpdate();
+            }
+        }
+
         int historyCount() throws SQLException {
             try (Connection c = connect(); var s = c.createStatement();
                  var rs = s.executeQuery("SELECT COUNT(*) FROM history")) {
@@ -292,4 +305,23 @@ class EntityListPostgresLedgerContractIT {
         assertEquals(1, store.historyCount());
         assertEquals(1L, store.currentHead(KEY).orElseThrow().evidence().revision());
     }
+    @Test
+    void historyInsertCollisionRollsBackHeadCompareAndSwap() throws Exception {
+        var store = new JdbcFixtureStore();
+        // Simulates an unexpected unique-key collision after UPDATE head
+        // succeeds but before the immutable revision INSERT can commit.
+        store.injectConflictingRevisionTwo();
+        assertEquals(2, store.historyCount());
+        assertThrows(IllegalStateException.class, () ->
+                EntityListSnapshotLedgerCoordinator.propose(
+                        store, KEY, TYPE, UPDATED, md5(UPDATED), 2L));
+
+        // Must still point to revision 1; the attempted update is rolled back.
+        assertEquals(1L, store.currentHead(KEY).orElseThrow().evidence().revision());
+        assertTrue(java.util.Arrays.equals(
+                OLD, store.currentHead(KEY).orElseThrow().bytes()));
+        assertEquals(2, store.historyCount());
+        assertTrue(java.util.Arrays.equals(OLD, store.historyAt(1).bytes()));
+    }
+
 }
