@@ -401,7 +401,8 @@ public class OpenRosaController {
                     .read(dataset.getStoragePath());
             return bytes.length > 20_000_000 ? Optional.empty()
                     : EntityListManifestPreflight.verifiedCandidate(
-                            dataset.getColumnDefinitions(), bytes, dataset.getContentHash());
+                            dataset.getColumnDefinitions(), bytes, dataset.getContentHash(),
+                            dataset.getRowCount());
         } catch (Exception e) {
             log.warn("Unable to qualify typed Entity List storage bytes for {}", dataset.getId(), e);
             return Optional.empty();
@@ -522,7 +523,8 @@ public class OpenRosaController {
                     byte[] bytes = storageService.read(dataset.getStoragePath());
                     if (bytes.length > 20_000_000 || !EntityListManifestPreflight.validTypedFilename(dataset.getDatasetId())
                             || EntityListManifestPreflight.verifiedCandidate(
-                                    dataset.getColumnDefinitions(), bytes, dataset.getContentHash()).isEmpty()) {
+                                    dataset.getColumnDefinitions(), bytes, dataset.getContentHash(),
+                            dataset.getRowCount()).isEmpty()) {
                         return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
                     }
                     resource = new org.springframework.core.io.ByteArrayResource(bytes);
