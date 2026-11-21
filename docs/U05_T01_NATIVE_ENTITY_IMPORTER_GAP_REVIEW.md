@@ -305,6 +305,12 @@ Within a single transaction, the candidate execution changes the subject's activ
 
 **Important remaining blockers:** No production Flyway migration, real custodian provisioning, signed external authorization, independently established initial trust root, emergency recovery, production identity/role administration, administrative HTTP endpoint, complete issuance/revocation race matrix or actual Android/Entity removal publisher exists. This module **must not be registered or deployed** until governance and additional concurrency/negative tests are approved. This is not a completed release milestone.
 
+## Custody execution negative/concurrent PostgreSQL matrix — exact-head CI pending
+
+Expanded disposable PostgreSQL integration coverage for the **inactive** `EntityListCustodianChangeExecutor` with fixture-backed scenarios for an expired 24-hour custody proposal, a revoked execution officer, and a revoked witness. Each must be denied without an execution receipt or unauthorized appointment. Revocation at exactly four active custodians is denied; a separately approved revocation with five active custodians is allowed to leave exactly four and cannot be replayed. Two simultaneous attempts to execute the **same appointment** are released by a shared start latch and must result in exactly one successful execution, one immutable execution receipt, and one target appointment. Existing snapshot history remains unchanged in all scenarios.
+
+**Caution:** These are disposable test-schema transactions with fixture-provisioned identities and delegates, not production endpoints or real identity-policy integration. The test harness uses single-process concurrent JDBC calls and does not yet establish safety across distributed executors, production privilege-revocation writers or interrupted process recovery. The test's success must be confirmed on the exact commit in PostgreSQL Testcontainers before claiming qualification. First-custodian bootstrap, trusted recovery, release approval and Entity/tombstone publication remain unimplemented.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
