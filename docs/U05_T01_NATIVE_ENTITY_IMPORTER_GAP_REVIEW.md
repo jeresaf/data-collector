@@ -159,6 +159,12 @@ Disposable PostgreSQL tests were adjusted to require the audited method for legi
 
 **Scope limit:** the revocation writer is test-controlled SQL against minimal real-named tables, **not** application-level revocation service integration. The fixture is not the full production Flyway schema; those are independently tested by `PostgreSqlContainerMigrationIT`. These experiments establish lock behavior when revocation uses UPDATE on the same row but cannot prove every revocation/role reassignment path follows the lock protocol. No production migration, endpoint or mobile deletion behavior is active.
 
+## Actual membership service revocation race — pending exact-head CI
+
+The two-connection `EntityListPostgresRevocationRaceIT` tests now execute the **real** `ProjectMemberService.removeMember(projectId, memberId)` rather than a handwritten membership `UPDATE`. The service runs with a PostgreSQL JDBC connection and an isolated mock audit dependency, while the test holds or releases its transaction to inspect actual row-lock ordering. Minimal real-named fixture tables include the columns required by the service's `findActiveMember` query and removal SQL. In the first ordering, the service's removal is uncommitted before the publisher checks the manager role; the publisher must block and then deny after removal commits. In the other ordering, publication commits its audited revision while holding membership locks, and the service must block until that commit before revoking the membership.
+
+**Limitations:** the fixture is not the full Flyway database, the `@Transactional` proxy is not active because the service is explicitly constructed for the independent test connection, and the existing audit service is mocked. This checks actual service SQL and locking behavior, not controller security, Spring transaction-manager integration, global role revocation, user deactivation, project archival, or cross-service lock ordering. Those remain unverified and must not be implied by a green result.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
