@@ -77,6 +77,10 @@ This is **NOT durable trusted history**. There is no production `Store` implemen
 
 This is a **test-only** SQL fixture, not a production repository, Flyway migration or deployment. It does not yet demonstrate process restart, multi-node service authorization, crash between object storage/database commit, approved deletion audit, or the native Collect integrity URL protocol. The first run on the exact commit must pass before PostgreSQL behavior is considered qualified.
 
+## PostgreSQL transactional failure injection
+
+The disposable PostgreSQL ledger contract now exercises a **history INSERT unique-key failure after a conditional head UPDATE**. The SQL adapter must roll back the complete transaction; the test checks that the head still points at the original revision and original bytes remain readable. This tests one real database failure mode, not power-loss durability or a crash between an external object-store write and SQL commit. No live tables, migration, deletion approval, or application endpoint is introduced.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
