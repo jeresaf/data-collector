@@ -201,3 +201,27 @@ CREATE TABLE entity_list_removal_grant_audit (
 CREATE TRIGGER entity_list_grant_audit_immutable
 BEFORE UPDATE OR DELETE ON entity_list_removal_grant_audit
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Provisioned out of band: independent test-only authority for managing
+-- grant administrators. No production bootstrap or administrator endpoint.
+CREATE TABLE entity_list_grant_custodians (
+    project_id UUID NOT NULL,
+    custodian_id UUID NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (project_id, custodian_id)
+);
+-- split
+CREATE TABLE entity_list_grant_administrator_audit (
+    event_id UUID PRIMARY KEY,
+    project_id UUID NOT NULL,
+    custodian_id UUID NOT NULL,
+    administrator_id UUID NOT NULL,
+    action VARCHAR(8) NOT NULL CHECK (action IN ('APPOINT','REVOKE')),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (custodian_id <> administrator_id)
+);
+-- split
+CREATE TRIGGER entity_list_grant_administrator_audit_immutable
+BEFORE UPDATE OR DELETE ON entity_list_grant_administrator_audit
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
