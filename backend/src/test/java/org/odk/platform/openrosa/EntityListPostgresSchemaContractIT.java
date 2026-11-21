@@ -2772,4 +2772,144 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, scenario.fixture.historyCount());
     }
 
+    @Test
+    void lostCommitAcknowledgmentIsReconciledFromImmutableReceiptWithoutDuplicate()
+            throws Exception {
+        var scenario = new CustodyExecutionScenario("APPOINT", 10, false);
+        var scope = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(scenario.officer);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        var recovery = new EntityListCustodianExecutionReconciliation(
+                scenario.fixture.source, current,
+                (connection, actor, key) ->
+                        scenario.officer.equals(actor) && scope.equals(key));
+
+        assertEquals(EntityListCustodianExecutionReconciliation.Status.NOT_COMMITTED,
+                recovery.check(scenario.proposal));
+        // Simulate losing the application's acknowledgement AFTER the
+        // database successfully committed. No result is delivered to the
+        // simulated caller, which reconnects and reconciles from the ledger.
+        assertTrue(scenario.executor.execute(scenario.proposal));
+        var restarted = new EntityListCustodianExecutionReconciliation(
+                scenario.fixture.source, current,
+                (connection, actor, key) ->
+                        scenario.officer.equals(actor) && scope.equals(key));
+        assertEquals(EntityListCustodianExecutionReconciliation.Status.COMMITTED,
+                restarted.check(scenario.proposal));
+        assertFalse(scenario.executor.execute(scenario.proposal));
+        assertEquals(1L, scenario.executionCount());
+        assertEquals(5L, scenario.activeCustodianCount());
+        assertEquals(0, scenario.fixture.historyCount());
+    }
+
+    @Test
+    void reconciliationSerializesBehindInFlightCommitOrRollback()
+            throws Exception {
+        var scenario = new CustodyExecutionScenario("APPOINT", 10, false);
+        var scope = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(scenario.officer);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        var recovery = new EntityListCustodianExecutionReconciliation(
+                scenario.fixture.source, current,
+                (connection, actor, key) ->
+                        scenario.officer.equals(actor) && scope.equals(key));
+        var pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (Connection executing = scenario.fixture.source.getConnection()) {
+            executing.setAutoCommit(false);
+            try (var lock = executing.prepareStatement(
+                    "SELECT id FROM entity_list_custodian_change_proposals "
+                            + "WHERE id=? FOR UPDATE")) {
+                lock.setObject(1, scenario.proposal);
+                try (var row = lock.executeQuery()) {
+                    assertTrue(row.next());
+                }
+            }
+            var reading = pool.submit(() -> recovery.check(scenario.proposal));
+            java.util.concurrent.TimeUnit.MILLISECONDS.sleep(200);
+            assertFalse(reading.isDone());
+            // Simulate a successful executing worker's atomic writes before
+            // release of the proposal lock.
+            try (var change = executing.prepareStatement(
+                    "INSERT INTO entity_list_grant_custodians "
+                            + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+                change.setObject(1, PROJECT);
+                change.setObject(2, scenario.subject);
+                assertEquals(1, change.executeUpdate());
+            }
+            try (var receipt = executing.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_executions "
+                            + "(proposal_id,executed_by,action,project_id,subject_id) "
+                            + "VALUES (?,?,'APPOINT',?,?)")) {
+                receipt.setObject(1, scenario.proposal);
+                receipt.setObject(2, scenario.officer);
+                receipt.setObject(3, PROJECT);
+                receipt.setObject(4, scenario.subject);
+                assertEquals(1, receipt.executeUpdate());
+            }
+            executing.commit();
+            assertEquals(EntityListCustodianExecutionReconciliation.Status.COMMITTED,
+                    reading.get(15, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(1L, scenario.executionCount());
+        assertEquals(5L, scenario.activeCustodianCount());
+        assertEquals(0, scenario.fixture.historyCount());
+    }
+
+    @Test
+    void executionReconciliationFailsClosedOnRevokedOfficerAndAuditOutage()
+            throws Exception {
+        var scenario = new CustodyExecutionScenario("APPOINT", 10, false);
+        var scope = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(scenario.officer);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        var recovery = new EntityListCustodianExecutionReconciliation(
+                scenario.fixture.source, current,
+                (connection, actor, key) ->
+                        scenario.officer.equals(actor) && scope.equals(key));
+        assertTrue(scenario.executor.execute(scenario.proposal));
+        try (Connection c = scenario.fixture.source.getConnection();
+             var revoke = c.prepareStatement(
+                     "UPDATE entity_list_custodian_execution_officers "
+                             + "SET is_active=FALSE WHERE project_id=? AND officer_id=?")) {
+            revoke.setObject(1, PROJECT);
+            revoke.setObject(2, scenario.officer);
+            assertEquals(1, revoke.executeUpdate());
+        }
+        assertEquals(EntityListCustodianExecutionReconciliation.Status.UNAUTHORIZED,
+                recovery.check(scenario.proposal));
+        // Reenable in disposable fixture to exercise a missing ledger:
+        // an outage must NOT be reported as NOT_COMMITTED.
+        try (Connection c = scenario.fixture.source.getConnection();
+             var reenable = c.prepareStatement(
+                     "UPDATE entity_list_custodian_execution_officers "
+                             + "SET is_active=TRUE WHERE project_id=? AND officer_id=?")) {
+            reenable.setObject(1, PROJECT);
+            reenable.setObject(2, scenario.officer);
+            assertEquals(1, reenable.executeUpdate());
+        }
+        try (Connection c = scenario.fixture.source.getConnection();
+             var drop = c.createStatement()) {
+            drop.execute("DROP TABLE entity_list_custodian_change_executions");
+        }
+        assertThrows(IllegalStateException.class, () -> recovery.check(scenario.proposal));
+        assertEquals(0, scenario.fixture.historyCount());
+    }
+
 }
