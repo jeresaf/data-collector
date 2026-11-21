@@ -171,4 +171,30 @@ class EntityListManifestPreflightTest {
         assertFalse(EntityListManifestPreflight.validTypedFilename("a".repeat(253) + ".csv"));
     }
 
+    @Test
+    void headerOnlySnapshotCannotQualifyForAutomaticEntityDeletion() throws Exception {
+        byte[] headerOnly = "name,label,__version\n".getBytes(StandardCharsets.UTF_8);
+        String digest = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(headerOnly));
+        for (String type : new String[] {"entityList", "approvalEntityList"}) {
+            Map<String, Object> declared = Map.of("odkMediaType", type);
+            assertTrue(EntityListManifestPreflight.validatedCandidate(declared, headerOnly).isEmpty());
+            assertTrue(EntityListManifestPreflight.verifiedCandidate(declared, headerOnly, digest).isEmpty());
+        }
+    }
+
+    @Test
+    void malformedOrTruncatedSnapshotCannotQualifyEvenWithMatchingMd5() throws Exception {
+        for (String csv : new String[] {
+                "name,label,__version\n"
+                        + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,One,1\n\n",
+                "name,label,__version\n"
+                        + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,One\n"
+        }) {
+            byte[] bytes = csv.getBytes(StandardCharsets.UTF_8);
+            String digest = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(bytes));
+            assertTrue(EntityListManifestPreflight.verifiedCandidate(
+                    Map.of("odkMediaType", "entityList"), bytes, digest).isEmpty(), csv);
+        }
+    }
+
 }
