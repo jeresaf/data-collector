@@ -225,3 +225,33 @@ CREATE TABLE entity_list_grant_administrator_audit (
 CREATE TRIGGER entity_list_grant_administrator_audit_immutable
 BEFORE UPDATE OR DELETE ON entity_list_grant_administrator_audit
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Test-only custody approval intent; intentionally has NO trigger that
+-- changes custody. A quorum is evidence, not authority to bootstrap.
+CREATE TABLE entity_list_custodian_change_proposals (
+    id UUID PRIMARY KEY,
+    project_id UUID NOT NULL,
+    form_id UUID NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    subject_id UUID NOT NULL,
+    initiated_by UUID NOT NULL,
+    action VARCHAR(8) NOT NULL CHECK (action IN ('APPOINT','REVOKE')),
+    state VARCHAR(16) NOT NULL DEFAULT 'PENDING'
+        CHECK (state IN ('PENDING','ENDORSED')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (subject_id <> initiated_by)
+);
+-- split
+-- Independent witnesses are immutable; their agreement is never a
+-- custodian or role mutation, and does not create a real-world identity.
+CREATE TABLE entity_list_custodian_change_witnesses (
+    proposal_id UUID NOT NULL REFERENCES entity_list_custodian_change_proposals(id),
+    witness_id UUID NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (proposal_id,witness_id)
+);
+-- split
+CREATE TRIGGER entity_list_custodian_witness_immutable
+BEFORE UPDATE OR DELETE ON entity_list_custodian_change_witnesses
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
