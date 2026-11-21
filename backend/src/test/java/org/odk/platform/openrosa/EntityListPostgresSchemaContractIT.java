@@ -895,4 +895,56 @@ class EntityListPostgresSchemaContractIT {
         }
     }
 
+    @Test
+    void authenticatedReviewerFacadeRequiresWebPrincipalAndTransactionalPrivilege()
+            throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var before = new JdbcEntityListSnapshotStore(fixture.source).currentHead(key).orElseThrow();
+        var candidateBytes = ("name,label,__version\n"
+                + "f4f8c5db-8333-4449-b13f-720a8ce47071,Replacement,1\n")
+                .getBytes(StandardCharsets.UTF_8);
+        var candidate = new EntityListSnapshotLedgerCoordinator.Head(
+                fixture.snapshot(2L, candidateBytes), candidateBytes);
+        UUID requester = UUID.randomUUID();
+        UUID reviewer = UUID.randomUUID();
+        UUID id = UUID.randomUUID();
+        var register = new JdbcEntityListRemovalReviewRegister(fixture.source);
+        register.submit(id, EntityListRemovalReviewRequest.prepare(
+                requester, "Require another reviewer",
+                before, candidate).orElseThrow());
+
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
+        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var service = new EntityListAuthenticatedReviewService(
+                identity, policy, gate, register);
+        assertFalse(service.decide(id, JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+        assertEquals("PENDING", register.get(id).state());
+
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(reviewer);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(identity.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        assertFalse(service.decide(id, JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+        assertEquals("PENDING", register.get(id).state());
+
+        org.mockito.Mockito.when(policy.mayInitialize(reviewer, key)).thenReturn(true);
+        assertFalse(service.decide(id, JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+        assertEquals("PENDING", register.get(id).state());
+
+        org.mockito.Mockito.when(gate.mayInitialize(
+                org.mockito.ArgumentMatchers.any(Connection.class),
+                org.mockito.ArgumentMatchers.eq(reviewer),
+                org.mockito.ArgumentMatchers.eq(key))).thenReturn(true);
+        assertTrue(service.decide(id, JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+        assertEquals("APPROVED", register.get(id).state());
+        assertEquals(reviewer, register.get(id).reviewer());
+        assertEquals(1, fixture.historyCount());
+        assertFalse(service.decide(id, JdbcEntityListRemovalReviewRegister.Decision.REJECTED));
+    }
+
 }
