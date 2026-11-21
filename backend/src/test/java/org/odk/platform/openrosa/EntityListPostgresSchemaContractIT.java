@@ -920,7 +920,8 @@ class EntityListPostgresSchemaContractIT {
         var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
         var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
         var service = new EntityListAuthenticatedReviewService(
-                identity, policy, gate, register);
+                identity, policy, gate, register,
+                new JdbcEntityListDenialEvidenceWriter(fixture.source));
         assertFalse(service.decide(id, JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
         assertEquals("PENDING", register.get(id).state());
 
@@ -945,6 +946,16 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(reviewer, register.get(id).reviewer());
         assertEquals(1, fixture.historyCount());
         assertFalse(service.decide(id, JdbcEntityListRemovalReviewRegister.Decision.REJECTED));
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.prepareStatement(
+                     "SELECT COUNT(*) FROM entity_list_denial_evidence "
+                             + "WHERE review_id=? AND operation='REVIEW_DECISION'")) {
+            statement.setObject(1, id);
+            try (var rows = statement.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals(4L, rows.getLong(1));
+            }
+        }
     }
 
     @Test
@@ -1085,7 +1096,8 @@ class EntityListPostgresSchemaContractIT {
         var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
         var seal = new JdbcEntityListRemovalApprovalSeal(fixture.source);
         var facade = new EntityListAuthenticatedSealService(
-                identity, policy, gate, register, seal);
+                identity, policy, gate, register, seal,
+                new JdbcEntityListDenialEvidenceWriter(fixture.source));
         assertFalse(facade.validateApprovedReview(reviewId, candidate));
 
         var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
@@ -1117,6 +1129,16 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(1, fixture.historyCount());
         assertEquals(1L, new JdbcEntityListSnapshotStore(fixture.source)
                 .currentHead(key).orElseThrow().evidence().revision());
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.prepareStatement(
+                     "SELECT COUNT(*) FROM entity_list_denial_evidence "
+                             + "WHERE review_id=? AND operation='APPROVAL_VALIDATION'")) {
+            statement.setObject(1, reviewId);
+            try (var rows = statement.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals(6L, rows.getLong(1));
+            }
+        }
     }
 
     @Test
