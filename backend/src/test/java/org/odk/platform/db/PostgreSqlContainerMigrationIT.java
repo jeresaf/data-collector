@@ -81,6 +81,9 @@ class PostgreSqlContainerMigrationIT {
     @Autowired
     DataSource dataSource;
 
+    @Autowired
+    org.odk.platform.service.ProjectMemberService projectMemberService;
+
     @Test
     void productionFlywayChainBuildsCurrentSchemaOnRealPostgreSql() {
         String databaseVersion =
@@ -307,6 +310,93 @@ class PostgreSqlContainerMigrationIT {
             } finally {
                 connection.rollback();
             }
+        }
+    }
+
+
+    @Test
+    void springTransactionalMemberRemovalWaitsForAuthorizedPublisherOnMigratedSchema()
+            throws Exception {
+        // This uses the actual Spring proxy + production Flyway tables, not
+        // the manually constructed service from isolated PostgreSQL tests.
+        org.junit.jupiter.api.Assertions.assertTrue(
+                org.springframework.aop.support.AopUtils.isAopProxy(projectMemberService));
+        UUID owner = jdbcTemplate.queryForObject(
+                "SELECT id FROM users WHERE username='admin'", UUID.class);
+        UUID role = jdbcTemplate.queryForObject(
+                "SELECT id FROM roles WHERE name='PROJECT_MANAGER'", UUID.class);
+        UUID manager = UUID.randomUUID();
+        UUID project = UUID.randomUUID();
+        UUID form = UUID.randomUUID();
+        UUID membership = UUID.randomUUID();
+        String suffix = UUID.randomUUID().toString().replace("-", "");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(project, form, "households.csv");
+
+        jdbcTemplate.update(
+                "INSERT INTO users (id,username,email,password_hash) VALUES (?,?,?,?)",
+                manager, "u05_proxy_" + suffix, suffix + "@test.invalid", "test-only");
+        try {
+            jdbcTemplate.update(
+                    "INSERT INTO projects (id,name,owner_id,created_by_id) VALUES (?,?,?,?)",
+                    project, "U05 transactional race " + suffix, owner, owner);
+            jdbcTemplate.update(
+                    "INSERT INTO xforms (id,title,project_id,created_by_id) VALUES (?,?,?,?)",
+                    form, "U05 test form", project, owner);
+            jdbcTemplate.update(
+                    "INSERT INTO project_members(id,project_id,user_id,role_id) VALUES (?,?,?,?)",
+                    membership, project, manager, role);
+            var gate = new JdbcEntityListSnapshotPermissionGate();
+            var pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+            try (Connection publishing = dataSource.getConnection()) {
+                publishing.setAutoCommit(false);
+                try {
+                    // Hold the same locked authorization rows that audited
+                    // publication holds from permission check through commit.
+                    org.junit.jupiter.api.Assertions.assertTrue(
+                            gate.mayInitialize(publishing, manager, key));
+                    var started = new java.util.concurrent.CountDownLatch(1);
+                    var revoker = pool.submit(() -> {
+                        started.countDown();
+                        projectMemberService.removeMember(project, membership);
+                        return true;
+                    });
+                    org.junit.jupiter.api.Assertions.assertTrue(
+                            started.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                    boolean blocked = false;
+                    for (int attempt = 0; attempt < 80 && !blocked; attempt++) {
+                        Integer waiting = jdbcTemplate.queryForObject("""
+                                SELECT COUNT(*) FROM pg_stat_activity
+                                 WHERE wait_event_type='Lock'
+                                   AND query LIKE '%UPDATE project_members%'
+                                """, Integer.class);
+                        blocked = waiting != null && waiting > 0;
+                        if (!blocked) {
+                            Thread.sleep(50);
+                        }
+                    }
+                    org.junit.jupiter.api.Assertions.assertTrue(blocked,
+                            "Spring-managed membership removal should wait for publication lock");
+                    publishing.commit();
+                    org.junit.jupiter.api.Assertions.assertTrue(
+                            revoker.get(15, java.util.concurrent.TimeUnit.SECONDS));
+                    try (Connection after = dataSource.getConnection()) {
+                        after.setAutoCommit(false);
+                        org.junit.jupiter.api.Assertions.assertFalse(
+                                gate.mayInitialize(after, manager, key));
+                        after.rollback();
+                    }
+                } finally {
+                    publishing.rollback();
+                    pool.shutdownNow();
+                }
+            }
+        } finally {
+            // All fixture data is synthetic and confined to this disposable
+            // PostgreSQL Testcontainer. Clean dependent tables in FK order.
+            jdbcTemplate.update("DELETE FROM project_members WHERE id=?", membership);
+            jdbcTemplate.update("DELETE FROM xforms WHERE id=?", form);
+            jdbcTemplate.update("DELETE FROM projects WHERE id=?", project);
+            jdbcTemplate.update("DELETE FROM users WHERE id=?", manager);
         }
     }
 
