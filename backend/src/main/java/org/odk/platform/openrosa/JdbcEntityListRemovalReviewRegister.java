@@ -95,11 +95,22 @@ public final class JdbcEntityListRemovalReviewRegister {
      * transaction holding the review row lock, before the terminal decision.
      * The caller must bind reviewer to the current server principal.
      */
+    enum DecisionOutcome {
+        DECIDED, INVALID_STATE, SELF_ACTION, PERMISSION_DENIED
+    }
+
     public boolean decideAuthorized(UUID id, UUID reviewer, Decision decision,
+            JdbcEntityListSnapshotBootstrap.TransactionAuthorization authorization) {
+        return decideAuthorizedOutcome(id, reviewer, decision, authorization)
+                == DecisionOutcome.DECIDED;
+    }
+
+    DecisionOutcome decideAuthorizedOutcome(
+            UUID id, UUID reviewer, Decision decision,
             JdbcEntityListSnapshotBootstrap.TransactionAuthorization authorization) {
         Objects.requireNonNull(authorization);
         if (id == null || reviewer == null || decision == null) {
-            return false;
+            return DecisionOutcome.INVALID_STATE;
         }
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
@@ -109,10 +120,13 @@ public final class JdbcEntityListRemovalReviewRegister {
                 try (PreparedStatement query = connection.prepareStatement(read)) {
                     query.setObject(1, id);
                     try (ResultSet row = query.executeQuery()) {
-                        if (!row.next() || !"PENDING".equals(row.getString("state"))
-                                || reviewer.equals(row.getObject("requested_by", UUID.class))) {
+                        if (!row.next() || !"PENDING".equals(row.getString("state"))) {
                             connection.rollback();
-                            return false;
+                            return DecisionOutcome.INVALID_STATE;
+                        }
+                        if (reviewer.equals(row.getObject("requested_by", UUID.class))) {
+                            connection.rollback();
+                            return DecisionOutcome.SELF_ACTION;
                         }
                         var key = new EntityListSnapshotLedgerCoordinator.Key(
                                 row.getObject("project_id", UUID.class),
@@ -120,7 +134,7 @@ public final class JdbcEntityListRemovalReviewRegister {
                                 row.getString("filename"));
                         if (!authorization.mayInitialize(connection, reviewer, key)) {
                             connection.rollback();
-                            return false;
+                            return DecisionOutcome.PERMISSION_DENIED;
                         }
                     }
                 }
@@ -133,11 +147,11 @@ public final class JdbcEntityListRemovalReviewRegister {
                     update.setObject(3, id);
                     if (update.executeUpdate() != 1) {
                         connection.rollback();
-                        return false;
+                        return DecisionOutcome.INVALID_STATE;
                     }
                 }
                 connection.commit();
-                return true;
+                return DecisionOutcome.DECIDED;
             } catch (SQLException | RuntimeException failure) {
                 try {
                     connection.rollback();
