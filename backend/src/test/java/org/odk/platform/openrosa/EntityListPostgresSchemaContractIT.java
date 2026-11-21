@@ -1522,4 +1522,100 @@ class EntityListPostgresSchemaContractIT {
                         identity, policy, reviewerRole, register, seal, writer));
     }
 
+    @Test
+    void reviewerGrantLockSerializesRevocationAndPreventsStaleAuthorization()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID actor = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var reviewer = new JdbcEntityListRemovalRoleGate(
+                (connection, identity, scope) -> actor.equals(identity) && key.equals(scope),
+                JdbcEntityListRemovalRoleGate.Role.REVIEWER);
+        try (Connection setup = fixture.source.getConnection();
+             var grant = setup.prepareStatement(
+                     "INSERT INTO entity_list_removal_role_grants "
+                             + "(project_id,user_id,role_name,is_active) "
+                             + "VALUES (?,?,?,TRUE)")) {
+            grant.setObject(1, PROJECT);
+            grant.setObject(2, actor);
+            grant.setString(3, "REVIEWER");
+            assertEquals(1, grant.executeUpdate());
+        }
+
+        // Simulate an approval transaction that has verified and locked the
+        // delegation row, but has not yet committed its review decision.
+        try (Connection approval = fixture.source.getConnection();
+             Connection revocation = fixture.source.getConnection()) {
+            approval.setAutoCommit(false);
+            revocation.setAutoCommit(false);
+            assertTrue(reviewer.mayInitialize(approval, actor, key));
+
+            // A concurrent writer must not revoke an already locked grant
+            // behind the approval transaction. PostgreSQL times out instead
+            // of letting a stale grant mutation overtake that transaction.
+            try (var timeout = revocation.createStatement()) {
+                timeout.execute("SET LOCAL lock_timeout = '250ms'");
+            }
+            try (var revoke = revocation.prepareStatement(
+                    "UPDATE entity_list_removal_role_grants "
+                            + "SET is_active=FALSE WHERE project_id=? "
+                            + "AND user_id=? AND role_name='REVIEWER'")) {
+                revoke.setObject(1, PROJECT);
+                revoke.setObject(2, actor);
+                SQLException blocked = assertThrows(SQLException.class, revoke::executeUpdate);
+                assertEquals("55P03", blocked.getSQLState());
+            }
+            revocation.rollback();
+            approval.commit();
+
+            // Once the guarded transaction is completed, revocation may
+            // commit. A fresh reviewer check MUST reject the revoked grant.
+            try (var revoke = revocation.prepareStatement(
+                    "UPDATE entity_list_removal_role_grants "
+                            + "SET is_active=FALSE WHERE project_id=? "
+                            + "AND user_id=? AND role_name='REVIEWER'")) {
+                revoke.setObject(1, PROJECT);
+                revoke.setObject(2, actor);
+                assertEquals(1, revoke.executeUpdate());
+            }
+            revocation.commit();
+        }
+        try (Connection fresh = fixture.source.getConnection()) {
+            fresh.setAutoCommit(false);
+            assertFalse(reviewer.mayInitialize(fresh, actor, key));
+            fresh.rollback();
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void committedExecutorRevocationWinsAgainstLaterValidation()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID actor = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var executor = new JdbcEntityListRemovalRoleGate(
+                (connection, identity, scope) -> actor.equals(identity) && key.equals(scope),
+                JdbcEntityListRemovalRoleGate.Role.EXECUTOR);
+        try (Connection revokeFirst = fixture.source.getConnection()) {
+            revokeFirst.setAutoCommit(false);
+            try (var grant = revokeFirst.prepareStatement(
+                    "INSERT INTO entity_list_removal_role_grants "
+                            + "(project_id,user_id,role_name,is_active) "
+                            + "VALUES (?,?,?,FALSE)")) {
+                grant.setObject(1, PROJECT);
+                grant.setObject(2, actor);
+                grant.setString(3, "EXECUTOR");
+                assertEquals(1, grant.executeUpdate());
+            }
+            revokeFirst.commit();
+        }
+        try (Connection late = fixture.source.getConnection()) {
+            late.setAutoCommit(false);
+            assertFalse(executor.mayInitialize(late, actor, key));
+            late.rollback();
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
 }
