@@ -35,9 +35,12 @@ public final class EntityListSnapshotLedgerCoordinator {
         Optional<Head> currentHead(Key key);
 
         /**
-         * Implementations must atomically compare the exact expected revision
-         * and evidence with their current committed head, then append the new
-         * immutable bytes/evidence. No auto-retries, silent overwrites or deletes.
+         * Implementations must independently enforce the project/form/list
+         * key against BOTH expected and proposed evidence, then atomically
+         * compare exact expected revision and digest with their committed head
+         * before appending immutable bytes/evidence. A mismatched scope or
+         * stale head must never write anything. No auto-retries, silent
+         * overwrites or deletes.
          */
         boolean compareAndAppend(Key key, Head expected, Head proposed);
     }
