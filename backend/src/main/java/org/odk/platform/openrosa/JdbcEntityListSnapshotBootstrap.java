@@ -24,6 +24,17 @@ public final class JdbcEntityListSnapshotBootstrap {
                               EntityListSnapshotLedgerCoordinator.Key key);
     }
 
+    /**
+     * Additional database-backed permission check on the SAME connection and
+     * transaction as history/head inserts. Implementations must lock the
+     * relevant membership/role rows and fail closed on revocation.
+     */
+    @FunctionalInterface
+    public interface TransactionAuthorization {
+        boolean mayInitialize(Connection connection, UUID authenticatedActorId,
+                              EntityListSnapshotLedgerCoordinator.Key key) throws SQLException;
+    }
+
     private final DataSource dataSource;
     private final Authorization authorization;
 
@@ -39,6 +50,29 @@ public final class JdbcEntityListSnapshotBootstrap {
     public Outcome initialize(UUID authenticatedActorId,
             EntityListSnapshotLedgerCoordinator.Key key,
             Map<String, Object> metadata, byte[] bytes, String recordedMd5, Long rowCount) {
+        return initializeInternal(authenticatedActorId, key, metadata, bytes,
+                recordedMd5, rowCount, null);
+    }
+
+    /**
+     * Opt-in stricter bootstrap. The callback runs inside the write
+     * transaction, after the existing authenticated-web-user gate.
+     * This is NOT active in production until a database-locking policy and
+     * immutable actor audit are independently qualified.
+     */
+    public Outcome initializeWithTransactionAuthorization(
+            UUID authenticatedActorId, EntityListSnapshotLedgerCoordinator.Key key,
+            Map<String, Object> metadata, byte[] bytes, String recordedMd5,
+            Long rowCount, TransactionAuthorization transactionalAuthorization) {
+        Objects.requireNonNull(transactionalAuthorization);
+        return initializeInternal(authenticatedActorId, key, metadata, bytes,
+                recordedMd5, rowCount, transactionalAuthorization);
+    }
+
+    private Outcome initializeInternal(UUID authenticatedActorId,
+            EntityListSnapshotLedgerCoordinator.Key key,
+            Map<String, Object> metadata, byte[] bytes, String recordedMd5, Long rowCount,
+            TransactionAuthorization transactionalAuthorization) {
         if (authenticatedActorId == null || key == null
                 || key.projectId() == null || key.formId() == null
                 || !EntityListManifestPreflight.validTypedFilename(key.filename())
@@ -58,6 +92,12 @@ public final class JdbcEntityListSnapshotBootstrap {
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
+                if (transactionalAuthorization != null
+                        && !transactionalAuthorization.mayInitialize(
+                                connection, authenticatedActorId, key)) {
+                    connection.rollback();
+                    return Outcome.DENIED;
+                }
                 String history = "INSERT INTO entity_list_snapshot_history "
                         + "(project_id,form_id,filename,revision,media_type,md5,sha256,row_count,payload) "
                         + "VALUES (?,?,?,?,?,?,?,?,?)";
