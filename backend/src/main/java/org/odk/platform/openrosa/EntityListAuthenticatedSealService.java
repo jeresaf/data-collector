@@ -60,11 +60,20 @@ public final class EntityListAuthenticatedSealService {
         if (!webAuthorization.mayInitialize(executor, review.key())) {
             return deny(reviewId, executor, JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED);
         }
-        boolean accepted = seal.validateAndSealAuthorized(
+        var outcome = seal.validateAndSealAuthorizedOutcome(
                 reviewId, executor, candidate, transactionAuthorization);
-        // Conservatively classify transaction-level failures. The low-level
-        // validator returns boolean, not exact failure reasons.
-        return accepted || deny(reviewId, executor,
-                JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED);
+        if (outcome == JdbcEntityListRemovalApprovalSeal.ValidationOutcome.SEALED) {
+            return true;
+        }
+        JdbcEntityListDenialEvidenceWriter.Reason reason = switch (outcome) {
+            case INVALID_STATE -> JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE;
+            case SELF_ACTION -> JdbcEntityListDenialEvidenceWriter.Reason.SELF_ACTION;
+            case EVIDENCE_MISMATCH -> JdbcEntityListDenialEvidenceWriter.Reason.EVIDENCE_MISMATCH;
+            case PERMISSION_DENIED -> JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED;
+            case STALE_HEAD -> JdbcEntityListDenialEvidenceWriter.Reason.STALE_HEAD;
+            case REPLAY -> JdbcEntityListDenialEvidenceWriter.Reason.REPLAY;
+            case SEALED -> throw new IllegalStateException("Successful seal cannot be denied");
+        };
+        return deny(reviewId, executor, reason);
     }
 }
