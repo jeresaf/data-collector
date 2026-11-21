@@ -143,3 +143,23 @@ CREATE TABLE entity_list_removal_validation_seals (
 CREATE TRIGGER entity_list_validation_seals_immutable
 BEFORE UPDATE OR DELETE ON entity_list_removal_validation_seals
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Immutable denial evidence is written on an independent transaction.
+-- Disposable candidate schema only; NOT a production migration.
+CREATE TABLE entity_list_denial_evidence (
+    id UUID PRIMARY KEY,
+    review_id UUID NOT NULL,
+    actor_id UUID,
+    operation VARCHAR(32) NOT NULL
+        CHECK (operation IN ('REVIEW_DECISION','APPROVAL_VALIDATION')),
+    reason VARCHAR(32) NOT NULL
+        CHECK (reason IN ('UNAUTHENTICATED','INACTIVE_ACCOUNT','SELF_ACTION',
+                         'INVALID_STATE','PERMISSION_DENIED','STALE_HEAD',
+                         'EVIDENCE_MISMATCH','REPLAY','UNAVAILABLE')),
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+-- split
+CREATE TRIGGER entity_list_denial_evidence_immutable
+BEFORE UPDATE OR DELETE ON entity_list_denial_evidence
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
