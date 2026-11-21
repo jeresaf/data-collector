@@ -53,6 +53,12 @@ Before publishing an `integrityUrl` or permitting any approved removal, establis
 
 Authoritative ledger and deletion workflow remain pending: immutable project/form/list-scoped snapshots, trusted atomic revision allocation, append-only review decisions with identifiable approver and separation of duties, rollback records, and client-side native ingestion tests. A valid review report must never be treated as consent to publish, remove cached entities, or issue deleted-state responses.
 
+## Inactive optimistic revision admission policy
+
+`EntityListSnapshotRevisionPolicy.assess(...)` performs a **pure policy evaluation**, not an append. Given already verified evidence for a trusted current head and proposed bytes, it distinguishes `UNCHANGED` (exact descriptor retry), `READY_FOR_LEDGER_APPEND` (consecutive revision with no observed removals), `REQUIRES_REMOVAL_APPROVAL` (any missing IDs) and `CONFLICT_OR_UNTRUSTED` (stale/skipped revisions, scope/type mismatch, altered bytes or version rollback). It detects `Long.MAX_VALUE` revision exhaustion and does not expose an approval bypass. These statuses are *not* permissions to publish.
+
+This is **not yet server-controlled revision assignment**. The head and proposed revision are supplied to the policy by its caller, and no database transaction, compare-and-swap lock, unique key, immutable byte archive or approval ledger currently calls or backs it. Production implementation must obtain the current head under an authorized project/list-scoped transaction, assign exactly `head.revision + 1` within that transaction, use a uniqueness constraint on (project, form, list, revision), persist original immutable bytes and chained digests, and reserve publication until an independently approved removal decision exists. Never trust a revision or authority supplied by an uploader.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
