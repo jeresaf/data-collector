@@ -31,7 +31,7 @@ This is a source review; it is not evidence of an Android instrumented or device
 
 ## Inactive deletion-diff review helper
 
-`EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(...)` compares the canonical entity identifiers in two **separately MD5-verified, structurally valid** CSV snapshots of the same explicit type. It returns an optional set of IDs missing from the newer snapshot. If either digest is wrong, either CSV invalid, or the types differ, comparison fails closed. The method is **not wired into the manifest, download route, reference update lifecycle, deletion approval, or any production action**.
+`EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(...)` compares the canonical entity identifiers in two **separately MD5-verified, structurally valid** CSV snapshots of the same explicit type **and exact canonical filename**. It also refuses transitions that regress the version of an entity retained in both snapshots. It returns an optional set of IDs missing from the newer snapshot. If either digest is wrong, either CSV invalid, or the types differ, comparison fails closed. The method is **not wired into the manifest, download route, reference update lifecycle, deletion approval, or any production action**.
 
 This helper supports a future removal approval report; it cannot establish trusted historical snapshots, prove the client's currently cached inventory, interpret server tombstones, or make omitted IDs safe to delete. Until those controls and native importer behavior are qualified, an omission must not be interpreted as authority to delete a household or administrative entity.
 
