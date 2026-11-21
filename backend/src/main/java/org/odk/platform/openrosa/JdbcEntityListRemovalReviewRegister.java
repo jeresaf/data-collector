@@ -85,19 +85,40 @@ public final class JdbcEntityListRemovalReviewRegister {
      * still be reverified and reauthorized at a separate future commit gate.
      */
     public boolean decide(UUID id, UUID reviewer, Decision decision) {
+        // Unsafe legacy entry point cannot authorize a decision with only a
+        // caller-supplied UUID. Retained for binary/API compatibility.
+        return false;
+    }
+
+    /**
+     * Strict opt-in path: verify current reviewer authority inside the same
+     * transaction holding the review row lock, before the terminal decision.
+     * The caller must bind reviewer to the current server principal.
+     */
+    public boolean decideAuthorized(UUID id, UUID reviewer, Decision decision,
+            JdbcEntityListSnapshotBootstrap.TransactionAuthorization authorization) {
+        Objects.requireNonNull(authorization);
         if (id == null || reviewer == null || decision == null) {
             return false;
         }
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
-                String read = "SELECT requested_by,state FROM entity_list_removal_reviews "
-                        + "WHERE id=? FOR UPDATE";
+                String read = "SELECT requested_by,state,project_id,form_id,filename "
+                        + "FROM entity_list_removal_reviews WHERE id=? FOR UPDATE";
                 try (PreparedStatement query = connection.prepareStatement(read)) {
                     query.setObject(1, id);
                     try (ResultSet row = query.executeQuery()) {
                         if (!row.next() || !"PENDING".equals(row.getString("state"))
                                 || reviewer.equals(row.getObject("requested_by", UUID.class))) {
+                            connection.rollback();
+                            return false;
+                        }
+                        var key = new EntityListSnapshotLedgerCoordinator.Key(
+                                row.getObject("project_id", UUID.class),
+                                row.getObject("form_id", UUID.class),
+                                row.getString("filename"));
+                        if (!authorization.mayInitialize(connection, reviewer, key)) {
                             connection.rollback();
                             return false;
                         }
