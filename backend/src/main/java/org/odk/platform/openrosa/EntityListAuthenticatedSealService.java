@@ -8,7 +8,7 @@ import java.util.UUID;
 public final class EntityListAuthenticatedSealService {
     private final CurrentUserService currentUserService;
     private final EntityListSnapshotWebAuthorization webAuthorization;
-    private final JdbcEntityListSnapshotPermissionGate transactionAuthorization;
+    private final JdbcEntityListRemovalRoleGate transactionAuthorization;
     private final JdbcEntityListRemovalReviewRegister register;
     private final JdbcEntityListRemovalApprovalSeal seal;
     private final JdbcEntityListDenialEvidenceWriter denials;
@@ -16,13 +16,16 @@ public final class EntityListAuthenticatedSealService {
     public EntityListAuthenticatedSealService(
             CurrentUserService currentUserService,
             EntityListSnapshotWebAuthorization webAuthorization,
-            JdbcEntityListSnapshotPermissionGate transactionAuthorization,
+            JdbcEntityListRemovalRoleGate transactionAuthorization,
             JdbcEntityListRemovalReviewRegister register,
             JdbcEntityListRemovalApprovalSeal seal,
             JdbcEntityListDenialEvidenceWriter denials) {
         this.currentUserService = Objects.requireNonNull(currentUserService);
         this.webAuthorization = Objects.requireNonNull(webAuthorization);
         this.transactionAuthorization = Objects.requireNonNull(transactionAuthorization);
+        if (transactionAuthorization.role() != JdbcEntityListRemovalRoleGate.Role.EXECUTOR) {
+            throw new IllegalArgumentException("Incorrect removal delegation role for service");
+        }
         this.register = Objects.requireNonNull(register);
         this.seal = Objects.requireNonNull(seal);
         this.denials = Objects.requireNonNull(denials);
