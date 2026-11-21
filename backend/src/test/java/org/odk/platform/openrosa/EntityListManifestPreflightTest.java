@@ -216,7 +216,7 @@ class EntityListManifestPreflightTest {
         assertEquals(Optional.of(java.util.Set.of()),
                 EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
                         "households.csv", entityList, next, nextHash,
-                        "households.csv", entityList, previous, previousHash));
+                        "households.csv", entityList, next, nextHash));
     }
 
     @Test
