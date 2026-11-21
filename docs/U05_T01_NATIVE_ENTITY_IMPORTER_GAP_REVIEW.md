@@ -123,6 +123,12 @@ This callback is **not itself a wired authentication system**. No live Spring Se
 
 A disposable PostgreSQL test creates a **minimal table-shaped fixture using those application table names** and verifies denied membership/role revocations, inactive form/user, valid manager initialization, foreign-project form denial, inactive project and autocommit refusal. It does **not** yet run the new gate against the complete, seeded production Flyway schema and does not bind the actual request principal to this transaction. Owner/creator writes or role/membership revocations must obey a documented common lock order; immutable actor audit and signed approval are absent. The component is not registered as a bean, endpoint or deployed permission service.
 
+## Full Flyway-schema authorization integration — pending exact-head CI
+
+`PostgreSqlContainerMigrationIT.snapshotAuthorizationUsesFullMigratedProjectAndRoleTables` now exercises the opt-in `JdbcEntityListSnapshotPermissionGate` **inside the PostgreSQL Testcontainer where the actual production Flyway migrations and seed data run**. It creates an uncommitted test owner, project, form, user and manager membership against the actual schema, verifies owner/manager acceptance and foreign-project denial, then soft-revokes membership and the form and checks denial. All test fixture writes are rolled back on the same connection. This closes the earlier gap between simplified table-shaped tests and migrated schema compatibility.
+
+This test does **not** install the Entity List ledger schema, activate the bootstrap, add an HTTP endpoint, prove cross-connection revocation races, or record immutable actor audit evidence. Actual request identity, lock-order enforcement across all revocation writers, approved production migration and deletion/tombstone decisions remain blocked.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
