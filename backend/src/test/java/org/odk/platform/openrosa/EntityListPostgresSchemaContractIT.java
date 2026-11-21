@@ -1285,4 +1285,73 @@ class EntityListPostgresSchemaContractIT {
                 facade.validateApprovedReview(UUID.randomUUID(), null));
     }
 
+    @Test
+    void missingReviewIdIsAuditedByBothFacadesWithoutFabricatingIdentity()
+            throws Exception {
+        var fixture = new Fixture();
+        var writer = new JdbcEntityListDenialEvidenceWriter(fixture.source);
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
+        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var register = new JdbcEntityListRemovalReviewRegister(fixture.source);
+        var reviewer = new EntityListAuthenticatedReviewService(
+                identity, policy, gate, register, writer);
+        var executor = new EntityListAuthenticatedSealService(
+                identity, policy, gate, register,
+                new JdbcEntityListRemovalApprovalSeal(fixture.source), writer);
+
+        assertFalse(reviewer.decide(
+                null, JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+        assertFalse(executor.validateApprovedReview(null, null));
+        try (Connection c = fixture.source.getConnection();
+             var q = c.prepareStatement(
+                     "SELECT id, review_id, actor_id, operation, reason "
+                             + "FROM entity_list_denial_evidence "
+                             + "WHERE review_id IS NULL ORDER BY operation")) {
+            try (var rows = q.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals("APPROVAL_VALIDATION", rows.getString("operation"));
+                assertEquals("INVALID_STATE", rows.getString("reason"));
+                assertTrue(rows.getObject("id", UUID.class) != null);
+                assertEquals(null, rows.getObject("review_id"));
+                assertEquals(null, rows.getObject("actor_id"));
+                assertTrue(rows.next());
+                assertEquals("REVIEW_DECISION", rows.getString("operation"));
+                assertEquals("INVALID_STATE", rows.getString("reason"));
+                assertTrue(rows.getObject("id", UUID.class) != null);
+                assertEquals(null, rows.getObject("review_id"));
+                assertEquals(null, rows.getObject("actor_id"));
+                assertFalse(rows.next());
+            }
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void missingReviewIdFailsVisiblyWhenRequiredAuditIsUnavailable()
+            throws Exception {
+        var fixture = new Fixture();
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
+        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var register = new JdbcEntityListRemovalReviewRegister(fixture.source);
+        var writer = new JdbcEntityListDenialEvidenceWriter(fixture.source);
+        var reviewer = new EntityListAuthenticatedReviewService(
+                identity, policy, gate, register, writer);
+        var executor = new EntityListAuthenticatedSealService(
+                identity, policy, gate, register,
+                new JdbcEntityListRemovalApprovalSeal(fixture.source), writer);
+        try (Connection c = fixture.source.getConnection();
+             var ddl = c.createStatement()) {
+            ddl.execute("DROP TABLE entity_list_denial_evidence");
+        }
+        assertThrows(IllegalStateException.class, () ->
+                reviewer.decide(null,
+                        JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+        assertThrows(IllegalStateException.class, () ->
+                executor.validateApprovedReview(null, null));
+    }
+
 }
