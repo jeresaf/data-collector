@@ -538,4 +538,69 @@ class EntityListPostgresSchemaContractIT {
         }
     }
 
+    @Test
+    void auditedRevisionAppendCreatesOneImmutableActorEventAndRejectsStaleWrites() throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var store = new JdbcEntityListSnapshotStore(fixture.source);
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        var first = store.currentHead(key).orElseThrow();
+        var secondEvidence = fixture.snapshot(2L, SECOND);
+        var second = new EntityListSnapshotLedgerCoordinator.Head(secondEvidence, SECOND);
+        var audit = new JdbcEntityListSnapshotAuditWriter();
+        var allowed = (JdbcEntityListSnapshotBootstrap.TransactionAuthorization)
+                (connection, identity, requestedKey) ->
+                        actor.equals(identity) && key.equals(requestedKey);
+
+        assertFalse(store.compareAndAppendAudited(key, first, second, actor,
+                (connection, identity, requestedKey) -> false, audit));
+        assertEquals(1, fixture.historyCount());
+        assertTrue(store.compareAndAppendAudited(key, first, second, actor, allowed, audit));
+        assertFalse(store.compareAndAppendAudited(key, first, second, actor, allowed, audit));
+        assertEquals(2, fixture.historyCount());
+        assertEquals(2L, store.currentHead(key).orElseThrow().evidence().revision());
+
+        try (Connection connection = fixture.source.getConnection();
+             var query = connection.prepareStatement(
+                     "SELECT actor_id,revision,sha256,event_type FROM entity_list_snapshot_audit");
+             var rows = query.executeQuery()) {
+            assertTrue(rows.next());
+            assertEquals(actor, rows.getObject("actor_id", UUID.class));
+            assertEquals(2L, rows.getLong("revision"));
+            assertEquals(secondEvidence.sha256(), rows.getString("sha256"));
+            assertEquals("APPENDED", rows.getString("event_type"));
+            assertFalse(rows.next());
+        }
+        try (Connection connection = fixture.source.getConnection();
+             var statement = connection.createStatement()) {
+            assertThrows(SQLException.class, () ->
+                    statement.executeUpdate("DELETE FROM entity_list_snapshot_audit"));
+        }
+    }
+
+    @Test
+    void failedAppendAuditRollsBackRevisionHistoryAndHead() throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var store = new JdbcEntityListSnapshotStore(fixture.source);
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var first = store.currentHead(key).orElseThrow();
+        var second = new EntityListSnapshotLedgerCoordinator.Head(
+                fixture.snapshot(2L, SECOND), SECOND);
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        try (Connection connection = fixture.source.getConnection();
+             var statement = connection.createStatement()) {
+            statement.execute("DROP TABLE entity_list_snapshot_audit");
+        }
+        assertThrows(IllegalStateException.class, () ->
+                store.compareAndAppendAudited(key, first, second, actor,
+                        (connection, identity, requestedKey) -> true,
+                        new JdbcEntityListSnapshotAuditWriter()));
+        assertEquals(1, fixture.historyCount());
+        var unchanged = store.currentHead(key).orElseThrow();
+        assertEquals(1L, unchanged.evidence().revision());
+        assertTrue(Arrays.equals(ORIGINAL, unchanged.bytes()));
+    }
+
 }
