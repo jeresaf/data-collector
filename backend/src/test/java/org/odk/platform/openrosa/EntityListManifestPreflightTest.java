@@ -154,4 +154,20 @@ class EntityListManifestPreflightTest {
                 declaration, malformed, malformedHash).isEmpty());
     }
 
+    @Test
+    void typedFilenameMustHaveOneUnambiguousNativeListIdentity() {
+        for (String accepted : new String[] { "households.csv", "admin_units.csv", "phase-2.csv", "A1.csv" }) {
+            assertTrue(EntityListManifestPreflight.validTypedFilename(accepted), accepted);
+        }
+        for (String rejected : new String[] {
+                "households.CSV", "households.csv.backup.csv", "households.csv.csv",
+                ".csv", "../households.csv", "with space.csv", "households.xml",
+                "households.csv/../other.csv", "households.v2.csv"
+        }) {
+            assertFalse(EntityListManifestPreflight.validTypedFilename(rejected), rejected);
+        }
+        assertFalse(EntityListManifestPreflight.validTypedFilename(null));
+        assertFalse(EntityListManifestPreflight.validTypedFilename("a".repeat(253) + ".csv"));
+    }
+
 }
