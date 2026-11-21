@@ -2,6 +2,11 @@ package org.odk.platform.db;
 
 import org.junit.jupiter.api.Test;
 import org.odk.platform.repository.SubmissionRepository;
+import org.odk.platform.openrosa.JdbcEntityListSnapshotPermissionGate;
+import org.odk.platform.openrosa.EntityListSnapshotLedgerCoordinator;
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -72,6 +77,9 @@ class PostgreSqlContainerMigrationIT {
 
     @Autowired
     SubmissionRepository submissionRepository;
+
+    @Autowired
+    DataSource dataSource;
 
     @Test
     void productionFlywayChainBuildsCurrentSchemaOnRealPostgreSql() {
@@ -194,6 +202,112 @@ class PostgreSqlContainerMigrationIT {
         assertThat(systemAdminMemberships)
                 .as("the seeded admin must receive SYSTEM_ADMIN")
                 .isEqualTo(1);
+    }
+
+
+    @Test
+    void snapshotAuthorizationUsesFullMigratedProjectAndRoleTables() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        UUID formId = UUID.randomUUID();
+        UUID managerId = UUID.randomUUID();
+        UUID foreignProject = UUID.randomUUID();
+        UUID roleId = UUID.randomUUID();
+        String unique = UUID.randomUUID().toString().replace("-", "");
+        var gate = new JdbcEntityListSnapshotPermissionGate();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(projectId, formId, "households.csv");
+
+        // The entire production Flyway chain has already run in this container.
+        // The test uses one uncommitted transaction and rolls back all fixtures.
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                UUID owner;
+                try (var query = connection.prepareStatement(
+                        "SELECT id FROM users WHERE username='admin' AND is_active=TRUE");
+                     var rows = query.executeQuery()) {
+                    org.junit.jupiter.api.Assertions.assertTrue(rows.next());
+                    owner = rows.getObject(1, UUID.class);
+                }
+                try (var create = connection.prepareStatement(
+                        "INSERT INTO users (id,username,email,password_hash) VALUES (?,?,?,?)")) {
+                    create.setObject(1, managerId);
+                    create.setString(2, "snapshot_manager_" + unique);
+                    create.setString(3, unique + "@test.invalid");
+                    create.setString(4, "test-only");
+                    create.executeUpdate();
+                }
+                try (var create = connection.prepareStatement(
+                        "INSERT INTO projects (id,name,owner_id,created_by_id) VALUES (?,?,?,?)")) {
+                    create.setObject(1, projectId);
+                    create.setString(2, "Snapshot authorization migration gate");
+                    create.setObject(3, owner);
+                    create.setObject(4, owner);
+                    create.executeUpdate();
+                    create.setObject(1, foreignProject);
+                    create.setString(2, "Snapshot foreign project");
+                    create.executeUpdate();
+                }
+                try (var create = connection.prepareStatement(
+                        "INSERT INTO xforms (id,title,project_id,created_by_id) VALUES (?,?,?,?)")) {
+                    create.setObject(1, formId);
+                    create.setString(2, "Snapshot validation form");
+                    create.setObject(3, projectId);
+                    create.setObject(4, owner);
+                    create.executeUpdate();
+                }
+                // Real project-manager role may already be seeded. Use a
+                // distinct project-specific role only if the global name is absent.
+                try (var query = connection.prepareStatement(
+                        "SELECT id FROM roles WHERE name='PROJECT_MANAGER'");
+                     var rows = query.executeQuery()) {
+                    if (rows.next()) {
+                        roleId = rows.getObject(1, UUID.class);
+                    } else {
+                        try (var create = connection.prepareStatement(
+                                "INSERT INTO roles(id,name) VALUES (?, 'PROJECT_MANAGER')")) {
+                            create.setObject(1, roleId);
+                            create.executeUpdate();
+                        }
+                    }
+                }
+                try (var create = connection.prepareStatement(
+                        "INSERT INTO project_members (id,project_id,user_id,role_id) VALUES (?,?,?,?)")) {
+                    create.setObject(1, UUID.randomUUID());
+                    create.setObject(2, projectId);
+                    create.setObject(3, managerId);
+                    create.setObject(4, roleId);
+                    create.executeUpdate();
+                }
+
+                org.junit.jupiter.api.Assertions.assertTrue(
+                        gate.mayInitialize(connection, owner, key));
+                org.junit.jupiter.api.Assertions.assertTrue(
+                        gate.mayInitialize(connection, managerId, key));
+                org.junit.jupiter.api.Assertions.assertFalse(
+                        gate.mayInitialize(connection, managerId,
+                                new EntityListSnapshotLedgerCoordinator.Key(
+                                        foreignProject, formId, "households.csv")));
+
+                try (var update = connection.prepareStatement(
+                        "UPDATE project_members SET is_active=FALSE "
+                                + "WHERE project_id=? AND user_id=?")) {
+                    update.setObject(1, projectId);
+                    update.setObject(2, managerId);
+                    update.executeUpdate();
+                }
+                org.junit.jupiter.api.Assertions.assertFalse(
+                        gate.mayInitialize(connection, managerId, key));
+                try (var update = connection.prepareStatement(
+                        "UPDATE xforms SET is_active=FALSE WHERE id=?")) {
+                    update.setObject(1, formId);
+                    update.executeUpdate();
+                }
+                org.junit.jupiter.api.Assertions.assertFalse(
+                        gate.mayInitialize(connection, owner, key));
+            } finally {
+                connection.rollback();
+            }
+        }
     }
 
     private void assertTableExists(String tableName) {
