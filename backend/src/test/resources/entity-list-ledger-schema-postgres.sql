@@ -62,3 +62,63 @@ CREATE TABLE entity_list_snapshot_audit (
 CREATE TRIGGER entity_list_audit_immutable
 BEFORE UPDATE OR DELETE ON entity_list_snapshot_audit
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Disposable review register; not a production Flyway migration.
+CREATE TABLE entity_list_removal_reviews (
+    id UUID PRIMARY KEY,
+    requested_by UUID NOT NULL,
+    project_id UUID NOT NULL,
+    form_id UUID NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    expected_revision BIGINT NOT NULL CHECK (expected_revision > 0),
+    expected_sha256 VARCHAR(64) NOT NULL CHECK (expected_sha256 ~ '^[0-9a-f]{64}$'),
+    candidate_revision BIGINT NOT NULL CHECK (candidate_revision = expected_revision + 1),
+    candidate_sha256 VARCHAR(64) NOT NULL CHECK (candidate_sha256 ~ '^[0-9a-f]{64}$'),
+    missing_ids TEXT NOT NULL CHECK (length(missing_ids) > 0),
+    justification VARCHAR(2000) NOT NULL CHECK (length(btrim(justification)) > 0),
+    state VARCHAR(16) NOT NULL CHECK (state IN ('PENDING','APPROVED','REJECTED')),
+    reviewed_by UUID,
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (
+        (state='PENDING' AND reviewed_by IS NULL AND reviewed_at IS NULL)
+        OR (state IN ('APPROVED','REJECTED') AND reviewed_by IS NOT NULL
+            AND reviewed_by <> requested_by AND reviewed_at IS NOT NULL)
+    ),
+    FOREIGN KEY (project_id, form_id, filename, expected_revision, expected_sha256)
+        REFERENCES entity_list_snapshot_history(project_id, form_id, filename, revision, sha256)
+);
+-- split
+CREATE FUNCTION prevent_entity_list_review_evidence_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.requested_by IS DISTINCT FROM NEW.requested_by
+       OR OLD.project_id IS DISTINCT FROM NEW.project_id
+       OR OLD.form_id IS DISTINCT FROM NEW.form_id
+       OR OLD.filename IS DISTINCT FROM NEW.filename
+       OR OLD.expected_revision IS DISTINCT FROM NEW.expected_revision
+       OR OLD.expected_sha256 IS DISTINCT FROM NEW.expected_sha256
+       OR OLD.candidate_revision IS DISTINCT FROM NEW.candidate_revision
+       OR OLD.candidate_sha256 IS DISTINCT FROM NEW.candidate_sha256
+       OR OLD.missing_ids IS DISTINCT FROM NEW.missing_ids
+       OR OLD.justification IS DISTINCT FROM NEW.justification
+       OR OLD.created_at IS DISTINCT FROM NEW.created_at
+       OR OLD.state <> 'PENDING'
+       OR NEW.state NOT IN ('APPROVED','REJECTED')
+       OR NEW.reviewed_by IS NULL
+       OR NEW.reviewed_by = OLD.requested_by
+       OR NEW.reviewed_at IS NULL THEN
+        RAISE EXCEPTION 'Removal review evidence is immutable and decision is final';
+    END IF;
+    RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+-- split
+CREATE TRIGGER entity_list_review_evidence_immutable
+BEFORE UPDATE ON entity_list_removal_reviews
+FOR EACH ROW EXECUTE FUNCTION prevent_entity_list_review_evidence_mutation();
+-- split
+CREATE TRIGGER entity_list_review_no_delete
+BEFORE DELETE ON entity_list_removal_reviews
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
