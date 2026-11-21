@@ -81,6 +81,12 @@ This is a **test-only** SQL fixture, not a production repository, Flyway migrati
 
 The disposable PostgreSQL ledger contract now exercises a **history INSERT unique-key failure after a conditional head UPDATE**. The SQL adapter must roll back the complete transaction; the test checks that the head still points at the original revision and original bytes remain readable. This tests one real database failure mode, not power-loss durability or a crash between an external object-store write and SQL commit. No live tables, migration, deletion approval, or application endpoint is introduced.
 
+## PostgreSQL scoped-CAS isolation qualification (pending CI)
+
+The disposable PostgreSQL `Store` fixture now refuses a conditional append if the supplied `Key`, expected snapshot, and proposed snapshot disagree on **project ID, form ID or canonical filename**, or if the proposed revision is not exactly one beyond the expected revision. A negative test attempts forged cross-project, cross-form, cross-list and foreign-key appends, and checks that the original head and history remain unchanged. The production `Store` port documentation mandates independently enforcing this boundary, rather than relying on the coordinator alone.
+
+This is a test-side adapter, not an authorization system. Real user/project permissions, project reassignment, secure bootstrap, immutable evidence history and a production PostgreSQL implementation remain open. A successful test does not authorize downloads or removals.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
