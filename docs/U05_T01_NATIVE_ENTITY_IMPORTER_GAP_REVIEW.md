@@ -153,6 +153,12 @@ The concrete `JdbcEntityListSnapshotStore.compareAndAppend(...)` now **always re
 
 Disposable PostgreSQL tests were adjusted to require the audited method for legitimate revision writes, and explicitly verify the concrete plain method leaves the original head untouched. The separately constructed authorization/audit callbacks still need trusted production wiring and real role revocation race checks. This is not a production service or migration.
 
+## Cross-connection permission revocation race — CI qualification pending
+
+`EntityListPostgresRevocationRaceIT` adds two deterministic concurrency tests against **separate connections** to a disposable PostgreSQL database with actual-named project, user, form, role and membership tables plus the isolated test-only snapshot/audit schema. The first opens a revocation transaction, updates and locks the active membership row, starts an audited publisher on another connection, observes its PostgreSQL lock wait, then commits revocation; the publisher must deny without a revision or append audit. The second holds the membership lock during an authorized audited append; a revocation UPDATE on another connection must block until publication commits and can then revoke, preserving an exact audit trail. Both explicitly use `pg_stat_activity.wait_event_type = 'Lock'`, bounded timeouts, and cleanup.
+
+**Scope limit:** the revocation writer is test-controlled SQL against minimal real-named tables, **not** application-level revocation service integration. The fixture is not the full production Flyway schema; those are independently tested by `PostgreSqlContainerMigrationIT`. These experiments establish lock behavior when revocation uses UPDATE on the same row but cannot prove every revocation/role reassignment path follows the lock protocol. No production migration, endpoint or mobile deletion behavior is active.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
