@@ -99,6 +99,12 @@ A **non-migrating** schema candidate now lives at `backend/src/test/resources/en
 
 The trigger protects against ordinary SQL writes in that database role; it does **not** prove protection from a superuser, deliberate DDL, backup loss, external object-storage failure, or compromise of the trusted administrative process. It is not an installed Flyway migration and does not establish signed approval, database role separation, startup/upgrade compatibility, recovery, or safe production activation.
 
+## Opt-in first-snapshot initialization — pending CI
+
+`JdbcEntityListSnapshotBootstrap` is a **non-registered**, explicitly constructed initialization component. It requires a caller-supplied authenticated actor ID and an authorization callback that must confirm permission for the exact project/form/canonical list key. It rejects invalid CSV, incorrect recorded MD5 or declared row count; assigns revision **1** itself, rather than trusting a client revision; and inserts immutable history and the corresponding head in one SQL transaction. PostgreSQL uniqueness conflicts are reported as `ALREADY_INITIALIZED` after rollback, without rewriting history. Disposable PostgreSQL tests cover denied actors, invalid evidence, a single authorized first write, repeated initialization, and multiple racing initializers.
+
+This callback is **not itself a wired authentication system**. No live Spring Security identity lookup, tenant roles, project/form assignment revocation, tamper-evident actor audit, approval authority or deployment migration exists yet; the application never instantiates this class. Before production wiring, resolve the trusted principal from server context, use a centrally enforced project-scoped authorization service, record actor/reason/decision in immutable history, and validate privilege revocation inside the transactional boundary.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
