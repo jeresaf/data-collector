@@ -273,6 +273,12 @@ The inactive `EntityListRemovalGrantAdministration` service models an explicit g
 
 **Not production ready:** The grant-administrator registry is **preprovisioned only in disposable tests**: there is no approved bootstrap/provisioning or rotation/revocation authority, no secure operator interface, no production migration, and no proof of actual end-to-end HTTP sessions or external administrator workflows. This prototype intentionally does not provision administrator identities, publish Entity removals, update Android data or create tombstones. Formal real-user role issuance policy and concurrent administration tests remain release gates.
 
+## Concurrent grant administration and administrator revocation — exact-head CI pending
+
+New disposable PostgreSQL regressions exercise **two distinct grant administrators** racing to issue the **same** project-scoped `REVIEWER` delegation: the unique grant key and conditional insert must admit exactly one successful transition and **one immutable `GRANT` audit event**, with the competing no-op rejected. A second regression holds the active **grant-administrator row** `FOR UPDATE` (the same lock used by the inactive administration component), verifies a concurrent revocation fails with PostgreSQL `55P03` under a bounded lock timeout, then commits revocation and confirms a later grant attempt is rejected and leaves the role/audit ledger unchanged.
+
+These tests establish the row-locking and uniqueness contract for the **test-only** grant administration prototype; they do **not** provision administrators in production or approve an endpoint for doing so. In particular, the administrator revocation is simulated through test SQL rather than an authorized, audited production revocation writer. Before any activation, separate governance must define who can bootstrap, rotate, recover or revoke administrator privileges, and must ensure that administrative revocations themselves are independently authorized and durably audited. The existing publication/deletion and offline Android gates remain blocked.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
