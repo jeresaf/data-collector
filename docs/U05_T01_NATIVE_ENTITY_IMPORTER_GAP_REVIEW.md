@@ -111,6 +111,12 @@ This callback is **not itself a wired authentication system**. No live Spring Se
 
 **Not active:** This adapter has no `@Service`, no injected live bootstrap or new route. The caller-supplied actor still needs binding to trusted request context. The `canManageProjectForms` service is checked before opening a separate JDBC transaction, so a privilege change between check and commit is not yet prevented. A production bootstrap must revalidate under one authorized transaction/lock, capture an immutable actor decision and verify actual user/project role scope before activation.
 
+## Optional same-transaction bootstrap permission gate
+
+`JdbcEntityListSnapshotBootstrap.initializeWithTransactionAuthorization(...)` introduces an explicit opt-in callback that receives the **same JDBC connection and transaction** used to append the first historical snapshot and head. It runs after the existing web-user authorization preflight and before either insert; a rejected permission returns `DENIED` with no snapshot mutation, while an authorization SQL failure rolls the transaction back. A disposable PostgreSQL test demonstrates a permission revoked before the write and a locked `SELECT ... FOR UPDATE` recheck; another simulates a failing authorization query.
+
+**Important remaining limitations:** the test permission table is synthetic, not the actual `projects`, `users`, `project_members`, `roles` and `xforms` permission graph. The default `initialize(...)` remains an inactive legacy preflight-only path. Nothing is wired to an HTTP endpoint. Production must make the transactional gate mandatory, derive actor identity from the actual security context, lock every relevant row (including revocation writers), and retain actor/decision audit in the same transaction. Merely adding a callback does not by itself prevent every revocation race.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
