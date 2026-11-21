@@ -1004,7 +1004,9 @@ class EntityListPostgresSchemaContractIT {
         assertFalse(sealing.validateAndSealAuthorized(reviewId, executor, forged, authorized));
 
         assertTrue(sealing.validateAndSealAuthorized(reviewId, executor, candidate, authorized));
-        assertFalse(sealing.validateAndSealAuthorized(reviewId, executor, candidate, authorized));
+        assertEquals(JdbcEntityListRemovalApprovalSeal.ValidationOutcome.REPLAY,
+                sealing.validateAndSealAuthorizedOutcome(
+                        reviewId, executor, candidate, authorized));
         try (Connection c = fixture.source.getConnection();
              var q = c.createStatement();
              var rows = q.executeQuery(
@@ -1054,8 +1056,10 @@ class EntityListPostgresSchemaContractIT {
                 (connection, actor, scope) -> true,
                 new JdbcEntityListSnapshotAuditWriter()));
         var sealing = new JdbcEntityListRemovalApprovalSeal(fixture.source);
-        assertFalse(sealing.validateAndSealAuthorized(reviewId, executor, candidate,
-                (connection, actor, scope) -> true));
+        assertEquals(JdbcEntityListRemovalApprovalSeal.ValidationOutcome.STALE_HEAD,
+                sealing.validateAndSealAuthorizedOutcome(
+                        reviewId, executor, candidate,
+                        (connection, actor, scope) -> true));
         assertEquals(2L, store.currentHead(key).orElseThrow().evidence().revision());
         try (Connection c = fixture.source.getConnection();
              var q = c.createStatement();
@@ -1137,6 +1141,16 @@ class EntityListPostgresSchemaContractIT {
             try (var rows = statement.executeQuery()) {
                 assertTrue(rows.next());
                 assertEquals(6L, rows.getLong(1));
+            }
+        }
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.prepareStatement(
+                     "SELECT COUNT(*) FROM entity_list_denial_evidence "
+                             + "WHERE review_id=? AND reason='REPLAY'")) {
+            statement.setObject(1, reviewId);
+            try (var rows = statement.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals(1L, rows.getLong(1));
             }
         }
     }
