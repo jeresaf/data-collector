@@ -922,6 +922,34 @@ class OpenRosaBasicAuthIntegrationTest {
             mockMvc.perform(get(downloadUrl).accept(MediaType.TEXT_XML))
                     .andExpect(status().isUnauthorized());
 
+            // Credentials assigned only in the fixture project cannot fetch the
+            // same form/media URL using an unrelated project UUID.
+            UUID unrelatedProjectId = UUID.fromString(
+                    "ffffffff-ffff-ffff-ffff-fffffffffff0");
+            mockMvc.perform(get("/v1/projects/{projectId}/forms/{formId}/manifest",
+                            unrelatedProjectId, TEST_FORM_XMLNS)
+                            .header("Authorization", validCredentials))
+                    .andExpect(status().is4xxClientError());
+            mockMvc.perform(get("/v1/projects/{projectId}/forms/{formId}/attachments/{file}",
+                            unrelatedProjectId, TEST_FORM_XMLNS, "households.csv")
+                            .header("Authorization", validCredentials))
+                    .andExpect(status().is4xxClientError());
+
+            // A stored-file mutation after a successful manifest must not be
+            // served under the previous MD5. Restoration keeps revocation checks
+            // below independent from the content-integrity rejection.
+            byte[] changed = ("name,label,__version\n"
+                    + "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad,Changed,2\n")
+                    .getBytes(StandardCharsets.UTF_8);
+            storage.store(new ByteArrayInputStream(changed), storagePath, "local");
+            mockMvc.perform(get(manifestUrl).header("Authorization", validCredentials))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.not(
+                            containsString("type=\"entityList\""))));
+            mockMvc.perform(get(downloadUrl).header("Authorization", validCredentials))
+                    .andExpect(status().isNotFound());
+            storage.store(new ByteArrayInputStream(csv), storagePath, "local");
+
             UUID mobileId = jdbcTemplate.queryForObject(
                     "SELECT id FROM app_users WHERE username = ?",
                     (rs, rowNum) -> rs.getObject("id", UUID.class), "appuser");
