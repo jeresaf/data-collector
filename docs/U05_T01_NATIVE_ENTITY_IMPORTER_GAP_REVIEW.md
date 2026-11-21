@@ -243,6 +243,12 @@ The inactive `JdbcEntityListRemovalReviewRegister.decideAuthorizedOutcome` now r
 
 **Scope remains deliberately narrow:** missing review-ID correlation, unexpected exception-path security audit, dedicated reviewer/executor delegation policy and production HTTP/DB integrations are unresolved. The review register is still unregistered and cannot publish, tombstone or delete Entity List data.
 
+## Missing review-ID denial correlation — latest CI pending
+
+The disposable `entity_list_denial_evidence` schema now permits **null `review_id`**, specifically for malformed requests with no trusted review identifier. Its independently generated `id` UUID remains the durable event correlation key. The unregistered `JdbcEntityListDenialEvidenceWriter` does not synthesize a review or actor identity. Both inactive authenticated facades now route null-review-ID invocations through mandatory denial journaling with `INVALID_STATE`, instead of silently returning without audit. PostgreSQL regressions assert two immutable events from these facades, separate operation names, null review/actor IDs, unique event IDs, unchanged snapshot history and explicit failure when the required audit table is unavailable.
+
+This is **test-only schema behavior**, not an applied Flyway migration or deployed event source. Unexpected database/authorization exceptions are still not uniformly journaled; an event ID does not itself identify the originating HTTP request or trusted principal. Production deployment must establish independently reviewed actor/request correlation, privacy policy and exceptional-failure guarantees. No deletion, tombstone, Android or production publication behavior is activated.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
