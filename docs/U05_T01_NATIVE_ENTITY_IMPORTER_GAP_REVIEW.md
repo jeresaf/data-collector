@@ -201,6 +201,12 @@ PostgreSQL tests verify a mismatched head digest raises FK SQLSTATE `23503` at c
 
 PostgreSQL regression tests verify requester cannot approve their own proposal, terminal decisions cannot be overwritten or deleted, two competing reviewers cannot both decide, and **even an APPROVED review leaves the immutable ledger at revision 1** because the JDBC revision policy still rejects removals. The approval is **not authority to delete**. Reviewers' UUIDs are currently untrusted claims; role/independence policy is not attached to Spring Security. No record of the decision is yet cryptographically signed. No HTTP routes, Spring bean, Flyway migration, publish transaction, integrity tombstone or Android deletion behavior exists.
 
+## Authenticated independent reviewer boundary — latest CI pending
+
+The opt-in `JdbcEntityListRemovalReviewRegister.decide(UUID,UUID,Decision)` now **always rejects** attempts to decide by simply passing a claimed reviewer UUID. The separate `decideAuthorized(..., TransactionAuthorization)` path holds the review row `FOR UPDATE`, rejects self-approval and terminal decisions, and requires a **same-transaction database permission check** before the one-way decision update. The inactive `EntityListAuthenticatedReviewService` obtains reviewer identity from `CurrentUserService.getCurrentWebUser()`, insists on an active web user, rechecks project/form manager authority through `EntityListSnapshotWebAuthorization` before invoking the register, and supplies `JdbcEntityListSnapshotPermissionGate` for the locked transactional recheck. Neither the register nor facade is a Spring bean or endpoint.
+
+PostgreSQL tests now prove UUID-only decisions fail, missing/denied current web identity fails, denied in-transaction permission leaves a review PENDING, and authorized independent decisions yield exactly one APPROVED state without altering snapshot history. **Scope limitation:** the decision state is still review evidence, not removal or tombstone authority. This test-only schema and unregistered facade do not constitute production reviewer delegation, segregation-of-duties policy, signed approval, persistent denied-event audit or production schema migration.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
