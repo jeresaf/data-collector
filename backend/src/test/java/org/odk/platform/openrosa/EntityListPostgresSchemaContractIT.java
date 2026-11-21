@@ -264,4 +264,83 @@ class EntityListPostgresSchemaContractIT {
         }
     }
 
+    @Test
+    void transactionGateRejectsRevokedManagerBeforeAnySnapshotInsert() throws Exception {
+        var fixture = new Fixture();
+        UUID manager = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        try (Connection connection = fixture.source.getConnection();
+             var sql = connection.createStatement()) {
+            sql.execute("CREATE TABLE entity_list_test_permissions (actor_id UUID PRIMARY KEY,"
+                    + " project_id UUID NOT NULL, form_id UUID NOT NULL, allowed BOOLEAN NOT NULL)");
+        }
+        try (Connection connection = fixture.source.getConnection();
+             var insert = connection.prepareStatement(
+                     "INSERT INTO entity_list_test_permissions VALUES (?, ?, ?, TRUE)")) {
+            insert.setObject(1, manager);
+            insert.setObject(2, PROJECT);
+            insert.setObject(3, FORM);
+            insert.executeUpdate();
+        }
+        var bootstrap = new JdbcEntityListSnapshotBootstrap(
+                fixture.source, (actor, requestedKey) ->
+                        manager.equals(actor) && key.equals(requestedKey));
+        JdbcEntityListSnapshotBootstrap.TransactionAuthorization gate =
+                (connection, actor, requestedKey) -> {
+                    try (var statement = connection.prepareStatement(
+                            "SELECT allowed FROM entity_list_test_permissions "
+                                    + "WHERE actor_id=? AND project_id=? AND form_id=? FOR UPDATE")) {
+                        statement.setObject(1, actor);
+                        statement.setObject(2, requestedKey.projectId());
+                        statement.setObject(3, requestedKey.formId());
+                        try (var rows = statement.executeQuery()) {
+                            return rows.next() && rows.getBoolean(1);
+                        }
+                    }
+                };
+        // Permission was initially granted but revoked before the transaction
+        // starts. A preflight-only check would not be sufficient authority.
+        try (Connection connection = fixture.source.getConnection();
+             var revoke = connection.prepareStatement(
+                     "UPDATE entity_list_test_permissions SET allowed=FALSE WHERE actor_id=?")) {
+            revoke.setObject(1, manager);
+            assertEquals(1, revoke.executeUpdate());
+        }
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.DENIED,
+                bootstrap.initializeWithTransactionAuthorization(
+                        manager, key, Map.of("odkMediaType", "entityList"),
+                        ORIGINAL, md5(ORIGINAL), 1L, gate));
+        assertEquals(0, fixture.historyCount());
+
+        try (Connection connection = fixture.source.getConnection();
+             var restore = connection.prepareStatement(
+                     "UPDATE entity_list_test_permissions SET allowed=TRUE WHERE actor_id=?")) {
+            restore.setObject(1, manager);
+            assertEquals(1, restore.executeUpdate());
+        }
+        assertEquals(JdbcEntityListSnapshotBootstrap.Outcome.INITIALIZED,
+                bootstrap.initializeWithTransactionAuthorization(
+                        manager, key, Map.of("odkMediaType", "entityList"),
+                        ORIGINAL, md5(ORIGINAL), 1L, gate));
+        assertEquals(1, fixture.historyCount());
+    }
+
+    @Test
+    void transactionGateSQLExceptionRollsBackAndDoesNotInitialize() throws Exception {
+        var fixture = new Fixture();
+        UUID manager = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var bootstrap = new JdbcEntityListSnapshotBootstrap(fixture.source,
+                (actor, requestedKey) -> true);
+        JdbcEntityListSnapshotBootstrap.TransactionAuthorization failed =
+                (connection, actor, requestedKey) -> {
+                    throw new SQLException("Simulated authorization query failure");
+                };
+        assertThrows(IllegalStateException.class, () ->
+                bootstrap.initializeWithTransactionAuthorization(
+                        manager, key, Map.of("odkMediaType", "entityList"),
+                        ORIGINAL, md5(ORIGINAL), 1L, failed));
+        assertEquals(0, fixture.historyCount());
+    }
+
 }
