@@ -13,6 +13,8 @@ CREATE TABLE entity_list_snapshot_history (
     payload BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (project_id, form_id, filename, revision),
+    CONSTRAINT uq_entity_list_history_exact_digest
+        UNIQUE (project_id, form_id, filename, revision, sha256),
     CHECK (filename ~ '^[A-Za-z0-9][A-Za-z0-9_-]*[.]csv$')
 );
 -- split
@@ -23,8 +25,9 @@ CREATE TABLE entity_list_snapshot_heads (
     revision BIGINT NOT NULL CHECK (revision > 0),
     sha256 VARCHAR(64) NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
     PRIMARY KEY (project_id, form_id, filename),
-    FOREIGN KEY (project_id, form_id, filename, revision)
-        REFERENCES entity_list_snapshot_history (project_id, form_id, filename, revision)
+    CONSTRAINT fk_entity_list_head_exact_history
+        FOREIGN KEY (project_id, form_id, filename, revision, sha256)
+        REFERENCES entity_list_snapshot_history (project_id, form_id, filename, revision, sha256)
         DEFERRABLE INITIALLY DEFERRED
 );
 -- split
@@ -51,8 +54,9 @@ CREATE TABLE entity_list_snapshot_audit (
     event_type VARCHAR(32) NOT NULL CHECK (event_type IN ('INITIALIZED', 'APPENDED')),
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (project_id, form_id, filename, revision, event_type),
-    FOREIGN KEY (project_id, form_id, filename, revision)
-        REFERENCES entity_list_snapshot_history(project_id, form_id, filename, revision)
+    CONSTRAINT fk_entity_list_audit_exact_history
+        FOREIGN KEY (project_id, form_id, filename, revision, sha256)
+        REFERENCES entity_list_snapshot_history(project_id, form_id, filename, revision, sha256)
 );
 -- split
 CREATE TRIGGER entity_list_audit_immutable
