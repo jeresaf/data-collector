@@ -234,7 +234,7 @@ class EntityListPostgresRevocationRaceIT {
                  var watch = observer.prepareStatement(
                          "SELECT COUNT(*) FROM pg_stat_activity "
                                  + "WHERE wait_event_type='Lock' "
-                                 + "AND query LIKE 'UPDATE project_members%'")) {
+                                 + "AND query LIKE '%UPDATE project_members%'")) {
                 boolean blocked = false;
                 for (int i = 0; i < 60 && !blocked; i++) {
                     try (var rows = watch.executeQuery()) {
