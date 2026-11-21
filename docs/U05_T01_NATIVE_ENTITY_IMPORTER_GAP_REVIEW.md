@@ -71,6 +71,12 @@ This is **NOT durable trusted history**. There is no production `Store` implemen
 
 **This is not a production migration, repository implementation, or proof of PostgreSQL durability and crash recovery.** It has no Spring bean, authorization, trusted initialization, secure immutable blob storage, approval/tombstone service, or restart evidence. Before release, repeat equivalent integration tests on PostgreSQL with separate connections/nodes, enforce project/form/list uniqueness and role authorization, preserve full audit metadata, and verify rollback after simulated transaction and storage failures.
 
+## PostgreSQL Testcontainers ledger contract — pending exact-head CI
+
+`EntityListPostgresLedgerContractIT` replicates the isolated ledger contract against a **disposable PostgreSQL 16 Testcontainer**, using a fresh per-test schema and native `BYTEA` snapshot payloads. It verifies conditional transactional head update plus append-only revision insert, concurrent requests, preserved original payload, idempotent retry, and rejection of unapproved removal. The explicit PostgreSQL CI test selection now includes this class.
+
+This is a **test-only** SQL fixture, not a production repository, Flyway migration or deployment. It does not yet demonstrate process restart, multi-node service authorization, crash between object storage/database commit, approved deletion audit, or the native Collect integrity URL protocol. The first run on the exact commit must pass before PostgreSQL behavior is considered qualified.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
