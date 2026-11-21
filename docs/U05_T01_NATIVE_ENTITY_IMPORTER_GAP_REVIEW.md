@@ -311,6 +311,12 @@ Expanded disposable PostgreSQL integration coverage for the **inactive** `Entity
 
 **Caution:** These are disposable test-schema transactions with fixture-provisioned identities and delegates, not production endpoints or real identity-policy integration. The test harness uses single-process concurrent JDBC calls and does not yet establish safety across distributed executors, production privilege-revocation writers or interrupted process recovery. The test's success must be confirmed on the exact commit in PostgreSQL Testcontainers before claiming qualification. First-custodian bootstrap, trusted recovery, release approval and Entity/tombstone publication remain unimplemented.
 
+## Execution blocked by concurrent revocation and connection interruption — exact-head CI pending
+
+PostgreSQL concurrency regressions now hold a **real uncommitted revocation update** lock on the execution-officer delegation or on an independent quorum witness's active custodian delegation, while a separate JDBC worker attempts the same approved custody execution. The waiting operation must not finish while the grant update remains locked; once revocation commits it must fail authorization and leave no execution receipt or newly appointed custodian. This complements the verified prior matrix of expired approvals, duplicate executions and four-custodian minimum.
+
+A separate recovery regression emulates a worker interruption **after** writing both the new custodian row and one-use execution receipt but **before commit**: the JDBC connection is closed without committing. PostgreSQL must roll both provisional changes back, permit one subsequent authorized execution, and then deny replay. This tests transactional atomicity and retry behavior, **not** a real process kill, distributed network partition, lost commit acknowledgement, asynchronous recovery loop or exactly-once delivery across multiple services. All checks remain isolated in Testcontainers, with neither production mutations nor a registered custody API. Real administrative revocation endpoints and interrupted-process recovery remain production gates.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
