@@ -126,6 +126,13 @@ class EntityListPostgresSchemaContractIT {
         }
     }
 
+
+    private static JdbcEntityListRemovalRoleGate roleGate(JdbcEntityListRemovalRoleGate.Role role) {
+        var gate = org.mockito.Mockito.mock(JdbcEntityListRemovalRoleGate.class);
+        org.mockito.Mockito.when(gate.role()).thenReturn(role);
+        return gate;
+    }
+
     @Test
     void proposedSchemaRetainsImmutableHistoryAndAcceptsSafeConsecutiveRevision() throws Exception {
         var fixture = new Fixture();
@@ -921,7 +928,7 @@ class EntityListPostgresSchemaContractIT {
         var identity = org.mockito.Mockito.mock(
                 org.odk.platform.security.CurrentUserService.class);
         var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
-        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var gate = roleGate(JdbcEntityListRemovalRoleGate.Role.REVIEWER);
         var service = new EntityListAuthenticatedReviewService(
                 identity, policy, gate, register,
                 new JdbcEntityListDenialEvidenceWriter(fixture.source));
@@ -1111,7 +1118,7 @@ class EntityListPostgresSchemaContractIT {
         var identity = org.mockito.Mockito.mock(
                 org.odk.platform.security.CurrentUserService.class);
         var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
-        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var gate = roleGate(JdbcEntityListRemovalRoleGate.Role.EXECUTOR);
         var seal = new JdbcEntityListRemovalApprovalSeal(fixture.source);
         var facade = new EntityListAuthenticatedSealService(
                 identity, policy, gate, register, seal,
@@ -1255,7 +1262,7 @@ class EntityListPostgresSchemaContractIT {
         var facade = new EntityListAuthenticatedReviewService(
                 identity,
                 org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class),
-                org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class),
+                roleGate(JdbcEntityListRemovalRoleGate.Role.REVIEWER),
                 new JdbcEntityListRemovalReviewRegister(fixture.source),
                 new JdbcEntityListDenialEvidenceWriter(fixture.source));
         try (Connection c = fixture.source.getConnection();
@@ -1273,7 +1280,7 @@ class EntityListPostgresSchemaContractIT {
         var facade = new EntityListAuthenticatedSealService(
                 org.mockito.Mockito.mock(org.odk.platform.security.CurrentUserService.class),
                 org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class),
-                org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class),
+                roleGate(JdbcEntityListRemovalRoleGate.Role.EXECUTOR),
                 new JdbcEntityListRemovalReviewRegister(fixture.source),
                 new JdbcEntityListRemovalApprovalSeal(fixture.source),
                 new JdbcEntityListDenialEvidenceWriter(fixture.source));
@@ -1293,12 +1300,12 @@ class EntityListPostgresSchemaContractIT {
         var identity = org.mockito.Mockito.mock(
                 org.odk.platform.security.CurrentUserService.class);
         var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
-        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var gate = roleGate(JdbcEntityListRemovalRoleGate.Role.REVIEWER);
         var register = new JdbcEntityListRemovalReviewRegister(fixture.source);
         var reviewer = new EntityListAuthenticatedReviewService(
                 identity, policy, gate, register, writer);
         var executor = new EntityListAuthenticatedSealService(
-                identity, policy, gate, register,
+                identity, policy, roleGate(JdbcEntityListRemovalRoleGate.Role.EXECUTOR), register,
                 new JdbcEntityListRemovalApprovalSeal(fixture.source), writer);
 
         assertFalse(reviewer.decide(
@@ -1335,13 +1342,13 @@ class EntityListPostgresSchemaContractIT {
         var identity = org.mockito.Mockito.mock(
                 org.odk.platform.security.CurrentUserService.class);
         var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
-        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var gate = roleGate(JdbcEntityListRemovalRoleGate.Role.REVIEWER);
         var register = new JdbcEntityListRemovalReviewRegister(fixture.source);
         var writer = new JdbcEntityListDenialEvidenceWriter(fixture.source);
         var reviewer = new EntityListAuthenticatedReviewService(
                 identity, policy, gate, register, writer);
         var executor = new EntityListAuthenticatedSealService(
-                identity, policy, gate, register,
+                identity, policy, roleGate(JdbcEntityListRemovalRoleGate.Role.EXECUTOR), register,
                 new JdbcEntityListRemovalApprovalSeal(fixture.source), writer);
         try (Connection c = fixture.source.getConnection();
              var ddl = c.createStatement()) {
@@ -1364,7 +1371,7 @@ class EntityListPostgresSchemaContractIT {
         var identity = org.mockito.Mockito.mock(
                 org.odk.platform.security.CurrentUserService.class);
         var webAuthorization = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
-        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var gate = roleGate(JdbcEntityListRemovalRoleGate.Role.REVIEWER);
         var register = org.mockito.Mockito.mock(JdbcEntityListRemovalReviewRegister.class);
         var seal = org.mockito.Mockito.mock(JdbcEntityListRemovalApprovalSeal.class);
         var webUser = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
@@ -1375,7 +1382,8 @@ class EntityListPostgresSchemaContractIT {
         var reviewer = new EntityListAuthenticatedReviewService(
                 identity, webAuthorization, gate, register, writer);
         var executor = new EntityListAuthenticatedSealService(
-                identity, webAuthorization, gate, register, seal, writer);
+                identity, webAuthorization, roleGate(JdbcEntityListRemovalRoleGate.Role.EXECUTOR),
+                register, seal, writer);
         var failure = new IllegalStateException("synthetic confidential database error");
         org.mockito.Mockito.when(register.get(id)).thenThrow(failure);
 
@@ -1425,7 +1433,7 @@ class EntityListPostgresSchemaContractIT {
         var reviewer = new EntityListAuthenticatedReviewService(
                 identity,
                 org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class),
-                org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class),
+                roleGate(JdbcEntityListRemovalRoleGate.Role.REVIEWER),
                 register, writer);
         try (Connection c = fixture.source.getConnection();
              var stmt = c.createStatement()) {
