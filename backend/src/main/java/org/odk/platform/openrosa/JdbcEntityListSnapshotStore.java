@@ -80,7 +80,11 @@ public final class JdbcEntityListSnapshotStore
             EntityListSnapshotLedgerCoordinator.Key key,
             EntityListSnapshotLedgerCoordinator.Head expected,
             EntityListSnapshotLedgerCoordinator.Head proposed) {
-        return appendInternal(key, expected, proposed, null, null, null);
+        // Store is retained for coordinator compatibility, but the JDBC
+        // implementation must NEVER write without authenticated transaction
+        // authorization and immutable actor audit. Test-only fake stores may
+        // still implement the generic contract independently.
+        return false;
     }
 
     /**
