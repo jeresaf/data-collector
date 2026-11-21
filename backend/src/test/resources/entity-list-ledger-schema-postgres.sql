@@ -285,3 +285,15 @@ FOR EACH ROW EXECUTE FUNCTION prevent_entity_list_custodian_proposal_mutation();
 CREATE TRIGGER entity_list_custodian_proposal_no_delete
 BEFORE DELETE ON entity_list_custodian_change_proposals
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Test-only one-use readiness receipt, NEVER an appointment or revocation.
+CREATE TABLE entity_list_custodian_change_readiness (
+    proposal_id UUID PRIMARY KEY REFERENCES entity_list_custodian_change_proposals(id),
+    validated_by UUID NOT NULL,
+    validated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+-- split
+CREATE TRIGGER entity_list_custodian_readiness_immutable
+BEFORE UPDATE OR DELETE ON entity_list_custodian_change_readiness
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
