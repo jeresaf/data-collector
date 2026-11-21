@@ -132,10 +132,16 @@ class EntityListPostgresSchemaContractIT {
         fixture.initialize();
         var store = new JdbcEntityListSnapshotStore(fixture.source);
         var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
-        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.APPENDED,
-                EntityListSnapshotLedgerCoordinator.propose(
-                        store, key, Map.of("odkMediaType", "entityList"),
-                        SECOND, md5(SECOND), 1L).outcome());
+        var before = store.currentHead(key).orElseThrow();
+        var next = new EntityListSnapshotLedgerCoordinator.Head(
+                fixture.snapshot(2L, SECOND), SECOND);
+        // The JDBC Store interface is deliberately unable to publish.
+        assertFalse(store.compareAndAppend(key, before, next));
+        assertEquals(1, fixture.historyCount());
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        assertTrue(store.compareAndAppendAudited(key, before, next, actor,
+                (connection, identity, scope) -> actor.equals(identity) && key.equals(scope),
+                new JdbcEntityListSnapshotAuditWriter()));
         assertEquals(2, fixture.historyCount());
         assertEquals(2L, store.currentHead(key).orElseThrow().evidence().revision());
 
