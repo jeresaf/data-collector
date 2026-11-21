@@ -29,10 +29,20 @@ public final class JdbcEntityListRemovalApprovalSeal {
      * Validates the approved request against the locked authoritative head,
      * verified immutable original bytes and exact candidate bytes. Records
      * at most one immutable seal for a review in the SAME transaction.
-     * executorId is a caller claim until a trusted principal-bound facade
-     * is implemented; the transactional authorizer must still deny misuse.
+     * This public legacy entry point fails closed. The internal path accepts
+     * only the actor resolved by EntityListAuthenticatedSealService and
+     * still rechecks authority within the same database transaction.
      */
     public boolean validateAndSeal(
+            UUID reviewId, UUID executorId,
+            EntityListSnapshotLedgerCoordinator.Head candidate,
+            JdbcEntityListSnapshotBootstrap.TransactionAuthorization authorization) {
+        // Legacy caller-supplied executor UUID can never authorize a receipt.
+        // A validated principal-bound facade must invoke the internal path.
+        return false;
+    }
+
+    boolean validateAndSealAuthorized(
             UUID reviewId, UUID executorId,
             EntityListSnapshotLedgerCoordinator.Head candidate,
             JdbcEntityListSnapshotBootstrap.TransactionAuthorization authorization) {
