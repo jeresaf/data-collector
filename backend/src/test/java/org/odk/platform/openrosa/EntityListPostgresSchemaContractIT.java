@@ -813,10 +813,19 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(evidence.missingIds(), pending.missingIds());
         assertFalse(register.decide(reviewId, requester,
                 JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
-        assertTrue(register.decide(reviewId, reviewer,
-                JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
-        assertFalse(register.decide(reviewId, UUID.randomUUID(),
-                JdbcEntityListRemovalReviewRegister.Decision.REJECTED));
+        assertFalse(register.decideAuthorized(reviewId, requester,
+                JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
+                (connection, actor, scope) -> true));
+        assertFalse(register.decideAuthorized(reviewId, reviewer,
+                JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
+                (connection, actor, scope) -> false));
+        assertEquals("PENDING", register.get(reviewId).state());
+        assertTrue(register.decideAuthorized(reviewId, reviewer,
+                JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
+                (connection, actor, scope) -> reviewer.equals(actor) && key.equals(scope)));
+        assertFalse(register.decideAuthorized(reviewId, UUID.randomUUID(),
+                JdbcEntityListRemovalReviewRegister.Decision.REJECTED,
+                (connection, actor, scope) -> true));
         assertEquals("APPROVED", register.get(reviewId).state());
         assertEquals(reviewer, register.get(reviewId).reviewer());
 
@@ -865,13 +874,15 @@ class EntityListPostgresSchemaContractIT {
         try {
             var approval = pool.submit(() -> {
                 start.await();
-                return register.decide(reviewId, UUID.randomUUID(),
-                        JdbcEntityListRemovalReviewRegister.Decision.APPROVED);
+                return register.decideAuthorized(reviewId, UUID.randomUUID(),
+                        JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
+                        (connection, actor, scope) -> true);
             });
             var rejection = pool.submit(() -> {
                 start.await();
-                return register.decide(reviewId, UUID.randomUUID(),
-                        JdbcEntityListRemovalReviewRegister.Decision.REJECTED);
+                return register.decideAuthorized(reviewId, UUID.randomUUID(),
+                        JdbcEntityListRemovalReviewRegister.Decision.REJECTED,
+                        (connection, actor, scope) -> true);
             });
             start.countDown();
             boolean a = approval.get(15, java.util.concurrent.TimeUnit.SECONDS);
