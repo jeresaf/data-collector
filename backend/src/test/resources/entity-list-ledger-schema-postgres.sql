@@ -176,3 +176,28 @@ CREATE TABLE entity_list_removal_role_grants (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (project_id, user_id, role_name)
 );
+
+-- split
+-- Test-only provisioned grant-administrator registry. Not self-service.
+CREATE TABLE entity_list_removal_grant_administrators (
+    project_id UUID NOT NULL,
+    administrator_id UUID NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (project_id, administrator_id)
+);
+-- split
+-- Immutable transition history: changes to grant state and audit occur atomically.
+CREATE TABLE entity_list_removal_grant_audit (
+    event_id UUID PRIMARY KEY,
+    project_id UUID NOT NULL,
+    administrator_id UUID NOT NULL,
+    subject_id UUID NOT NULL,
+    role_name VARCHAR(16) NOT NULL CHECK (role_name IN ('REVIEWER','EXECUTOR')),
+    action VARCHAR(8) NOT NULL CHECK (action IN ('GRANT','REVOKE')),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (administrator_id <> subject_id)
+);
+-- split
+CREATE TRIGGER entity_list_grant_audit_immutable
+BEFORE UPDATE OR DELETE ON entity_list_removal_grant_audit
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
