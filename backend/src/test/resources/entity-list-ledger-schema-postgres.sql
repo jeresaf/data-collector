@@ -149,7 +149,9 @@ FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
 -- Disposable candidate schema only; NOT a production migration.
 CREATE TABLE entity_list_denial_evidence (
     id UUID PRIMARY KEY,
-    review_id UUID NOT NULL,
+    -- Nullable for malformed requests without a trusted review identifier.
+    -- The server-generated event ID remains the correlation key.
+    review_id UUID,
     actor_id UUID,
     operation VARCHAR(32) NOT NULL
         CHECK (operation IN ('REVIEW_DECISION','APPROVAL_VALIDATION')),
