@@ -392,7 +392,7 @@ public class OpenRosaController {
 
     private Optional<String> verifiedDatasetType(FormExternalDataset dataset) {
         String filename = dataset.getDatasetId();
-        if (filename == null || !filename.toLowerCase(Locale.ROOT).endsWith(".csv")
+        if (filename == null || !EntityListManifestPreflight.validTypedFilename(filename)
                 || dataset.getFileSize() != null && dataset.getFileSize() > 20_000_000L) {
             return Optional.empty();
         }
@@ -520,7 +520,7 @@ public class OpenRosaController {
                     // A changed file must never be served using a stale manifest
                     // hash; using ByteArrayResource prevents a second read race.
                     byte[] bytes = storageService.read(dataset.getStoragePath());
-                    if (bytes.length > 20_000_000 || !dataset.getDatasetId().toLowerCase(Locale.ROOT).endsWith(".csv")
+                    if (bytes.length > 20_000_000 || !EntityListManifestPreflight.validTypedFilename(dataset.getDatasetId())
                             || EntityListManifestPreflight.verifiedCandidate(
                                     dataset.getColumnDefinitions(), bytes, dataset.getContentHash()).isEmpty()) {
                         return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
