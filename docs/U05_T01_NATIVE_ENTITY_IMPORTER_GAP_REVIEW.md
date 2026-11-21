@@ -323,6 +323,12 @@ The inactive `EntityListCustodianExecutionReconciliation` provides a **read-only
 
 New isolated PostgreSQL tests model an application **losing the successful commit acknowledgment** and then constructing a fresh recovery client that observes the one committed receipt, verifies retry cannot duplicate the appointment, tests an in-flight uncommitted transaction which the reconciliation query waits behind, and verifies that officer revocation and audit-storage outage fail closed. This simulates uncertain response delivery within a single test process; it is **not** a true network break, killed worker process or multi-host recovery proof. Production incident handling must not issue blind retries when receipt status is unknown, and requires additional operational identity and audit controls.
 
+## Independent reconciliation clients after ambiguous rollback — CI pending
+
+Two separately instantiated reconciliation clients now race to inspect the same proposed custody execution while an independent JDBC transaction holds its proposal lock **after provisionally inserting both a custodian appointment and its immutable execution receipt**. Neither reader may return while the execution remains unresolved. When the transaction rolls back, **both** must report `NOT_COMMITTED`; the provisional membership and audit record must both be absent. A subsequent authorized executor must succeed exactly once, and both independent readers must then report `COMMITTED`; further retries remain denied. A separate regression distinguishes an unknown proposal ID from an existing uncommitted proposal and ensures it cannot be silently represented as `NOT_COMMITTED`.
+
+These tests verify multi-connection, same-process row-lock serialization of recovery reads and write atomicity. They do **not** demonstrate multi-process service deployment, a real lost TCP acknowledgment, independent HTTP worker startup after process death, an actual PostgreSQL failover, or high-availability replica consistency. Custody security remains inactive and test-only; exact-head PostgreSQL CI must pass before counting this increment as verified.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
