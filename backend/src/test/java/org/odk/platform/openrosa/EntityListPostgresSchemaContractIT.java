@@ -1119,4 +1119,81 @@ class EntityListPostgresSchemaContractIT {
                 .currentHead(key).orElseThrow().evidence().revision());
     }
 
+    @Test
+    void denialJournalSurvivesRejectedTransactionRollbackAndIsImmutable() throws Exception {
+        var fixture = new Fixture();
+        UUID reviewId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        var writer = new JdbcEntityListDenialEvidenceWriter(fixture.source);
+
+        try (Connection rejectedAction = fixture.source.getConnection()) {
+            rejectedAction.setAutoCommit(false);
+            // The rejected review transaction and the security journal MUST
+            // use distinct connections: rolling this back must not remove
+            // an already committed denial event.
+            UUID firstEvent = writer.record(
+                    reviewId, actor,
+                    JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION,
+                    JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED);
+            rejectedAction.rollback();
+
+            UUID anonymousEvent = writer.record(
+                    reviewId, null,
+                    JdbcEntityListDenialEvidenceWriter.Operation.APPROVAL_VALIDATION,
+                    JdbcEntityListDenialEvidenceWriter.Reason.UNAUTHENTICATED);
+            assertFalse(firstEvent.equals(anonymousEvent));
+        }
+
+        try (Connection connection = fixture.source.getConnection();
+             var query = connection.prepareStatement(
+                     "SELECT operation,reason,actor_id FROM entity_list_denial_evidence "
+                             + "WHERE review_id=? ORDER BY occurred_at,id")) {
+            query.setObject(1, reviewId);
+            try (var rows = query.executeQuery()) {
+                int count = 0;
+                boolean foundAuthenticated = false;
+                boolean foundAnonymous = false;
+                while (rows.next()) {
+                    count++;
+                    if (actor.equals(rows.getObject("actor_id", UUID.class))) {
+                        assertEquals("REVIEW_DECISION", rows.getString("operation"));
+                        assertEquals("PERMISSION_DENIED", rows.getString("reason"));
+                        foundAuthenticated = true;
+                    } else {
+                        assertEquals(null, rows.getObject("actor_id"));
+                        assertEquals("APPROVAL_VALIDATION", rows.getString("operation"));
+                        assertEquals("UNAUTHENTICATED", rows.getString("reason"));
+                        foundAnonymous = true;
+                    }
+                }
+                assertEquals(2, count);
+                assertTrue(foundAuthenticated);
+                assertTrue(foundAnonymous);
+            }
+        }
+        try (Connection connection = fixture.source.getConnection();
+             var statement = connection.createStatement()) {
+            assertThrows(SQLException.class, () -> statement.executeUpdate(
+                    "UPDATE entity_list_denial_evidence SET reason='REPLAY'"));
+            assertThrows(SQLException.class, () -> statement.executeUpdate(
+                    "DELETE FROM entity_list_denial_evidence"));
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void denialJournalFailsClosedWhenStorageUnavailable() throws Exception {
+        var fixture = new Fixture();
+        UUID reviewId = UUID.randomUUID();
+        try (Connection connection = fixture.source.getConnection();
+             var statement = connection.createStatement()) {
+            statement.execute("DROP TABLE entity_list_denial_evidence");
+        }
+        var writer = new JdbcEntityListDenialEvidenceWriter(fixture.source);
+        assertThrows(IllegalStateException.class, () ->
+                writer.record(reviewId, UUID.randomUUID(),
+                        JdbcEntityListDenialEvidenceWriter.Operation.APPROVAL_VALIDATION,
+                        JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED));
+    }
+
 }
