@@ -171,6 +171,12 @@ The two-connection `EntityListPostgresRevocationRaceIT` tests now execute the **
 
 **Still not qualified:** This specifically tests membership removal with a lock held by the publication authorization gate; it does not perform an actual audited snapshot append in the full migrated application schema, does not activate the Entity List ledger tables, and does not establish corresponding lock ordering for role deactivation, project archival, user deactivation, or role reassignment. A missing/failed audit of denied requests remains a release blocker.
 
+## Full-schema multi-source revocation lock contract — exact-head CI pending
+
+`PostgreSqlContainerMigrationIT.snapshotPermissionLocksGuardOtherRevocationWritersOnMigratedSchema` extends the full production Flyway PostgreSQL Testcontainer qualification. It provisions a temporary active manager with a project and form, retains the actual `JdbcEntityListSnapshotPermissionGate` row locks on one JDBC connection and attempts four independent revocation `UPDATE`s on another connection: `users.is_active`, `projects.is_active`, `project_members.role_id` to `VIEWER`, and `roles.is_active`. Each competing mutation must return PostgreSQL lock-timeout SQLSTATE `55P03`, showing that the authorization gate protects the row relevant to the change. After releasing locks, committed user/project/member-role revocations must deny a new permission check; a global seeded-role deactivation is tested only in a rolled-back transaction to avoid changing shared seeded role state. Synthetic records are cleaned up.
+
+**Limitations:** this is a database locking contract and **not** proof every role/user/project administration service uses those updates or consistent lock ordering. A production database and actual endpoint were not modified. Existing preflight-based authorization remains a separate application-layer check; the mandatory authenticated audited publication service remains unregistered. Never treat isolated lock-timeout assertions as deletion authorization or release approval.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
