@@ -195,6 +195,12 @@ PostgreSQL tests verify a mismatched head digest raises FK SQLSTATE `23503` at c
 
 **This is not an approval process**: there is no persistent request row, authenticated HTTP principal binding, separate reviewer identity, decision audit, expiry, approval signature, CAS-based commit, tombstone issuance or Android deletion. No code path enables removals or changes the fail-closed `JdbcEntityListSnapshotStore` revision policy. Next steps require a reviewed persistent request state machine and a transactional, separately authorized commit protocol; until then missing IDs remain protected.
 
+## Durable but inactive removal review state machine — exact-head CI pending
+
+`JdbcEntityListRemovalReviewRegister` is an **unregistered, opt-in** JDBC store for the previously added, validated `EntityListRemovalReviewRequest.Request` evidence envelope. The **disposable test-only** PostgreSQL schema provides `entity_list_removal_reviews` with requester claim, immutable project/form/list scope, exact expected revision + SHA-256, candidate revision + SHA-256, missing-ID set, explanation, and a one-way `PENDING → APPROVED/REJECTED` decision. A history foreign key binds the expected head to an actual immutable snapshot; triggers prohibit deletion, alteration of request evidence and any further change after a terminal decision. Review decisions use `SELECT ... FOR UPDATE`, a single transaction, a different reviewer UUID, and exact-once state transition. Concurrent approval/rejection yields one winner and one rejected attempt.
+
+PostgreSQL regression tests verify requester cannot approve their own proposal, terminal decisions cannot be overwritten or deleted, two competing reviewers cannot both decide, and **even an APPROVED review leaves the immutable ledger at revision 1** because the JDBC revision policy still rejects removals. The approval is **not authority to delete**. Reviewers' UUIDs are currently untrusted claims; role/independence policy is not attached to Spring Security. No record of the decision is yet cryptographically signed. No HTTP routes, Spring bean, Flyway migration, publish transaction, integrity tombstone or Android deletion behavior exists.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
