@@ -971,16 +971,18 @@ class EntityListPostgresSchemaContractIT {
         var authorized = (JdbcEntityListSnapshotBootstrap.TransactionAuthorization)
                 (connection, actor, scope) -> executor.equals(actor) && key.equals(scope);
 
+        // Client-supplied UUIDs must NEVER mint a readiness receipt.
         assertFalse(sealing.validateAndSeal(reviewId, executor, candidate, authorized));
+        assertFalse(sealing.validateAndSealAuthorized(reviewId, executor, candidate, authorized));
         assertTrue(register.decideAuthorized(reviewId, reviewer,
                 JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
                 (connection, actor, scope) -> key.equals(scope)));
 
-        assertFalse(sealing.validateAndSeal(reviewId, requester, candidate,
+        assertFalse(sealing.validateAndSealAuthorized(reviewId, requester, candidate,
                 (connection, actor, scope) -> true));
-        assertFalse(sealing.validateAndSeal(reviewId, reviewer, candidate,
+        assertFalse(sealing.validateAndSealAuthorized(reviewId, reviewer, candidate,
                 (connection, actor, scope) -> true));
-        assertFalse(sealing.validateAndSeal(reviewId, executor, candidate,
+        assertFalse(sealing.validateAndSealAuthorized(reviewId, executor, candidate,
                 (connection, actor, scope) -> false));
 
         var forgedBytes = ("name,label,__version\n"
@@ -988,10 +990,10 @@ class EntityListPostgresSchemaContractIT {
                 .getBytes(StandardCharsets.UTF_8);
         var forged = new EntityListSnapshotLedgerCoordinator.Head(
                 candidate.evidence(), forgedBytes);
-        assertFalse(sealing.validateAndSeal(reviewId, executor, forged, authorized));
+        assertFalse(sealing.validateAndSealAuthorized(reviewId, executor, forged, authorized));
 
-        assertTrue(sealing.validateAndSeal(reviewId, executor, candidate, authorized));
-        assertFalse(sealing.validateAndSeal(reviewId, executor, candidate, authorized));
+        assertTrue(sealing.validateAndSealAuthorized(reviewId, executor, candidate, authorized));
+        assertFalse(sealing.validateAndSealAuthorized(reviewId, executor, candidate, authorized));
         try (Connection c = fixture.source.getConnection();
              var q = c.createStatement();
              var rows = q.executeQuery(
@@ -1041,7 +1043,7 @@ class EntityListPostgresSchemaContractIT {
                 (connection, actor, scope) -> true,
                 new JdbcEntityListSnapshotAuditWriter()));
         var sealing = new JdbcEntityListRemovalApprovalSeal(fixture.source);
-        assertFalse(sealing.validateAndSeal(reviewId, executor, candidate,
+        assertFalse(sealing.validateAndSealAuthorized(reviewId, executor, candidate,
                 (connection, actor, scope) -> true));
         assertEquals(2L, store.currentHead(key).orElseThrow().evidence().revision());
         try (Connection c = fixture.source.getConnection();
@@ -1050,6 +1052,71 @@ class EntityListPostgresSchemaContractIT {
             assertTrue(rows.next());
             assertEquals(0L, rows.getLong(1));
         }
+    }
+
+    @Test
+    void principalBoundExecutorCannotBeSpoofedOrSelfExecuteAndNeedsTransactionalPermission()
+            throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var before = new JdbcEntityListSnapshotStore(fixture.source)
+                .currentHead(key).orElseThrow();
+        var replacement = ("name,label,__version\n"
+                + "f4f8c5db-8333-4449-b13f-720a8ce47071,Replacement,1\n")
+                .getBytes(StandardCharsets.UTF_8);
+        var candidate = new EntityListSnapshotLedgerCoordinator.Head(
+                fixture.snapshot(2L, replacement), replacement);
+        UUID requester = UUID.randomUUID();
+        UUID reviewer = UUID.randomUUID();
+        UUID executor = UUID.randomUUID();
+        UUID reviewId = UUID.randomUUID();
+        var register = new JdbcEntityListRemovalReviewRegister(fixture.source);
+        register.submit(reviewId, EntityListRemovalReviewRequest.prepare(
+                requester, "Executor must be independently authorized",
+                before, candidate).orElseThrow());
+        assertTrue(register.decideAuthorized(reviewId, reviewer,
+                JdbcEntityListRemovalReviewRegister.Decision.APPROVED,
+                (connection, actor, scope) -> true));
+
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
+        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var seal = new JdbcEntityListRemovalApprovalSeal(fixture.source);
+        var facade = new EntityListAuthenticatedSealService(
+                identity, policy, gate, register, seal);
+        assertFalse(facade.validateApprovedReview(reviewId, candidate));
+
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(requester, reviewer, executor);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(identity.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        // Neither the requester nor the deciding reviewer can execute.
+        assertFalse(facade.validateApprovedReview(reviewId, candidate));
+        assertFalse(facade.validateApprovedReview(reviewId, candidate));
+        assertFalse(facade.validateApprovedReview(reviewId, candidate));
+        org.mockito.Mockito.when(policy.mayInitialize(executor, key)).thenReturn(true);
+        // Web preflight is not enough without a same-transaction permission.
+        assertFalse(facade.validateApprovedReview(reviewId, candidate));
+        org.mockito.Mockito.when(gate.mayInitialize(
+                org.mockito.ArgumentMatchers.any(Connection.class),
+                org.mockito.ArgumentMatchers.eq(executor),
+                org.mockito.ArgumentMatchers.eq(key))).thenReturn(true);
+        assertTrue(facade.validateApprovedReview(reviewId, candidate));
+        assertFalse(facade.validateApprovedReview(reviewId, candidate));
+        try (Connection c = fixture.source.getConnection();
+             var q = c.createStatement();
+             var rows = q.executeQuery(
+                     "SELECT validated_by FROM entity_list_removal_validation_seals")) {
+            assertTrue(rows.next());
+            assertEquals(executor, rows.getObject(1, UUID.class));
+            assertFalse(rows.next());
+        }
+        assertEquals(1, fixture.historyCount());
+        assertEquals(1L, new JdbcEntityListSnapshotStore(fixture.source)
+                .currentHead(key).orElseThrow().evidence().revision());
     }
 
 }
