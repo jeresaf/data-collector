@@ -1354,4 +1354,90 @@ class EntityListPostgresSchemaContractIT {
                 executor.validateApprovedReview(null, null));
     }
 
+    @Test
+    void unexpectedReviewAndSealFailuresProduceIndependentImmutableAuditEvents()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID id = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        var writer = new JdbcEntityListDenialEvidenceWriter(fixture.source);
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var webAuthorization = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
+        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var register = org.mockito.Mockito.mock(JdbcEntityListRemovalReviewRegister.class);
+        var seal = org.mockito.Mockito.mock(JdbcEntityListRemovalApprovalSeal.class);
+        var webUser = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(webUser.getId()).thenReturn(actor);
+        org.mockito.Mockito.when(webUser.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(identity.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(webUser));
+        var reviewer = new EntityListAuthenticatedReviewService(
+                identity, webAuthorization, gate, register, writer);
+        var executor = new EntityListAuthenticatedSealService(
+                identity, webAuthorization, gate, register, seal, writer);
+        var failure = new IllegalStateException("synthetic confidential database error");
+        org.mockito.Mockito.when(register.get(id)).thenThrow(failure);
+
+        // The exception must remain visible, but the journal stores only
+        // UNAVAILABLE and never the exception's sensitive message.
+        assertEquals(failure, assertThrows(IllegalStateException.class,
+                () -> reviewer.decide(id,
+                        JdbcEntityListRemovalReviewRegister.Decision.APPROVED)));
+        var candidate = new EntityListSnapshotLedgerCoordinator.Head(
+                EntityListSnapshotEvidence.fromVerifiedBytes(
+                        PROJECT, FORM, FILENAME, 2L,
+                        Map.of("odkMediaType", "entityList"), SECOND, md5(SECOND), 1L)
+                        .orElseThrow(), SECOND);
+        assertEquals(failure, assertThrows(IllegalStateException.class,
+                () -> executor.validateApprovedReview(id, candidate)));
+
+        try (Connection c = fixture.source.getConnection();
+             var stmt = c.prepareStatement(
+                     "SELECT operation,reason,actor_id FROM entity_list_denial_evidence "
+                             + "WHERE review_id=? ORDER BY operation")) {
+            stmt.setObject(1, id);
+            try (var rows = stmt.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals("APPROVAL_VALIDATION", rows.getString("operation"));
+                assertEquals("UNAVAILABLE", rows.getString("reason"));
+                assertEquals(actor, rows.getObject("actor_id", UUID.class));
+                assertTrue(rows.next());
+                assertEquals("REVIEW_DECISION", rows.getString("operation"));
+                assertEquals("UNAVAILABLE", rows.getString("reason"));
+                assertEquals(actor, rows.getObject("actor_id", UUID.class));
+                assertFalse(rows.next());
+            }
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void exceptionAuditFailureDoesNotSilentlyDiscardOriginalFailure() throws Exception {
+        var fixture = new Fixture();
+        UUID id = UUID.randomUUID();
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var original = new IllegalStateException("synthetic web identity lookup error");
+        org.mockito.Mockito.when(identity.getCurrentWebUser()).thenThrow(original);
+        var register = org.mockito.Mockito.mock(JdbcEntityListRemovalReviewRegister.class);
+        var writer = new JdbcEntityListDenialEvidenceWriter(fixture.source);
+        var reviewer = new EntityListAuthenticatedReviewService(
+                identity,
+                org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class),
+                org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class),
+                register, writer);
+        try (Connection c = fixture.source.getConnection();
+             var stmt = c.createStatement()) {
+            stmt.execute("DROP TABLE entity_list_denial_evidence");
+        }
+        var exception = assertThrows(IllegalStateException.class,
+                () -> reviewer.decide(id,
+                        JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+        assertTrue(exception.getMessage().contains("Cannot persist denial evidence"));
+        assertEquals(1, exception.getSuppressed().length);
+        assertEquals(original, exception.getSuppressed()[0]);
+        assertEquals(0, fixture.historyCount());
+    }
+
 }
