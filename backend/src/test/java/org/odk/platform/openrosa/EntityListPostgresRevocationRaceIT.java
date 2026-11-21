@@ -2,6 +2,11 @@ package org.odk.platform.openrosa;
 
 import org.junit.jupiter.api.Test;
 import org.postgresql.ds.PGSimpleDataSource;
+import org.odk.platform.service.ProjectMemberService;
+import org.odk.platform.audit.AuditService;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import static org.mockito.Mockito.mock;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -78,22 +83,28 @@ class EntityListPostgresRevocationRaceIT {
                             sql.execute(part);
                         }
                     }
-                    sql.execute("CREATE TABLE users(id UUID PRIMARY KEY, is_active BOOLEAN NOT NULL)");
+                    sql.execute("CREATE TABLE users(id UUID PRIMARY KEY, is_active BOOLEAN NOT NULL, "
+                            + "username TEXT NOT NULL, email TEXT NOT NULL, "
+                            + "first_name TEXT, last_name TEXT)");
                     sql.execute("CREATE TABLE projects(id UUID PRIMARY KEY, owner_id UUID NOT NULL, "
                             + "created_by_id UUID NOT NULL, is_active BOOLEAN NOT NULL)");
                     sql.execute("CREATE TABLE xforms(id UUID PRIMARY KEY, project_id UUID NOT NULL, "
                             + "is_active BOOLEAN NOT NULL)");
                     sql.execute("CREATE TABLE roles(id UUID PRIMARY KEY, name TEXT NOT NULL, "
-                            + "is_active BOOLEAN NOT NULL)");
+                            + "is_active BOOLEAN NOT NULL, display_name TEXT)");
                     sql.execute("CREATE TABLE project_members(id UUID PRIMARY KEY, "
                             + "project_id UUID NOT NULL, user_id UUID NOT NULL, "
-                            + "role_id UUID NOT NULL, is_active BOOLEAN NOT NULL)");
-                    sql.execute("INSERT INTO users VALUES ('" + OWNER + "', TRUE), "
-                            + "('" + MANAGER + "', TRUE)");
+                            + "role_id UUID NOT NULL, is_active BOOLEAN NOT NULL, "
+                            + "created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                            + "updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+                    sql.execute("INSERT INTO users(id,is_active,username,email) VALUES "
+                            + "('" + OWNER + "', TRUE, 'owner', 'owner@test.invalid'), "
+                            + "('" + MANAGER + "', TRUE, 'manager', 'manager@test.invalid')");
                     sql.execute("INSERT INTO projects VALUES ('" + PROJECT + "', '"
                             + OWNER + "', '" + OWNER + "', TRUE)");
                     sql.execute("INSERT INTO xforms VALUES ('" + FORM + "', '" + PROJECT + "', TRUE)");
-                    sql.execute("INSERT INTO roles VALUES ('" + ROLE + "', 'PROJECT_MANAGER', TRUE)");
+                    sql.execute("INSERT INTO roles(id,name,is_active,display_name) VALUES ('"
+                            + ROLE + "', 'PROJECT_MANAGER', TRUE, 'Project Manager')");
                     sql.execute("INSERT INTO project_members VALUES ('" + MEMBER + "', '"
                             + PROJECT + "', '" + MANAGER + "', '" + ROLE + "', TRUE)");
                 }
@@ -128,12 +139,14 @@ class EntityListPostgresRevocationRaceIT {
             }
         }
 
-        void revoke(Connection c) throws SQLException {
-            try (var update = c.prepareStatement(
-                    "UPDATE project_members SET is_active=FALSE WHERE id=?")) {
-                update.setObject(1, MEMBER);
-                assertEquals(1, update.executeUpdate());
-            }
+        void revoke(Connection c) {
+            // Exercise the actual @Transactional production service operation
+            // on the test connection. The caller controls the surrounding
+            // transaction so row locks remain held until explicit commit.
+            // The transaction-scoped audit mock avoids external side effects.
+            var jdbc = new JdbcTemplate(new SingleConnectionDataSource(c, true));
+            var service = new ProjectMemberService(jdbc, mock(AuditService.class));
+            service.removeMember(PROJECT, MEMBER);
         }
     }
 
