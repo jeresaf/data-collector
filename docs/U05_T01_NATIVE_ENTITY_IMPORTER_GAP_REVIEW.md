@@ -65,6 +65,12 @@ This is **not yet server-controlled revision assignment**. The head and proposed
 
 This is **NOT durable trusted history**. There is no production `Store` implementation, authorization, bootstrap, SQL locking, audit trail, approval path, endpoint or refresh integration. The fake is process-local and has no crash, restart, multi-node or transaction durability. An actual database implementation must atomically compare current revision and digest, reserve an immutable revision per project/form/list, keep payloads and evidence durable and append-only, reject race losers, and reconcile storage/database transaction failures. Crucially, mere `READY_FOR_LEDGER_APPEND` is not publication authority; the API must enforce independent authentication and permissions.
 
+## Isolated SQL contract qualification (test only)
+
+`EntityListJdbcLedgerContractTest` exercises the inactive coordinator through a **test-only H2 JDBC adapter**. It creates temporary `head` and append-only `history` tables inside an isolated in-memory database. A compare-and-swap `UPDATE head ... WHERE revision=? AND sha256=?` and historical `INSERT` execute in the same transaction; a failed CAS rolls back. Tests verify that concurrent proposals append exactly one new revision, old bytes remain readable, an identical retry does not duplicate the revision, and an unapproved removal never reaches SQL append.
+
+**This is not a production migration, repository implementation, or proof of PostgreSQL durability and crash recovery.** It has no Spring bean, authorization, trusted initialization, secure immutable blob storage, approval/tombstone service, or restart evidence. Before release, repeat equivalent integration tests on PostgreSQL with separate connections/nodes, enforce project/form/list uniqueness and role authorization, preserve full audit metadata, and verify rollback after simulated transaction and storage failures.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
