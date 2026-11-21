@@ -35,6 +35,18 @@ public final class JdbcEntityListSnapshotBootstrap {
                               EntityListSnapshotLedgerCoordinator.Key key) throws SQLException;
     }
 
+    /**
+     * Inserts an immutable successful-initialization audit record using the
+     * same connection/transaction as the revision and current head. The
+     * caller must provide a durable, append-only audit implementation.
+     */
+    @FunctionalInterface
+    public interface TransactionAudit {
+        void recordInitialized(Connection connection, UUID authenticatedActorId,
+                EntityListSnapshotLedgerCoordinator.Key key,
+                EntityListSnapshotEvidence.Snapshot evidence) throws SQLException;
+    }
+
     private final DataSource dataSource;
     private final Authorization authorization;
 
@@ -51,7 +63,7 @@ public final class JdbcEntityListSnapshotBootstrap {
             EntityListSnapshotLedgerCoordinator.Key key,
             Map<String, Object> metadata, byte[] bytes, String recordedMd5, Long rowCount) {
         return initializeInternal(authenticatedActorId, key, metadata, bytes,
-                recordedMd5, rowCount, null);
+                recordedMd5, rowCount, null, null);
     }
 
     /**
@@ -66,13 +78,30 @@ public final class JdbcEntityListSnapshotBootstrap {
             Long rowCount, TransactionAuthorization transactionalAuthorization) {
         Objects.requireNonNull(transactionalAuthorization);
         return initializeInternal(authenticatedActorId, key, metadata, bytes,
-                recordedMd5, rowCount, transactionalAuthorization);
+                recordedMd5, rowCount, transactionalAuthorization, null);
+    }
+
+    /**
+     * Strict opt-in bootstrap contract: BOTH transaction-scoped authorization
+     * and immutable success audit must complete before the snapshot commits.
+     * Neither audit nor ledger data may remain if either operation fails.
+     */
+    public Outcome initializeWithTransactionAudit(
+            UUID authenticatedActorId, EntityListSnapshotLedgerCoordinator.Key key,
+            Map<String, Object> metadata, byte[] bytes, String recordedMd5,
+            Long rowCount, TransactionAuthorization transactionalAuthorization,
+            TransactionAudit transactionalAudit) {
+        Objects.requireNonNull(transactionalAuthorization);
+        Objects.requireNonNull(transactionalAudit);
+        return initializeInternal(authenticatedActorId, key, metadata, bytes,
+                recordedMd5, rowCount, transactionalAuthorization, transactionalAudit);
     }
 
     private Outcome initializeInternal(UUID authenticatedActorId,
             EntityListSnapshotLedgerCoordinator.Key key,
             Map<String, Object> metadata, byte[] bytes, String recordedMd5, Long rowCount,
-            TransactionAuthorization transactionalAuthorization) {
+            TransactionAuthorization transactionalAuthorization,
+            TransactionAudit transactionalAudit) {
         if (authenticatedActorId == null || key == null
                 || key.projectId() == null || key.formId() == null
                 || !EntityListManifestPreflight.validTypedFilename(key.filename())
@@ -122,6 +151,10 @@ public final class JdbcEntityListSnapshotBootstrap {
                     insert.setLong(4, 1L);
                     insert.setString(5, evidence.sha256());
                     insert.executeUpdate();
+                }
+                if (transactionalAudit != null) {
+                    transactionalAudit.recordInitialized(
+                            connection, authenticatedActorId, key, evidence);
                 }
                 connection.commit();
                 return Outcome.INITIALIZED;
