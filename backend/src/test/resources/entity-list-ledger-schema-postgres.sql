@@ -122,3 +122,24 @@ FOR EACH ROW EXECUTE FUNCTION prevent_entity_list_review_evidence_mutation();
 CREATE TRIGGER entity_list_review_no_delete
 BEFORE DELETE ON entity_list_removal_reviews
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Immutable one-use validation receipt. NEVER a deletion/publish authority.
+-- Disposable test schema only; not a production migration.
+CREATE TABLE entity_list_removal_validation_seals (
+    review_id UUID PRIMARY KEY REFERENCES entity_list_removal_reviews(id),
+    validated_by UUID NOT NULL,
+    project_id UUID NOT NULL,
+    form_id UUID NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    expected_revision BIGINT NOT NULL,
+    expected_sha256 VARCHAR(64) NOT NULL,
+    candidate_sha256 VARCHAR(64) NOT NULL,
+    validated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id, form_id, filename, expected_revision, expected_sha256)
+        REFERENCES entity_list_snapshot_history(project_id, form_id, filename, revision, sha256)
+);
+-- split
+CREATE TRIGGER entity_list_validation_seals_immutable
+BEFORE UPDATE OR DELETE ON entity_list_removal_validation_seals
+FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
