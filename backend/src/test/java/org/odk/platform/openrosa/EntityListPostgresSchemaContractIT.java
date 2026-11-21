@@ -2677,4 +2677,99 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, scenario.fixture.historyCount());
     }
 
+    @Test
+    void officerRevocationHoldingRowLockWinsBeforeWaitingExecution()
+            throws Exception {
+        var scenario = new CustodyExecutionScenario("APPOINT", 10, false);
+        var pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (Connection revocation = scenario.fixture.source.getConnection()) {
+            revocation.setAutoCommit(false);
+            try (var update = revocation.prepareStatement(
+                    "UPDATE entity_list_custodian_execution_officers "
+                            + "SET is_active=FALSE WHERE project_id=? AND officer_id=?")) {
+                update.setObject(1, PROJECT);
+                update.setObject(2, scenario.officer);
+                assertEquals(1, update.executeUpdate());
+            }
+
+            var execution = pool.submit(() -> scenario.executor.execute(scenario.proposal));
+            // The revocation has not committed, but holds the officer grant
+            // lock. Execution must wait for this state transition to resolve.
+            java.util.concurrent.TimeUnit.MILLISECONDS.sleep(200);
+            assertFalse(execution.isDone());
+            revocation.commit();
+            assertFalse(execution.get(15, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(0L, scenario.executionCount());
+        assertEquals(4L, scenario.activeCustodianCount());
+        assertEquals(0, scenario.fixture.historyCount());
+    }
+
+    @Test
+    void witnessRevocationHoldingRowLockWinsBeforeWaitingExecution()
+            throws Exception {
+        var scenario = new CustodyExecutionScenario("APPOINT", 10, false);
+        var pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (Connection revocation = scenario.fixture.source.getConnection()) {
+            revocation.setAutoCommit(false);
+            try (var update = revocation.prepareStatement(
+                    "UPDATE entity_list_grant_custodians SET is_active=FALSE "
+                            + "WHERE project_id=? AND custodian_id=?")) {
+                update.setObject(1, PROJECT);
+                update.setObject(2, scenario.witnessA);
+                assertEquals(1, update.executeUpdate());
+            }
+            var execution = pool.submit(() -> scenario.executor.execute(scenario.proposal));
+            java.util.concurrent.TimeUnit.MILLISECONDS.sleep(200);
+            assertFalse(execution.isDone());
+            revocation.commit();
+            assertFalse(execution.get(15, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(0L, scenario.executionCount());
+        assertEquals(3L, scenario.activeCustodianCount());
+        assertEquals(0, scenario.fixture.historyCount());
+    }
+
+    @Test
+    void interruptedUncommittedCustodyChangeAndReceiptAreRolledBackAndRetryable()
+            throws Exception {
+        var scenario = new CustodyExecutionScenario("APPOINT", 10, false);
+        // Simulate an interrupted worker connection AFTER a subject mutation
+        // and receipt insert but BEFORE COMMIT. Closing the connection must
+        // discard both provisional changes; no false consumption remains.
+        try (Connection interrupted = scenario.fixture.source.getConnection()) {
+            interrupted.setAutoCommit(false);
+            try (var add = interrupted.prepareStatement(
+                    "INSERT INTO entity_list_grant_custodians "
+                            + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+                add.setObject(1, PROJECT);
+                add.setObject(2, scenario.subject);
+                assertEquals(1, add.executeUpdate());
+            }
+            try (var receipt = interrupted.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_executions "
+                            + "(proposal_id,executed_by,action,project_id,subject_id) "
+                            + "VALUES (?,?,'APPOINT',?,?)")) {
+                receipt.setObject(1, scenario.proposal);
+                receipt.setObject(2, scenario.officer);
+                receipt.setObject(3, PROJECT);
+                receipt.setObject(4, scenario.subject);
+                assertEquals(1, receipt.executeUpdate());
+            }
+            // No commit: connection is closed to emulate process interruption.
+        }
+        assertEquals(4L, scenario.activeCustodianCount());
+        assertEquals(0L, scenario.executionCount());
+        assertTrue(scenario.executor.execute(scenario.proposal));
+        assertEquals(5L, scenario.activeCustodianCount());
+        assertEquals(1L, scenario.executionCount());
+        assertFalse(scenario.executor.execute(scenario.proposal));
+        assertEquals(1L, scenario.executionCount());
+        assertEquals(0, scenario.fixture.historyCount());
+    }
+
 }
