@@ -785,4 +785,103 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(1, fixture.historyCount());
     }
 
+    @Test
+    void persistentRemovalReviewRequiresIndependentFinalDecisionAndKeepsLedgerUnchanged()
+            throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var store = new JdbcEntityListSnapshotStore(fixture.source);
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var before = store.currentHead(key).orElseThrow();
+        var replacement = ("name,label,__version\n"
+                + "f4f8c5db-8333-4449-b13f-720a8ce47071,Replacement,1\n")
+                .getBytes(StandardCharsets.UTF_8);
+        var candidate = new EntityListSnapshotLedgerCoordinator.Head(
+                fixture.snapshot(2L, replacement), replacement);
+        UUID requester = UUID.randomUUID();
+        UUID reviewer = UUID.randomUUID();
+        UUID reviewId = UUID.randomUUID();
+        var evidence = EntityListRemovalReviewRequest.prepare(
+                requester, "Removal requires independent approval",
+                before, candidate).orElseThrow();
+        var register = new JdbcEntityListRemovalReviewRegister(fixture.source);
+        assertEquals(reviewId, register.submit(reviewId, evidence));
+        var pending = register.get(reviewId);
+        assertEquals("PENDING", pending.state());
+        assertEquals(before.evidence().sha256(), pending.expectedSha256());
+        assertEquals(candidate.evidence().sha256(), pending.candidateSha256());
+        assertEquals(evidence.missingIds(), pending.missingIds());
+        assertFalse(register.decide(reviewId, requester,
+                JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+        assertTrue(register.decide(reviewId, reviewer,
+                JdbcEntityListRemovalReviewRegister.Decision.APPROVED));
+        assertFalse(register.decide(reviewId, UUID.randomUUID(),
+                JdbcEntityListRemovalReviewRegister.Decision.REJECTED));
+        assertEquals("APPROVED", register.get(reviewId).state());
+        assertEquals(reviewer, register.get(reviewId).reviewer());
+
+        // APPROVED is an inert review state. There is NO approved deletion
+        // execution path; the ledger's removal policy must remain fail-closed.
+        assertEquals(1, fixture.historyCount());
+        assertEquals(1L, store.currentHead(key).orElseThrow().evidence().revision());
+        assertFalse(store.compareAndAppendAudited(
+                key, before, candidate, requester,
+                (connection, actor, scope) -> true,
+                new JdbcEntityListSnapshotAuditWriter()));
+        assertEquals(1, fixture.historyCount());
+
+        try (Connection c = fixture.source.getConnection();
+             var sql = c.createStatement()) {
+            assertThrows(SQLException.class, () ->
+                    sql.executeUpdate("DELETE FROM entity_list_removal_reviews"));
+            assertThrows(SQLException.class, () ->
+                    sql.executeUpdate("UPDATE entity_list_removal_reviews "
+                            + "SET justification='changed'"));
+            assertThrows(SQLException.class, () ->
+                    sql.executeUpdate("UPDATE entity_list_removal_reviews SET state='REJECTED'"));
+        }
+    }
+
+    @Test
+    void concurrentReviewDecisionsHaveExactlyOneWinnerAndNoLedgerAppend()
+            throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var before = new JdbcEntityListSnapshotStore(fixture.source)
+                .currentHead(new EntityListSnapshotLedgerCoordinator.Key(
+                        PROJECT, FORM, FILENAME)).orElseThrow();
+        var replacement = ("name,label,__version\n"
+                + "f4f8c5db-8333-4449-b13f-720a8ce47071,Replacement,1\n")
+                .getBytes(StandardCharsets.UTF_8);
+        var candidate = new EntityListSnapshotLedgerCoordinator.Head(
+                fixture.snapshot(2L, replacement), replacement);
+        UUID requester = UUID.randomUUID();
+        UUID reviewId = UUID.randomUUID();
+        var register = new JdbcEntityListRemovalReviewRegister(fixture.source);
+        register.submit(reviewId, EntityListRemovalReviewRequest.prepare(
+                requester, "Removal pending", before, candidate).orElseThrow());
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try {
+            var approval = pool.submit(() -> {
+                start.await();
+                return register.decide(reviewId, UUID.randomUUID(),
+                        JdbcEntityListRemovalReviewRegister.Decision.APPROVED);
+            });
+            var rejection = pool.submit(() -> {
+                start.await();
+                return register.decide(reviewId, UUID.randomUUID(),
+                        JdbcEntityListRemovalReviewRegister.Decision.REJECTED);
+            });
+            start.countDown();
+            boolean a = approval.get(15, java.util.concurrent.TimeUnit.SECONDS);
+            boolean b = rejection.get(15, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(a ^ b);
+            assertEquals(a ? "APPROVED" : "REJECTED", register.get(reviewId).state());
+            assertEquals(1, fixture.historyCount());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
 }
