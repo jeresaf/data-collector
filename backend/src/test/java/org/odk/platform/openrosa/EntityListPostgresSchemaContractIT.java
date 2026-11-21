@@ -1618,4 +1618,134 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, fixture.historyCount());
     }
 
+    @Test
+    void authorizedGrantLifecycleAtomicallyAuditsChangesAndBlocksSelfEscalation()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID admin = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(admin);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(identity.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        var adminService = new EntityListRemovalGrantAdministration(fixture.source,
+                identity, (connection, actor, scope) ->
+                        admin.equals(actor) && key.equals(scope));
+        try (Connection c = fixture.source.getConnection();
+             var insert = c.prepareStatement(
+                     "INSERT INTO entity_list_removal_grant_administrators "
+                             + "(project_id,administrator_id,is_active) VALUES (?,?,TRUE)")) {
+            insert.setObject(1, PROJECT);
+            insert.setObject(2, admin);
+            assertEquals(1, insert.executeUpdate());
+        }
+        // Project-manager authority alone must not be enough.
+        var managerOnly = new EntityListRemovalGrantAdministration(fixture.source,
+                identity, (connection, actor, scope) -> false);
+        assertFalse(managerOnly.change(key, subject,
+                JdbcEntityListRemovalRoleGate.Role.REVIEWER,
+                EntityListRemovalGrantAdministration.Change.GRANT));
+        assertFalse(adminService.change(key, admin,
+                JdbcEntityListRemovalRoleGate.Role.EXECUTOR,
+                EntityListRemovalGrantAdministration.Change.GRANT));
+        assertFalse(adminService.change(key, subject,
+                JdbcEntityListRemovalRoleGate.Role.EXECUTOR,
+                EntityListRemovalGrantAdministration.Change.REVOKE));
+
+        assertTrue(adminService.change(key, subject,
+                JdbcEntityListRemovalRoleGate.Role.REVIEWER,
+                EntityListRemovalGrantAdministration.Change.GRANT));
+        assertFalse(adminService.change(key, subject,
+                JdbcEntityListRemovalRoleGate.Role.REVIEWER,
+                EntityListRemovalGrantAdministration.Change.GRANT));
+        assertTrue(adminService.change(key, subject,
+                JdbcEntityListRemovalRoleGate.Role.REVIEWER,
+                EntityListRemovalGrantAdministration.Change.REVOKE));
+        assertFalse(adminService.change(key, subject,
+                JdbcEntityListRemovalRoleGate.Role.REVIEWER,
+                EntityListRemovalGrantAdministration.Change.REVOKE));
+        assertTrue(adminService.change(key, subject,
+                JdbcEntityListRemovalRoleGate.Role.REVIEWER,
+                EntityListRemovalGrantAdministration.Change.GRANT));
+
+        try (Connection c = fixture.source.getConnection();
+             var q = c.prepareStatement(
+                     "SELECT action,administrator_id,subject_id "
+                             + "FROM entity_list_removal_grant_audit "
+                             + "WHERE project_id=? ORDER BY recorded_at,event_id")) {
+            q.setObject(1, PROJECT);
+            try (var rs = q.executeQuery()) {
+                int count = 0;
+                int grants = 0;
+                int revokes = 0;
+                while (rs.next()) {
+                    count++;
+                    if ("GRANT".equals(rs.getString("action"))) grants++;
+                    if ("REVOKE".equals(rs.getString("action"))) revokes++;
+                    assertEquals(admin, rs.getObject("administrator_id", UUID.class));
+                    assertEquals(subject, rs.getObject("subject_id", UUID.class));
+                }
+                assertEquals(3, count);
+                assertEquals(2, grants);
+                assertEquals(1, revokes);
+            }
+        }
+        try (Connection c = fixture.source.getConnection();
+             var stmt = c.createStatement()) {
+            assertThrows(SQLException.class,
+                    () -> stmt.executeUpdate("DELETE FROM entity_list_removal_grant_audit"));
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void grantChangeFailsClosedAndRollsBackWhenAuditStorageUnavailable()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID admin = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(admin);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(identity.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        try (Connection c = fixture.source.getConnection();
+             var insert = c.prepareStatement(
+                     "INSERT INTO entity_list_removal_grant_administrators "
+                             + "(project_id,administrator_id) VALUES (?,?)")) {
+            insert.setObject(1, PROJECT);
+            insert.setObject(2, admin);
+            assertEquals(1, insert.executeUpdate());
+        }
+        var service = new EntityListRemovalGrantAdministration(fixture.source,
+                identity, (connection, actor, scope) -> true);
+        try (Connection c = fixture.source.getConnection();
+             var ddl = c.createStatement()) {
+            ddl.execute("DROP TABLE entity_list_removal_grant_audit");
+        }
+        assertThrows(IllegalStateException.class, () ->
+                service.change(key, subject,
+                        JdbcEntityListRemovalRoleGate.Role.EXECUTOR,
+                        EntityListRemovalGrantAdministration.Change.GRANT));
+        try (Connection c = fixture.source.getConnection();
+             var query = c.prepareStatement(
+                     "SELECT COUNT(*) FROM entity_list_removal_role_grants "
+                             + "WHERE project_id=? AND user_id=?")) {
+            query.setObject(1, PROJECT);
+            query.setObject(2, subject);
+            try (var rs = query.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals(0L, rs.getLong(1));
+            }
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
 }
