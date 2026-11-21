@@ -315,3 +315,13 @@ CREATE TABLE entity_list_custodian_change_executions (
 CREATE TRIGGER entity_list_custodian_execution_immutable
 BEFORE UPDATE OR DELETE ON entity_list_custodian_change_executions
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Separately provisioned execution officers are NOT automatically custodians
+-- or project managers; production provisioning is intentionally absent.
+CREATE TABLE entity_list_custodian_execution_officers (
+    project_id UUID NOT NULL,
+    officer_id UUID NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY(project_id,officer_id)
+);
