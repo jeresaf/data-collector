@@ -2320,4 +2320,180 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, fixture.historyCount());
     }
 
+    @Test
+    void separatelyAuthorizedCustodyExecutorConsumesOneUseReadinessAtomically()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID proposer = UUID.randomUUID();
+        UUID witnessA = UUID.randomUUID();
+        UUID witnessB = UUID.randomUUID();
+        UUID validator = UUID.randomUUID();
+        UUID officer = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        UUID proposal = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(officer);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        try (Connection c = fixture.source.getConnection()) {
+            try (var insert = c.prepareStatement(
+                    "INSERT INTO entity_list_grant_custodians "
+                            + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+                for (UUID id : new UUID[]{proposer,witnessA,witnessB,validator}) {
+                    insert.setObject(1, PROJECT);
+                    insert.setObject(2, id);
+                    assertEquals(1, insert.executeUpdate());
+                }
+            }
+            try (var insert = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_proposals "
+                            + "(id,project_id,form_id,filename,subject_id,initiated_by,action,state) "
+                            + "VALUES (?,?,?,?,?,?,'APPOINT','ENDORSED')")) {
+                insert.setObject(1, proposal);
+                insert.setObject(2, PROJECT);
+                insert.setObject(3, FORM);
+                insert.setString(4, FILENAME);
+                insert.setObject(5, subject);
+                insert.setObject(6, proposer);
+                assertEquals(1, insert.executeUpdate());
+            }
+            try (var insert = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_witnesses "
+                            + "(proposal_id,witness_id) VALUES (?,?)")) {
+                for (UUID witness : new UUID[]{witnessA,witnessB}) {
+                    insert.setObject(1, proposal);
+                    insert.setObject(2, witness);
+                    assertEquals(1, insert.executeUpdate());
+                }
+            }
+            try (var receipt = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_readiness "
+                            + "(proposal_id,validated_by) VALUES (?,?)")) {
+                receipt.setObject(1, proposal);
+                receipt.setObject(2, validator);
+                assertEquals(1, receipt.executeUpdate());
+            }
+        }
+        var executor = new EntityListCustodianChangeExecutor(fixture.source,
+                current, (connection, actor, scope) -> key.equals(scope));
+        assertFalse(executor.execute(proposal)); // no officer delegation
+        try (Connection c = fixture.source.getConnection();
+             var grant = c.prepareStatement(
+                     "INSERT INTO entity_list_custodian_execution_officers "
+                             + "(project_id,officer_id,is_active) VALUES (?,?,TRUE)")) {
+            grant.setObject(1, PROJECT);
+            grant.setObject(2, officer);
+            assertEquals(1, grant.executeUpdate());
+        }
+        assertTrue(executor.execute(proposal));
+        assertFalse(executor.execute(proposal)); // unique consumed proposal
+        try (Connection c = fixture.source.getConnection();
+             var statement = c.createStatement()) {
+            try (var row = statement.executeQuery(
+                    "SELECT COUNT(*) FROM entity_list_grant_custodians "
+                            + "WHERE project_id='" + PROJECT + "' "
+                            + "AND custodian_id='" + subject + "' AND is_active=TRUE")) {
+                assertTrue(row.next());
+                assertEquals(1L, row.getLong(1));
+            }
+            try (var row = statement.executeQuery(
+                    "SELECT COUNT(*) FROM entity_list_custodian_change_executions")) {
+                assertTrue(row.next());
+                assertEquals(1L, row.getLong(1));
+            }
+            assertThrows(SQLException.class, () -> statement.executeUpdate(
+                    "DELETE FROM entity_list_custodian_change_executions"));
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void custodyExecutorRollsBackAppointmentIfExecutionAuditCannotPersist()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID proposer = UUID.randomUUID();
+        UUID witnessA = UUID.randomUUID();
+        UUID witnessB = UUID.randomUUID();
+        UUID validator = UUID.randomUUID();
+        UUID officer = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        UUID proposal = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(officer);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        try (Connection c = fixture.source.getConnection()) {
+            try (var grant = c.prepareStatement(
+                    "INSERT INTO entity_list_grant_custodians "
+                            + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+                for (UUID id : new UUID[]{proposer,witnessA,witnessB,validator}) {
+                    grant.setObject(1, PROJECT);
+                    grant.setObject(2, id);
+                    assertEquals(1, grant.executeUpdate());
+                }
+            }
+            try (var grant = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_execution_officers "
+                            + "(project_id,officer_id) VALUES (?,?)")) {
+                grant.setObject(1, PROJECT);
+                grant.setObject(2, officer);
+                assertEquals(1, grant.executeUpdate());
+            }
+            try (var proposalRow = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_proposals "
+                            + "(id,project_id,form_id,filename,subject_id,initiated_by,action,state) "
+                            + "VALUES (?,?,?,?,?,?,'APPOINT','ENDORSED')")) {
+                proposalRow.setObject(1, proposal);
+                proposalRow.setObject(2, PROJECT);
+                proposalRow.setObject(3, FORM);
+                proposalRow.setString(4, FILENAME);
+                proposalRow.setObject(5, subject);
+                proposalRow.setObject(6, proposer);
+                assertEquals(1, proposalRow.executeUpdate());
+            }
+            try (var witness = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_witnesses "
+                            + "(proposal_id,witness_id) VALUES (?,?)")) {
+                for (UUID id : new UUID[]{witnessA,witnessB}) {
+                    witness.setObject(1, proposal);
+                    witness.setObject(2, id);
+                    assertEquals(1, witness.executeUpdate());
+                }
+            }
+            try (var readiness = c.prepareStatement(
+                    "INSERT INTO entity_list_custodian_change_readiness "
+                            + "(proposal_id,validated_by) VALUES (?,?)")) {
+                readiness.setObject(1, proposal);
+                readiness.setObject(2, validator);
+                assertEquals(1, readiness.executeUpdate());
+            }
+            try (var ddl = c.createStatement()) {
+                ddl.execute("DROP TABLE entity_list_custodian_change_executions");
+            }
+        }
+        var executor = new EntityListCustodianChangeExecutor(fixture.source,
+                current, (connection, actor, scope) -> key.equals(scope));
+        assertThrows(IllegalStateException.class, () -> executor.execute(proposal));
+        try (Connection c = fixture.source.getConnection();
+             var check = c.prepareStatement(
+                     "SELECT COUNT(*) FROM entity_list_grant_custodians "
+                             + "WHERE project_id=? AND custodian_id=?")) {
+            check.setObject(1, PROJECT);
+            check.setObject(2, subject);
+            try (var row = check.executeQuery()) {
+                assertTrue(row.next());
+                assertEquals(0L, row.getLong(1));
+            }
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
 }
