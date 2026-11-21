@@ -48,7 +48,7 @@ CREATE TABLE entity_list_snapshot_audit (
     filename VARCHAR(255) NOT NULL,
     revision BIGINT NOT NULL,
     sha256 VARCHAR(64) NOT NULL,
-    event_type VARCHAR(32) NOT NULL CHECK (event_type = 'INITIALIZED'),
+    event_type VARCHAR(32) NOT NULL CHECK (event_type IN ('INITIALIZED', 'APPENDED')),
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (project_id, form_id, filename, revision, event_type),
     FOREIGN KEY (project_id, form_id, filename, revision)
