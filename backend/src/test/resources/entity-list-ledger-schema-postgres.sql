@@ -165,3 +165,14 @@ CREATE TABLE entity_list_denial_evidence (
 CREATE TRIGGER entity_list_denial_evidence_immutable
 BEFORE UPDATE OR DELETE ON entity_list_denial_evidence
 FOR EACH ROW EXECUTE FUNCTION deny_entity_list_history_mutation();
+
+-- split
+-- Disposable explicit removal role delegation (NOT project manager roles).
+-- No application provisioning, controller or production migration.
+CREATE TABLE entity_list_removal_role_grants (
+    project_id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    role_name VARCHAR(16) NOT NULL CHECK (role_name IN ('REVIEWER','EXECUTOR')),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (project_id, user_id, role_name)
+);
