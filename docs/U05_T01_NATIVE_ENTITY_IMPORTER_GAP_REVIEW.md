@@ -147,6 +147,12 @@ New PostgreSQL integration tests exercise authorization rejection (no snapshot/a
 
 **Caveat:** This creates a safer publication entry point, **not** an absolute database-level prohibition on the older public `compareAndAppend` method, which continues to exist for inactive contracts and tests. Production must make unauthorized/unaudited routes inaccessible through dependency wiring or remove them before activation. Some in-memory legacy qualification paths also remain unaudited; they are not release paths. Permission revocation across separate transactions and immutable denial records are still pending. No production service, endpoint or migration has been registered.
 
+## JDBC unaudited append disabled — pending CI
+
+The concrete `JdbcEntityListSnapshotStore.compareAndAppend(...)` now **always returns false without writing**. That closes the direct unaudited JDBC mutation path even when it is called via the generic `EntityListSnapshotLedgerCoordinator.Store` interface. Authorized publication must use `compareAndAppendAudited(...)`, which requires the actor, same-transaction authorization, and immutable audit callbacks. The inactive facade `EntityListAuditedRevisionService` already routes coordinator writes exclusively through that audited method. The generic `Store` port and separate test-only fake implementations retain their original behavior for contract qualification.
+
+Disposable PostgreSQL tests were adjusted to require the audited method for legitimate revision writes, and explicitly verify the concrete plain method leaves the original head untouched. The separately constructed authorization/audit callbacks still need trusted production wiring and real role revocation race checks. This is not a production service or migration.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
