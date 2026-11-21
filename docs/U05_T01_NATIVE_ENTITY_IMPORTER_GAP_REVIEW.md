@@ -183,6 +183,12 @@ The opt-in `JdbcEntityListSnapshotStore.currentHead()` now uses a `LEFT JOIN` be
 
 The **test-only** schema currently has a head-to-history foreign key for scope and revision, but not for SHA-256; this test exercises that integrity gap and the JDBC runtime defense. A future approved production schema should also enforce the digest relationship with database constraints where possible. No migration or application endpoint is activated.
 
+## Exact-digest database referential integrity — pending CI
+
+The **disposable PostgreSQL candidate schema only** now adds `UNIQUE(project_id,form_id,filename,revision,sha256)` to immutable history. Both `entity_list_snapshot_heads` and `entity_list_snapshot_audit` reference the **exact five-column scope/revision/SHA-256 key**, rather than accepting a correct revision associated with the wrong digest. The head constraint is `DEFERRABLE INITIALLY DEFERRED` to preserve the store's CAS-before-history transaction ordering; invalid head changes must fail at commit. Audit references remain immediate because audit events follow the history insert in the same transaction. No production Flyway migration was introduced.
+
+PostgreSQL tests verify a mismatched head digest raises FK SQLSTATE `23503` at commit, and an audit event with the wrong digest also raises `23503`. A separate regression explicitly removes the new head FK **inside its isolated test schema only**, corrupts the head, and confirms the JDBC reader continues to raise an integrity error instead of misclassifying the list as uninitialized. This demonstrates both database enforcement and defense in depth.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
