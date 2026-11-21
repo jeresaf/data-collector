@@ -224,4 +224,14 @@ class OpenRosaTypedEntityManifestTest {
         verifyNoInteractions(storage);
     }
 
+    @Test
+    void declaredRowCountMismatchHidesTypedManifestAndBlocksDownload() throws Exception {
+        dataset.setRowCount(2L);
+        assertFalse(manifest().contains("<mediaFile"));
+        assertEquals(404, download().getStatusCode().value());
+        dataset.setRowCount(1L);
+        assertTrue(manifest().contains("type=\\"entityList\\""));
+        assertEquals(200, download().getStatusCode().value());
+    }
+
 }
