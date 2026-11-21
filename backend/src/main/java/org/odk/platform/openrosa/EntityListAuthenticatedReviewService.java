@@ -35,7 +35,9 @@ public final class EntityListAuthenticatedReviewService {
         if (reviewId == null) {
             return deny(null, null, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
         }
-        var current = currentUserService.getCurrentWebUser();
+        var current = EntityListDenialExceptionAudit.call(denials, reviewId, null,
+                JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION,
+                currentUserService::getCurrentWebUser);
         if (current.isEmpty() || current.get().getId() == null) {
             return deny(reviewId, null, JdbcEntityListDenialEvidenceWriter.Reason.UNAUTHENTICATED);
         }
@@ -46,18 +48,24 @@ public final class EntityListAuthenticatedReviewService {
         if (decision == null) {
             return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
         }
-        var request = register.get(reviewId);
+        var request = EntityListDenialExceptionAudit.call(denials, reviewId, reviewer,
+                JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION,
+                () -> register.get(reviewId));
         if (request == null || !"PENDING".equals(request.state())) {
             return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
         }
         if (reviewer.equals(request.requester())) {
             return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.SELF_ACTION);
         }
-        if (!webAuthorization.mayInitialize(reviewer, request.key())) {
+        if (!EntityListDenialExceptionAudit.call(denials, reviewId, reviewer,
+                JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION,
+                () -> webAuthorization.mayInitialize(reviewer, request.key()))) {
             return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED);
         }
-        var outcome = register.decideAuthorizedOutcome(
-                reviewId, reviewer, decision, transactionAuthorization);
+        var outcome = EntityListDenialExceptionAudit.call(denials, reviewId, reviewer,
+                JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION,
+                () -> register.decideAuthorizedOutcome(
+                        reviewId, reviewer, decision, transactionAuthorization));
         if (outcome == JdbcEntityListRemovalReviewRegister.DecisionOutcome.DECIDED) {
             return true;
         }
