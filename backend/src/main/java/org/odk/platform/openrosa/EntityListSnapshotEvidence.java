@@ -1,6 +1,5 @@
 package org.odk.platform.openrosa;
 
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -64,6 +63,12 @@ public final class EntityListSnapshotEvidence {
             Snapshot previous, byte[] previousBytes,
             Snapshot next, byte[] nextBytes) {
         if (previous == null || next == null
+                || previous.projectId() == null || previous.formId() == null
+                || next.projectId() == null || next.formId() == null
+                || previous.filename() == null || next.filename() == null
+                || previous.mediaType() == null || next.mediaType() == null
+                || previous.md5() == null || next.md5() == null
+                || previous.sha256() == null || next.sha256() == null
                 || !previous.projectId().equals(next.projectId())
                 || !previous.formId().equals(next.formId())
                 || !previous.filename().equals(next.filename())
