@@ -37,7 +37,7 @@ public final class EntityListAuthenticatedSealService {
     public boolean validateApprovedReview(
             UUID reviewId, EntityListSnapshotLedgerCoordinator.Head candidate) {
         if (reviewId == null) {
-            return false; // Cannot correlate an event with no review ID.
+            return deny(null, null, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
         }
         var current = currentUserService.getCurrentWebUser();
         if (current.isEmpty() || current.get().getId() == null) {
