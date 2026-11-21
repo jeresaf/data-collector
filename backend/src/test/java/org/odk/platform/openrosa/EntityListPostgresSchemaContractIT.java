@@ -1748,4 +1748,153 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, fixture.historyCount());
     }
 
+    @Test
+    void grantAdministratorRevocationCannotOvertakeLockedInFlightGrant()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID admin = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(admin);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(identity.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        try (Connection connection = fixture.source.getConnection();
+             var statement = connection.prepareStatement(
+                     "INSERT INTO entity_list_removal_grant_administrators "
+                             + "(project_id,administrator_id,is_active) VALUES (?,?,TRUE)")) {
+            statement.setObject(1, PROJECT);
+            statement.setObject(2, admin);
+            assertEquals(1, statement.executeUpdate());
+        }
+        // Hold the administrator delegation row in the same manner as an
+        // active issuance transaction. Its revocation must serialize.
+        try (Connection issuing = fixture.source.getConnection();
+             Connection revoking = fixture.source.getConnection()) {
+            issuing.setAutoCommit(false);
+            revoking.setAutoCommit(false);
+            try (var lock = issuing.prepareStatement(
+                    "SELECT administrator_id FROM entity_list_removal_grant_administrators "
+                            + "WHERE project_id=? AND administrator_id=? "
+                            + "AND is_active=TRUE FOR UPDATE")) {
+                lock.setObject(1, PROJECT);
+                lock.setObject(2, admin);
+                try (var rows = lock.executeQuery()) {
+                    assertTrue(rows.next());
+                }
+            }
+            try (var timeout = revoking.createStatement()) {
+                timeout.execute("SET LOCAL lock_timeout = '250ms'");
+            }
+            try (var revoke = revoking.prepareStatement(
+                    "UPDATE entity_list_removal_grant_administrators "
+                            + "SET is_active=FALSE WHERE project_id=? "
+                            + "AND administrator_id=?")) {
+                revoke.setObject(1, PROJECT);
+                revoke.setObject(2, admin);
+                var blocked = assertThrows(SQLException.class, revoke::executeUpdate);
+                assertEquals("55P03", blocked.getSQLState());
+            }
+            revoking.rollback();
+            issuing.commit();
+            try (var revoke = revoking.prepareStatement(
+                    "UPDATE entity_list_removal_grant_administrators "
+                            + "SET is_active=FALSE WHERE project_id=? "
+                            + "AND administrator_id=?")) {
+                revoke.setObject(1, PROJECT);
+                revoke.setObject(2, admin);
+                assertEquals(1, revoke.executeUpdate());
+            }
+            revoking.commit();
+        }
+        var service = new EntityListRemovalGrantAdministration(fixture.source,
+                identity, (connection, actor, scope) ->
+                        admin.equals(actor) && key.equals(scope));
+        assertFalse(service.change(key, subject,
+                JdbcEntityListRemovalRoleGate.Role.EXECUTOR,
+                EntityListRemovalGrantAdministration.Change.GRANT));
+        try (Connection connection = fixture.source.getConnection();
+             var q = connection.createStatement();
+             var events = q.executeQuery(
+                     "SELECT COUNT(*) FROM entity_list_removal_grant_audit")) {
+            assertTrue(events.next());
+            assertEquals(0L, events.getLong(1));
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void concurrentGrantAdministratorsCannotIssueDuplicateActiveRoleOrAudit()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID administratorA = UUID.randomUUID();
+        UUID administratorB = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        try (Connection c = fixture.source.getConnection();
+             var insert = c.prepareStatement(
+                     "INSERT INTO entity_list_removal_grant_administrators "
+                             + "(project_id,administrator_id,is_active) VALUES (?,?,TRUE)")) {
+            for (UUID actor : new UUID[]{administratorA, administratorB}) {
+                insert.setObject(1, PROJECT);
+                insert.setObject(2, actor);
+                assertEquals(1, insert.executeUpdate());
+            }
+        }
+        java.util.function.Function<UUID, EntityListRemovalGrantAdministration> serviceFor =
+                actor -> {
+                    var identity = org.mockito.Mockito.mock(
+                            org.odk.platform.security.CurrentUserService.class);
+                    var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+                    org.mockito.Mockito.when(user.getId()).thenReturn(actor);
+                    org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+                    org.mockito.Mockito.when(identity.getCurrentWebUser())
+                            .thenReturn(java.util.Optional.of(user));
+                    return new EntityListRemovalGrantAdministration(fixture.source,
+                            identity, (connection, current, scope) ->
+                                    actor.equals(current) && key.equals(scope));
+                };
+        var first = serviceFor.apply(administratorA);
+        var second = serviceFor.apply(administratorB);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try {
+            var a = pool.submit(() -> {
+                start.await();
+                return first.change(key, subject, JdbcEntityListRemovalRoleGate.Role.REVIEWER,
+                        EntityListRemovalGrantAdministration.Change.GRANT);
+            });
+            var b = pool.submit(() -> {
+                start.await();
+                return second.change(key, subject, JdbcEntityListRemovalRoleGate.Role.REVIEWER,
+                        EntityListRemovalGrantAdministration.Change.GRANT);
+            });
+            start.countDown();
+            boolean resultA = a.get(15, java.util.concurrent.TimeUnit.SECONDS);
+            boolean resultB = b.get(15, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(resultA ^ resultB);
+        } finally {
+            pool.shutdownNow();
+        }
+        try (Connection c = fixture.source.getConnection();
+             var q = c.createStatement()) {
+            try (var grants = q.executeQuery(
+                    "SELECT COUNT(*) FROM entity_list_removal_role_grants "
+                            + "WHERE role_name='REVIEWER' AND is_active=TRUE")) {
+                assertTrue(grants.next());
+                assertEquals(1L, grants.getLong(1));
+            }
+            try (var events = q.executeQuery(
+                    "SELECT COUNT(*) FROM entity_list_removal_grant_audit "
+                            + "WHERE role_name='REVIEWER' AND action='GRANT'")) {
+                assertTrue(events.next());
+                assertEquals(1L, events.getLong(1));
+            }
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
 }
