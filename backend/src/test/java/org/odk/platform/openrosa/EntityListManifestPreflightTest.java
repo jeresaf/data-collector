@@ -197,4 +197,45 @@ class EntityListManifestPreflightTest {
         }
     }
 
+    @Test
+    void verifiedTransitionReportsRemovedIdsWithoutPublishingDeletion() throws Exception {
+        String firstId = "d6b8a5e0-79d8-46e7-aab9-5bf1a57162ad";
+        String removedId = "34f2ce6b-34e3-49e0-9db8-5c194fca56da";
+        byte[] previous = ("name,label,__version\n"
+                + firstId + ",Existing,1\n"
+                + removedId + ",Removed,1\n").getBytes(StandardCharsets.UTF_8);
+        byte[] next = ("name,label,__version\n"
+                + firstId + ",Updated,2\n").getBytes(StandardCharsets.UTF_8);
+        String previousHash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(previous));
+        String nextHash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(next));
+        Map<String, Object> entityList = Map.of("odkMediaType", "entityList");
+        assertEquals(Optional.of(java.util.Set.of(java.util.UUID.fromString(removedId))),
+                EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
+                        entityList, previous, previousHash, entityList, next, nextHash));
+        assertEquals(Optional.of(java.util.Set.of()),
+                EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
+                        entityList, next, nextHash, entityList, previous, previousHash));
+    }
+
+    @Test
+    void removalComparisonFailsClosedForChangedBytesMissingHashAndDifferentType() throws Exception {
+        byte[] first = VALID_MINIMUM;
+        byte[] second = ("name,label,__version\n"
+                + "34f2ce6b-34e3-49e0-9db8-5c194fca56da,Other,2\n")
+                .getBytes(StandardCharsets.UTF_8);
+        String firstHash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(first));
+        String secondHash = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(second));
+        Map<String, Object> entity = Map.of("odkMediaType", "entityList");
+        Map<String, Object> approval = Map.of("odkMediaType", "approvalEntityList");
+        assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
+                entity, first, firstHash, entity, second, firstHash).isEmpty());
+        assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
+                entity, first, firstHash, approval, second, secondHash).isEmpty());
+        assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
+                entity, first, null, entity, second, secondHash).isEmpty());
+        assertTrue(EntityListManifestPreflight.removedIdsBetweenVerifiedSnapshots(
+                entity, first, firstHash, entity, "name,label,__version\n".getBytes(StandardCharsets.UTF_8),
+                secondHash).isEmpty());
+    }
+
 }
