@@ -709,9 +709,13 @@ class EntityListPostgresSchemaContractIT {
         var store = new JdbcEntityListSnapshotStore(fixture.source);
         assertEquals(1L, store.currentHead(key).orElseThrow().evidence().revision());
 
-        // The isolated candidate FK validates revision existence but does
-        // not include SHA-256, so a damaged head digest can otherwise pass
-        // database constraints. This must never look like "not initialized".
+        // Simulate a legacy/broken deployment WITHOUT the new exact-digest
+        // constraint: the JDBC reader must still detect inconsistent history.
+        try (Connection connection = fixture.source.getConnection();
+             var ddl = connection.createStatement()) {
+            ddl.execute("ALTER TABLE entity_list_snapshot_heads "
+                    + "DROP CONSTRAINT fk_entity_list_head_exact_history");
+        }
         try (Connection connection = fixture.source.getConnection();
              var sql = connection.prepareStatement(
                      "UPDATE entity_list_snapshot_heads SET sha256=? "
@@ -736,6 +740,49 @@ class EntityListPostgresSchemaContractIT {
         var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
         assertTrue(new JdbcEntityListSnapshotStore(fixture.source)
                 .currentHead(key).isEmpty());
+    }
+
+    @Test
+    void exactHistoryDigestForeignKeysRejectCorruptHeadAndAudit() throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var store = new JdbcEntityListSnapshotStore(fixture.source);
+        // FK is deferred so the invalid UPDATE appears to succeed until commit.
+        try (Connection connection = fixture.source.getConnection()) {
+            connection.setAutoCommit(false);
+            try (var sql = connection.prepareStatement(
+                    "UPDATE entity_list_snapshot_heads SET sha256=? WHERE project_id=? "
+                            + "AND form_id=? AND filename=?")) {
+                sql.setString(1, "a".repeat(64));
+                sql.setObject(2, PROJECT);
+                sql.setObject(3, FORM);
+                sql.setString(4, FILENAME);
+                assertEquals(1, sql.executeUpdate());
+            }
+            SQLException failure = assertThrows(SQLException.class, connection::commit);
+            assertEquals("23503", failure.getSQLState());
+            connection.rollback();
+        }
+        assertEquals(1L, store.currentHead(key).orElseThrow().evidence().revision());
+
+        // Audit is also keyed to the exact recorded digest, not just revision.
+        try (Connection connection = fixture.source.getConnection();
+             var sql = connection.prepareStatement(
+                     "INSERT INTO entity_list_snapshot_audit "
+                             + "(actor_id,project_id,form_id,filename,revision,sha256,event_type) "
+                             + "VALUES (?,?,?,?,?,?,?)")) {
+            sql.setObject(1, UUID.fromString("00000000-0000-0000-0000-000000000310"));
+            sql.setObject(2, PROJECT);
+            sql.setObject(3, FORM);
+            sql.setString(4, FILENAME);
+            sql.setLong(5, 1L);
+            sql.setString(6, "a".repeat(64));
+            sql.setString(7, "INITIALIZED");
+            SQLException failure = assertThrows(SQLException.class, sql::executeUpdate);
+            assertEquals("23503", failure.getSQLState());
+        }
+        assertEquals(1, fixture.historyCount());
     }
 
 }
