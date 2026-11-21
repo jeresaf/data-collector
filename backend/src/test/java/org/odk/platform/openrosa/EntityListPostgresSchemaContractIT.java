@@ -603,4 +603,96 @@ class EntityListPostgresSchemaContractIT {
         assertTrue(Arrays.equals(ORIGINAL, unchanged.bytes()));
     }
 
+    @Test
+    void auditedRevisionFacadeNeverUsesUnauditedStoreWrite() throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        UUID actorId = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(actorId);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        var currentUsers = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        org.mockito.Mockito.when(currentUsers.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        var webPolicy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
+        org.mockito.Mockito.when(webPolicy.mayInitialize(actorId, key)).thenReturn(true);
+        var transactionPolicy = org.mockito.Mockito.mock(
+                JdbcEntityListSnapshotPermissionGate.class);
+        org.mockito.Mockito.when(transactionPolicy.mayInitialize(
+                org.mockito.ArgumentMatchers.any(Connection.class),
+                org.mockito.ArgumentMatchers.eq(actorId),
+                org.mockito.ArgumentMatchers.eq(key))).thenReturn(true);
+        var spyStore = org.mockito.Mockito.spy(new JdbcEntityListSnapshotStore(fixture.source));
+        var audited = new EntityListAuditedRevisionService(
+                spyStore, currentUsers, webPolicy,
+                transactionPolicy, new JdbcEntityListSnapshotAuditWriter());
+
+        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.APPENDED,
+                audited.propose(key, Map.of("odkMediaType", "entityList"),
+                        SECOND, md5(SECOND), 1L).outcome());
+        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.UNCHANGED,
+                audited.propose(key, Map.of("odkMediaType", "entityList"),
+                        SECOND, md5(SECOND), 1L).outcome());
+        org.mockito.Mockito.verify(spyStore, org.mockito.Mockito.times(1))
+                .compareAndAppendAudited(
+                        org.mockito.ArgumentMatchers.eq(key),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.eq(actorId),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(spyStore, org.mockito.Mockito.never())
+                .compareAndAppend(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
+        assertEquals(2, fixture.historyCount());
+        try (Connection c = fixture.source.getConnection();
+             var query = c.prepareStatement(
+                     "SELECT actor_id, event_type FROM entity_list_snapshot_audit");
+             var rows = query.executeQuery()) {
+            assertTrue(rows.next());
+            assertEquals(actorId, rows.getObject("actor_id", UUID.class));
+            assertEquals("APPENDED", rows.getString("event_type"));
+            assertFalse(rows.next());
+        }
+    }
+
+    @Test
+    void auditedRevisionFacadeFailsClosedWithoutWebPrincipalOrManagerPermission()
+            throws Exception {
+        var fixture = new Fixture();
+        fixture.initialize();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        UUID actorId = UUID.fromString("00000000-0000-0000-0000-000000000310");
+        var identity = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var policy = org.mockito.Mockito.mock(EntityListSnapshotWebAuthorization.class);
+        var gate = org.mockito.Mockito.mock(JdbcEntityListSnapshotPermissionGate.class);
+        var store = org.mockito.Mockito.spy(new JdbcEntityListSnapshotStore(fixture.source));
+        var audited = new EntityListAuditedRevisionService(
+                store, identity, policy, gate, new JdbcEntityListSnapshotAuditWriter());
+        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.INVALID_OR_NOT_INITIALIZED,
+                audited.propose(key, Map.of("odkMediaType", "entityList"),
+                        SECOND, md5(SECOND), 1L).outcome());
+        var user = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        org.mockito.Mockito.when(user.getId()).thenReturn(actorId);
+        org.mockito.Mockito.when(user.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(identity.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(user));
+        // Manager policy defaults to false: no successful publication.
+        assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.INVALID_OR_NOT_INITIALIZED,
+                audited.propose(key, Map.of("odkMediaType", "entityList"),
+                        SECOND, md5(SECOND), 1L).outcome());
+        org.mockito.Mockito.verify(store, org.mockito.Mockito.never())
+                .compareAndAppendAudited(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
+        assertEquals(1, fixture.historyCount());
+    }
+
 }
