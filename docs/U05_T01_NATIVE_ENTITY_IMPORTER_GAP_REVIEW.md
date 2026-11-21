@@ -135,6 +135,12 @@ This test does **not** install the Entity List ledger schema, activate the boots
 
 **Scope limit:** This provides successful-initialization evidence only, not a full append/review/denial audit trail or a cryptographically signed tamper-evident log. Rollback and rejection attempts are not represented in the same committed audit table. The actor still requires binding to actual request authentication and the real-row permission gate; the transaction uses test-only audit schema. A separate security event channel is needed for denied/invalid requests. No production DB, deletion approval, integrity protocol or Android client behavior is changed.
 
+## Subsequent-revision actor audit (opt-in; pending exact-head CI)
+
+`JdbcEntityListSnapshotStore.compareAndAppendAudited(...)` provides an **additional, inactive** append path with a required current actor UUID, same-connection transactional permission callback and same-transaction immutable `APPENDED` audit callback. The normal `Store.compareAndAppend` remains intentionally unaudited and unregistered; no runtime handler calls either method. The previously introduced `JdbcEntityListSnapshotAuditWriter` now handles both `INITIALIZED` (revision 1) and `APPENDED` (revisions >=2) records in the disposable audit schema. Approval-required deletions still fail closed via the existing revision policy. The candidate SQL audit constraint accepts only the two success event types.
+
+New PostgreSQL integration tests exercise authorization rejection (no snapshot/audit), successful revision 2 append (exactly one actor/revision/digest event), stale retry (no duplicate event), append-only audit protection, and audit-table failure after head/history writes (full rollback). These tests do **not** prove trusted HTTP request identity, a production transaction-wide permission gate, immutable records of rejected/failed requests, a production Flyway migration, or deletion approval. The inactive `Store` interface still allows an unaudited method: **production must use a mandatory audited path and prohibit bypass** before registering any service.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
