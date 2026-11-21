@@ -266,4 +266,20 @@ class EntityListManifestPreflightTest {
                 "households.csv", entity, rollback, rollbackHash).isEmpty());
     }
 
+    @Test
+    void declaredRowCountMustMatchValidatedDataRecords() throws Exception {
+        byte[] bytes = VALID_MINIMUM;
+        String digest = HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(bytes));
+        Map<String, Object> metadata = Map.of("odkMediaType", "entityList");
+        assertEquals(Optional.of("entityList"),
+                EntityListManifestPreflight.verifiedCandidate(metadata, bytes, digest, 1L));
+        assertEquals(Optional.of("entityList"),
+                EntityListManifestPreflight.verifiedCandidate(metadata, bytes, digest, null));
+        for (long badCount : new long[] {0L, 2L, -1L, Long.MAX_VALUE}) {
+            assertTrue(EntityListManifestPreflight.verifiedCandidate(
+                    metadata, bytes, digest, badCount).isEmpty(),
+                    "Must deny mismatched rowCount=" + badCount);
+        }
+    }
+
 }
