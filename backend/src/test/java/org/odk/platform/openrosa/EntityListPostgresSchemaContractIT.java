@@ -2023,4 +2023,140 @@ class EntityListPostgresSchemaContractIT {
         assertEquals(0, fixture.historyCount());
     }
 
+    @Test
+    void independentThreePersonCustodianAttestationNeverMutatesCustodianAuthority()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID proposer = UUID.randomUUID();
+        UUID witnessA = UUID.randomUUID();
+        UUID witnessB = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        UUID proposalId = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var activeUser = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        var actor = new java.util.concurrent.atomic.AtomicReference<>(proposer);
+        org.mockito.Mockito.when(activeUser.getId()).thenAnswer(call -> actor.get());
+        org.mockito.Mockito.when(activeUser.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(activeUser));
+        try (Connection c = fixture.source.getConnection();
+             var insert = c.prepareStatement(
+                     "INSERT INTO entity_list_grant_custodians "
+                             + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+            for (UUID approved : new UUID[]{proposer,witnessA,witnessB}) {
+                insert.setObject(1, PROJECT);
+                insert.setObject(2, approved);
+                assertEquals(1, insert.executeUpdate());
+            }
+        }
+        var quorum = new EntityListCustodianChangeQuorum(
+                fixture.source, current, (connection, candidate, scope) ->
+                        key.equals(scope)
+                        && !candidate.equals(subject));
+        assertTrue(quorum.propose(proposalId, key, subject,
+                EntityListCustodianChangeQuorum.Action.APPOINT));
+        assertFalse(quorum.propose(proposalId, key, subject,
+                EntityListCustodianChangeQuorum.Action.APPOINT));
+        // A proposer may not witness their own request.
+        assertFalse(quorum.witness(proposalId));
+        actor.set(subject);
+        assertFalse(quorum.witness(proposalId));
+        actor.set(witnessA);
+        assertTrue(quorum.witness(proposalId));
+        assertFalse(quorum.witness(proposalId));
+        try (Connection c = fixture.source.getConnection();
+             var q = c.prepareStatement(
+                     "SELECT state FROM entity_list_custodian_change_proposals WHERE id=?")) {
+            q.setObject(1, proposalId);
+            try (var rows = q.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals("PENDING", rows.getString(1));
+            }
+        }
+        actor.set(witnessB);
+        assertTrue(quorum.witness(proposalId));
+        assertFalse(quorum.witness(proposalId));
+        try (Connection c = fixture.source.getConnection();
+             var q = c.prepareStatement(
+                     "SELECT state FROM entity_list_custodian_change_proposals WHERE id=?")) {
+            q.setObject(1, proposalId);
+            try (var rows = q.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals("ENDORSED", rows.getString(1));
+            }
+        }
+        try (Connection c = fixture.source.getConnection();
+             var q = c.createStatement()) {
+            try (var count = q.executeQuery(
+                    "SELECT COUNT(*) FROM entity_list_custodian_change_witnesses")) {
+                assertTrue(count.next());
+                assertEquals(2L, count.getLong(1));
+            }
+            // Quorum is EVIDENCE ONLY: the target has not been appointed.
+            try (var count = q.executeQuery(
+                    "SELECT COUNT(*) FROM entity_list_grant_custodians "
+                            + "WHERE custodian_id='" + subject + "'")) {
+                assertTrue(count.next());
+                assertEquals(0L, count.getLong(1));
+            }
+            assertThrows(SQLException.class, () -> q.executeUpdate(
+                    "DELETE FROM entity_list_custodian_change_witnesses"));
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
+    @Test
+    void revokingWitnessBeforeAttestationPreventsQuorumAndKeepsProposalPending()
+            throws Exception {
+        var fixture = new Fixture();
+        UUID proposer = UUID.randomUUID();
+        UUID revokedWitness = UUID.randomUUID();
+        UUID subject = UUID.randomUUID();
+        UUID proposalId = UUID.randomUUID();
+        var key = new EntityListSnapshotLedgerCoordinator.Key(PROJECT, FORM, FILENAME);
+        var current = org.mockito.Mockito.mock(
+                org.odk.platform.security.CurrentUserService.class);
+        var webUser = org.mockito.Mockito.mock(org.odk.platform.domain.User.class);
+        var actor = new java.util.concurrent.atomic.AtomicReference<>(proposer);
+        org.mockito.Mockito.when(webUser.getId()).thenAnswer(call -> actor.get());
+        org.mockito.Mockito.when(webUser.getIsActive()).thenReturn(true);
+        org.mockito.Mockito.when(current.getCurrentWebUser())
+                .thenReturn(java.util.Optional.of(webUser));
+        try (Connection c = fixture.source.getConnection();
+             var grant = c.prepareStatement(
+                     "INSERT INTO entity_list_grant_custodians "
+                             + "(project_id,custodian_id,is_active) VALUES (?,?,TRUE)")) {
+            for (UUID trusted : new UUID[]{proposer,revokedWitness}) {
+                grant.setObject(1, PROJECT);
+                grant.setObject(2, trusted);
+                assertEquals(1, grant.executeUpdate());
+            }
+        }
+        var quorum = new EntityListCustodianChangeQuorum(
+                fixture.source, current, (connection, candidate, scope) -> key.equals(scope));
+        assertTrue(quorum.propose(proposalId, key, subject,
+                EntityListCustodianChangeQuorum.Action.REVOKE));
+        try (Connection c = fixture.source.getConnection();
+             var revoke = c.prepareStatement(
+                     "UPDATE entity_list_grant_custodians SET is_active=FALSE "
+                             + "WHERE project_id=? AND custodian_id=?")) {
+            revoke.setObject(1, PROJECT);
+            revoke.setObject(2, revokedWitness);
+            assertEquals(1, revoke.executeUpdate());
+        }
+        actor.set(revokedWitness);
+        assertFalse(quorum.witness(proposalId));
+        try (Connection c = fixture.source.getConnection();
+             var q = c.createStatement();
+             var rs = q.executeQuery(
+                     "SELECT state FROM entity_list_custodian_change_proposals "
+                             + "WHERE id='" + proposalId + "'")) {
+            assertTrue(rs.next());
+            assertEquals("PENDING", rs.getString(1));
+        }
+        assertEquals(0, fixture.historyCount());
+    }
+
 }
