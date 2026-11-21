@@ -35,6 +35,10 @@ This is a source review; it is not evidence of an Android instrumented or device
 
 This helper supports a future removal approval report; it cannot establish trusted historical snapshots, prove the client's currently cached inventory, interpret server tombstones, or make omitted IDs safe to delete. Until those controls and native importer behavior are qualified, an omission must not be interpreted as authority to delete a household or administrative entity.
 
+## Declared row count cross-check
+
+For explicitly typed datasets, backend manifest and download now reject a non-null `rowCount` that does not equal the number of parsed CSV data records (the header is excluded). Zero/negative counts are invalid. Missing `rowCount` retains compatibility with older qualified datasets. This limits accidental incomplete publishes **only when the uploader has provided a trustworthy count**; a maliciously or incorrectly revised `rowCount` can still match truncated data. A trusted immutable prior snapshot and explicit deletion authorization remain required before automatic refresh.
+
 ## Release gate
 
 Keep PR #28 Draft until Android importer behavior, deletion policy, approval semantics, integrity endpoint, reference-data lifecycle and project authorization are qualified. Do not merge, deploy, publish signed APKs, or use live household data on the basis of backend CI alone. Physical device testing remains deferred at owner direction.
