@@ -33,7 +33,7 @@ public final class EntityListAuthenticatedReviewService {
 
     public boolean decide(UUID reviewId, JdbcEntityListRemovalReviewRegister.Decision decision) {
         if (reviewId == null) {
-            return false; // No review identifier exists to correlate an audit event.
+            return deny(null, null, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
         }
         var current = currentUserService.getCurrentWebUser();
         if (current.isEmpty() || current.get().getId() == null) {
