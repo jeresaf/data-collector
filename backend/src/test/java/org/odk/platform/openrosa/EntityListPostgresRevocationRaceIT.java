@@ -241,20 +241,16 @@ class EntityListPostgresRevocationRaceIT {
             assertEquals(2L, fixture.revision());
             assertEquals(2L, fixture.auditCount());
             // A later proposed update must not succeed after revocation.
-            var current = fixture.store.currentHead(fixture.key).orElseThrow();
-            assertFalse(fixture.gate.mayInitialize(
-                    transactionalConnection(fixture.data), MANAGER, fixture.key));
+            try (Connection verification = fixture.data.getConnection()) {
+                verification.setAutoCommit(false);
+                assertFalse(fixture.gate.mayInitialize(
+                        verification, MANAGER, fixture.key));
+                verification.rollback();
+            }
         } finally {
             allowCommit.countDown();
             pool.shutdownNow();
         }
     }
 
-    private static Connection transactionalConnection(PGSimpleDataSource source)
-            throws SQLException {
-        // Caller closes this explicitly in tests when used.
-        Connection c = source.getConnection();
-        c.setAutoCommit(false);
-        return c;
-    }
 }
