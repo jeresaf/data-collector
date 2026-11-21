@@ -431,6 +431,13 @@ class EntityListPostgresLedgerContractIT {
         assertEquals(EntityListSnapshotLedgerCoordinator.Outcome.REMOVAL_APPROVAL_REQUIRED,
                 EntityListSnapshotLedgerCoordinator.propose(
                         store, KEY, TYPE, REMOVAL, md5(REMOVAL), 1L).outcome());
+        var current = store.currentHead(KEY).orElseThrow();
+        var unauthorizedRemoval = EntityListSnapshotEvidence.fromVerifiedBytes(
+                PROJECT, FORM, KEY.filename(), current.evidence().revision() + 1,
+                TYPE, REMOVAL, md5(REMOVAL), 1L).orElseThrow();
+        assertTrue(!store.compareAndAppend(KEY, current,
+                new EntityListSnapshotLedgerCoordinator.Head(unauthorizedRemoval, REMOVAL)));
+        assertEquals(2L, store.currentHead(KEY).orElseThrow().evidence().revision());
         var otherProject = new EntityListSnapshotLedgerCoordinator.Key(
                 UUID.fromString("00000000-0000-0000-0000-000000000399"), FORM, KEY.filename());
         assertTrue(store.currentHead(otherProject).isEmpty());
