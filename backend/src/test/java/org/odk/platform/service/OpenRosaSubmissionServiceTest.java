@@ -176,4 +176,123 @@ class OpenRosaSubmissionServiceTest {
         verify(persistence, never()).persistProcessedData(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
+    @Test
+    void explicitOlderVersionUsesMatchingV1WhenV2IsAlreadyLatest() throws Exception {
+        FormVersion latest = FormVersion.builder()
+                .id(UUID.randomUUID()).form(form).version("2").xmlns("demo")
+                .xmlContent("<form-v2/>").build();
+        when(versions.findLatestByFormId(form.getId())).thenReturn(Optional.of(latest));
+        String id = "uuid:version-one-after-upgrade";
+        String xml = "<data id=\"demo\" version=\"1\"><name>old</name>"
+                + "<meta><instanceID>" + id + "</instanceID></meta></data>";
+        when(parser.parseEnvelope(xml)).thenReturn(
+                new SubmissionXmlParser.SubmissionEnvelope("demo", "1", id, null));
+        when(submissions.findByFormIdAndInstanceId(form.getId(), id))
+                .thenReturn(Optional.empty());
+        when(datasets.loadActiveDatasetContents(version.getId())).thenReturn(Map.of());
+        FormDef parsedForm = mock(FormDef.class);
+        var json = new ObjectMapper().createObjectNode().put("name", "old");
+        when(parser.parseAndValidate(eq(version.getXmlContent()), eq(xml), anyMap()))
+                .thenReturn(new SubmissionXmlParser.ValidatedSubmission(parsedForm, json));
+        var processed = new SubmissionProcessingService.ProcessedSubmission(
+                json, Map.of("name", "old"), Map.of(), id);
+        when(processing.processValidatedSubmission(json, xml, version, appUser, id))
+                .thenReturn(processed);
+        when(submissions.saveAndFlush(any(Submission.class))).thenAnswer(inv -> {
+            Submission s = inv.getArgument(0);
+            s.setId(UUID.randomUUID());
+            return s;
+        });
+        when(persistence.persistProcessedData(any(Submission.class), eq(processed),
+                eq(parsedForm), anyString(), eq("RECEIVED"), eq("APP_USER"),
+                eq(appUser.getId()), anyMap())).thenAnswer(inv -> inv.getArgument(0));
+
+        var result = service.receive(projectId,
+                new MockMultipartFile("xml_submission_file", "v1.xml",
+                        "text/xml", xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                new LinkedMultiValueMap<>(), request);
+
+        assertEquals(id, result.instanceId());
+        assertSame(version, result.submission().getFormVersion());
+        verify(versions, never()).findLatestByFormId(form.getId());
+        verify(parser).parseAndValidate(eq(version.getXmlContent()), eq(xml), anyMap());
+        verify(parser, never()).parseAndValidate(eq(latest.getXmlContent()), anyString(), anyMap());
+        verify(replacements, never()).createReplacement(any(), any(), anyString());
+    }
+
+    @Test
+    void unknownExplicitVersionRejectsBeforeAnySubmissionOrAttachmentWrites() {
+        String id = "uuid:unknown-version";
+        String xml = "<data id=\"demo\" version=\"retired-v3\">"
+                + "<meta><instanceID>" + id + "</instanceID></meta></data>";
+        when(parser.parseEnvelope(xml)).thenReturn(
+                new SubmissionXmlParser.SubmissionEnvelope("demo", "retired-v3", id, null));
+        when(versions.findByFormIdAndVersion(form.getId(), "retired-v3"))
+                .thenReturn(Optional.empty());
+
+        var failure = assertThrows(OpenRosaSubmissionService.IntakeException.class,
+                () -> service.receive(projectId,
+                        new MockMultipartFile("xml_submission_file", "unknown.xml",
+                                "text/xml", xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                        new LinkedMultiValueMap<>(), request));
+
+        assertEquals(HttpStatus.BAD_REQUEST, failure.getStatus());
+        verify(versions, never()).findLatestByFormId(any());
+        verify(submissions, never()).findByFormIdAndInstanceId(any(), anyString());
+        verify(submissions, never()).saveAndFlush(any());
+        verify(replacements, never()).createReplacement(any(), any(), anyString());
+        verify(parser, never()).parseAndValidate(anyString(), anyString(), anyMap());
+        verify(processing, never()).processValidatedSubmission(
+                any(), anyString(), any(), any(), anyString());
+        verify(persistence, never()).persistProcessedData(
+                any(), any(), any(), any(), any(), any(), any(), any());
+        verifyNoInteractions(attachments, recordWork, audit);
+    }
+
+    @Test
+    void missingVersionExplicitlyUsesLatestVersionRatherThanOlderDefinition()
+            throws Exception {
+        FormVersion latest = FormVersion.builder()
+                .id(UUID.randomUUID()).form(form).version("2").xmlns("demo")
+                .xmlContent("<form-v2/>").build();
+        String id = "uuid:missing-version";
+        String xml = "<data id=\"demo\"><name>new</name>"
+                + "<meta><instanceID>" + id + "</instanceID></meta></data>";
+        when(parser.parseEnvelope(xml)).thenReturn(
+                new SubmissionXmlParser.SubmissionEnvelope("demo", null, id, null));
+        when(versions.findLatestByFormId(form.getId())).thenReturn(Optional.of(latest));
+        when(submissions.findByFormIdAndInstanceId(form.getId(), id))
+                .thenReturn(Optional.empty());
+        when(datasets.loadActiveDatasetContents(latest.getId())).thenReturn(Map.of());
+        when(entityDatasets.loadReferencedEntityDatasets(latest))
+                .thenReturn(new EntityListDatasetService.DatasetBundle(Map.of(), List.of()));
+        FormDef parsedForm = mock(FormDef.class);
+        var json = new ObjectMapper().createObjectNode().put("name", "new");
+        when(parser.parseAndValidate(eq(latest.getXmlContent()), eq(xml), anyMap()))
+                .thenReturn(new SubmissionXmlParser.ValidatedSubmission(parsedForm, json));
+        var processed = new SubmissionProcessingService.ProcessedSubmission(
+                json, Map.of("name", "new"), Map.of(), id);
+        when(processing.processValidatedSubmission(json, xml, latest, appUser, id))
+                .thenReturn(processed);
+        when(submissions.saveAndFlush(any(Submission.class))).thenAnswer(inv -> {
+            Submission s = inv.getArgument(0);
+            s.setId(UUID.randomUUID());
+            return s;
+        });
+        when(persistence.persistProcessedData(any(Submission.class), eq(processed),
+                eq(parsedForm), anyString(), eq("RECEIVED"), eq("APP_USER"),
+                eq(appUser.getId()), anyMap())).thenAnswer(inv -> inv.getArgument(0));
+
+        var result = service.receive(projectId,
+                new MockMultipartFile("xml_submission_file", "unversioned.xml",
+                        "text/xml", xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                new LinkedMultiValueMap<>(), request);
+
+        assertSame(latest, result.submission().getFormVersion());
+        verify(versions).findLatestByFormId(form.getId());
+        verify(versions, never()).findByFormIdAndVersion(eq(form.getId()), anyString());
+        verify(parser).parseAndValidate(eq(latest.getXmlContent()), eq(xml), anyMap());
+        verify(parser, never()).parseAndValidate(eq(version.getXmlContent()), anyString(), anyMap());
+    }
+
 }
