@@ -43,6 +43,15 @@ These checks are at **service/unit-test level using mocked persistence**, and ca
 
 **Exact-head CI must be green before these three tests are counted as verified.** The remaining cases A01–A03 and A07–A12 are still pending.
 
+## U06-A02 / U06-A08 intake-route regressions — CI pending
+
+Added two JUnit/Mockito regression tests on `OpenRosaSubmissionServiceTest`:
+
+- **Amendment of an old V1 submission against V2:** explicit V2 selects the V2 parser; a new `instanceID` plus a `deprecatedID` referring to the V1 source resolves the existing submission and routes through `SubmissionReplacementService.createReplacement`, with REPLACED persistence/audit and the original submission supplied to `RecordWorkService.completeIfPresent`. The test confirms the source object's original ID/XML are unchanged by the mocked intake path.
+- **Second periodic visit with V2:** a new `instanceID` without `deprecatedID` routes through ordinary new-submission persistence, not the replacement service, with RECEIVED audit and `sourceBeingReplaced=null` passed to the server-owned work service. The visit is represented as a separate submission, not an amendment.
+
+**Limits:** These tests establish the intake *routing and service invocation contracts* with mocked storage. They do **not** yet demonstrate durable `submission_versions` history, exact `record_links` state, rollback, version-change answer mapping, attachment/repeat preservation or Android offline editing. Those must be verified with PostgreSQL-backed integration and client tests before accepting the full scenarios.
+
 ## First bounded implementation step
 
 Before changing production code, locate existing version/replacement/record-work tests on this safe branch and add **server-side regressions for U06-A04/A05/A06**, with explicit version resolution and no partial persistence on rejection. Then add V1 → V2 amendment and second-visit matrix using synthetic XLSForms and submit/replacement fixtures. Maintain both negative and positive evidence. Android physical tests remain deferred; collect automated emulator evidence separately if available.
