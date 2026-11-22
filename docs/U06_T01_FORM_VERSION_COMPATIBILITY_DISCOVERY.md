@@ -31,6 +31,18 @@
 | U06-A11 | Offline edits then server V2 update and sync | No silent client-side migration of answers; conflict/version policy tested | Pending |
 | U06-A12 | Authorization failure, inactive assignment, wrong project | No exposure or mutation of old records, work items or version metadata | Pending |
 
+## First regression implementation — exact-head CI pending
+
+Three focused Mockito/JUnit intake regressions were added to `backend/src/test/java/org/odk/platform/service/OpenRosaSubmissionServiceTest.java`:
+
+- **U06-A04:** an explicit older V1 answer selects the exact V1 `FormVersion` when V2 exists; the latest-version repository method and V2 parser path must not be used.
+- **U06-A05:** an explicit unknown `retired-v3` version returns HTTP 400 before instance lookup, JavaRosa validation, submission persistence, replacement, attachment storage, record-work completion or audit writes.
+- **U06-A06:** a missing version selects the latest V2 definition by the server's documented fallback behavior; it must not parse with V1.
+
+These checks are at **service/unit-test level using mocked persistence**, and cannot demonstrate database rollback after downstream side effects. A PostgreSQL-backed transaction/integration proof and actual V1-to-V2 amended record remain pending. A versionless XML form is inherently ambiguous; it must not be treated as safe automatic V1-to-V2 migration.
+
+**Exact-head CI must be green before these three tests are counted as verified.** The remaining cases A01–A03 and A07–A12 are still pending.
+
 ## First bounded implementation step
 
 Before changing production code, locate existing version/replacement/record-work tests on this safe branch and add **server-side regressions for U06-A04/A05/A06**, with explicit version resolution and no partial persistence on rejection. Then add V1 → V2 amendment and second-visit matrix using synthetic XLSForms and submit/replacement fixtures. Maintain both negative and positive evidence. Android physical tests remain deferred; collect automated emulator evidence separately if available.
