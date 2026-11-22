@@ -181,7 +181,6 @@ class OpenRosaSubmissionServiceTest {
         FormVersion latest = FormVersion.builder()
                 .id(UUID.randomUUID()).form(form).version("2").xmlns("demo")
                 .xmlContent("<form-v2/>").build();
-        when(versions.findLatestByFormId(form.getId())).thenReturn(Optional.of(latest));
         String id = "uuid:version-one-after-upgrade";
         String xml = "<data id=\"demo\" version=\"1\"><name>old</name>"
                 + "<meta><instanceID>" + id + "</instanceID></meta></data>";
