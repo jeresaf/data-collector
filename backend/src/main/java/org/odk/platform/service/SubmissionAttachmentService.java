@@ -9,6 +9,10 @@ import org.odk.platform.repository.SubmissionAnswerRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -26,6 +30,8 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class SubmissionAttachmentService {
+
+    private static final Logger log = LoggerFactory.getLogger(SubmissionAttachmentService.class);
 
     private final SubmissionAttachmentRepository attachmentRepository;
     private final SubmissionAnswerRepository answerRepository;
@@ -110,7 +116,30 @@ public class SubmissionAttachmentService {
                     .metadata(metadata)
                     .build();
 
-            return attachmentRepository.saveAndFlush(attachment);
+            SubmissionAttachment saved = attachmentRepository.saveAndFlush(attachment);
+            // The enclosing OpenRosa intake is transactional, but writing a local
+            // file is not part of JDBC rollback. Remove the physical file if a
+            // subsequent work-item, history, or audit operation aborts intake.
+            // Do not remove it on an uncertain completion status: a committed
+            // attachment must never be deleted due to ambiguous transaction state.
+            if (TransactionSynchronizationManager.isActualTransactionActive()
+                    && TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(
+                        new TransactionSynchronization() {
+                            @Override
+                            public void afterCompletion(int status) {
+                                if (status == TransactionSynchronization.STATUS_ROLLED_BACK) {
+                                    try {
+                                        Files.deleteIfExists(target);
+                                    } catch (IOException cleanupError) {
+                                        log.warn("Unable to clean up rolled-back attachment at {}",
+                                                target, cleanupError);
+                                    }
+                                }
+                            }
+                        });
+            }
+            return saved;
         } catch (RuntimeException e) {
             try {
                 Files.deleteIfExists(target);
