@@ -100,3 +100,9 @@ All changes remain Draft and no production databases, deployments, release signi
 
 ### U06-T04D-03B1 latest exact-head clarification
 The previous `e246d94...` run is superseded by Android commit `ece54cc2a6ede568f2ebf7dd2871a7804ffb4ba4`. The pending-work Intent test now always checks a synthetic known-shape pending reference plus any actual server pending work, avoiding a vacuous pass when parallel tests have not created work. [Exact-head CI #45227777478](https://github.com/jeresaf/collect/actions/runs/45227777478) QUEUED at the last check. Do not mark PASS until this run succeeds.
+
+## U06-T04D-03B1 exact-head CI retry due to external Maven Central rate limiting (2026-11-23)
+
+- Latest Android PR [#55](https://github.com/jeresaf/collect/pull/55) exact head `ece54cc2a6ede568f2ebf7dd2871a7804ffb4ba4`, [CI #45227777478 attempt 1 FAILED](https://github.com/jeresaf/collect/actions/runs/45227777478) **before Android compile or tests**. Failure at the genuine backend `mvn -B -ntp -DskipTests package` step: Maven Central returned HTTP 429 for imported Testcontainers 1.21.4 and Spring Boot 3.2.5 dependency BOMs. Derived unresolved POM/version errors do not indicate an application failure. No instrumentation assertion ran on this head.
+- A failed-jobs-only rerun was requested for **the unchanged exact SHA** via GitHub Actions; run #45227777478 attempt 2 was IN PROGRESS when recorded. Previous head `e246d94f...` [CI #45227586369 SUCCESS](https://github.com/jeresaf/collect/actions/runs/45227586369), but the newer nonvacuous pending-work assertion still requires its own successful exact-head execution.
+- Maintain U06-T04D-03B1 PENDING until attempt 2 succeeds. No source changes to bypass Maven checks or reduce acceptance scope.
