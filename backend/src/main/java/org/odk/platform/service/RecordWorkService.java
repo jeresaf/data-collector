@@ -62,7 +62,10 @@ public class RecordWorkService {
             boolean mappingApprovalRequired, String submissionSemantics,
             // Historical, exact persisted XForm. Null means unmappable legacy
             // record: callers MUST NOT infer its schema from the target version.
-            String sourceXFormXml) { }
+            String sourceXFormXml,
+            // Read-only schema preview. This never grants historic-answer
+            // transfer, even when all bind paths/types appear unchanged.
+            FormVersionSchemaDiff.Report compatibility) { }
 
     /**
      * The authorized target-version catalog is read-only. The client must not
@@ -261,7 +264,8 @@ public class RecordWorkService {
                 work.workType() == WorkType.AMENDMENT
                   ? "Use a NEW instanceID and deprecatedID referencing sourceInstanceId; review all mappings"
                   : "Use a NEW instanceID WITHOUT deprecatedID; this is a separate visit",
-                originalFormXml);
+                originalFormXml,
+                FormVersionSchemaDiff.compare(originalFormXml, target.getXmlContent()));
     }
 
     /**
