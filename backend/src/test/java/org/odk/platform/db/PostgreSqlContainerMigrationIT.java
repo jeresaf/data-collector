@@ -1305,6 +1305,20 @@ class PostgreSqlContainerMigrationIT {
         assertThat(new java.math.BigDecimal(v1Rows.get(1).get("value_number").toString()))
                 .isEqualByComparingTo("3");
 
+        // Offline device A opens V1 for a V2 amendment. Another session B
+        // successfully corrects the source before device A reconnects.
+        // The server-owned work creation timestamp becomes the revision
+        // watermark; neither Android's clock nor an echoed client token
+        // is trusted for this comparison.
+        UUID staleWorkId = UUID.randomUUID();
+        jdbcTemplate.update(
+                "INSERT INTO record_work_items(id,project_id,source_submission_id,"
+                        + "source_form_version_id,source_instance_id,target_form_version_id,"
+                        + "assigned_app_user_id,work_type,state,client_request_id) "
+                        + "VALUES (?,?,?,?,?,?,?,'AMENDMENT','READY',?)",
+                staleWorkId, project, sourceId, v1, sourceInstance,
+                v2, appUser, "offline-pg-" + staleWorkId);
+
         String amendedXml = """
                 <data id="%s" version="2.0">
                   <name>Corrected household</name>
@@ -1395,6 +1409,109 @@ class PostgreSqlContainerMigrationIT {
                 "SELECT COUNT(*) FROM submission_answers "
                         + "WHERE submission_id=? AND path LIKE 'children%/child_age'",
                 Integer.class, amendedId)).isZero();
+
+        // Stale prepare must report a conflict before exposing the outdated
+        // V1 answers as a draft for another AMENDMENT attempt.
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/v1/projects/{projectId}/record-work-items/{workId}/prepare",
+                                project, staleWorkId)
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isConflict());
+
+        String staleInstance = "uuid:" + UUID.randomUUID();
+        String staleFileName = "offline-stale-" + UUID.randomUUID() + ".jpg";
+        String staleXml = """
+                <data id="%s" version="2.0">
+                  <name>Offline stale correction</name>
+                  <photo>%s</photo>
+                  <children><child_name>Amina</child_name>
+                    <child_age_text>outdated</child_age_text></children>
+                  <meta><instanceID>%s</instanceID><deprecatedID>%s</deprecatedID></meta>
+                </data>
+                """.formatted(formName, staleFileName, staleInstance, sourceInstance);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "xml_submission_file", "offline-stale.xml", "text/xml",
+                                staleXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "photo", staleFileName, "image/jpeg",
+                                new byte[]{42, 41, 40}))
+                        .header("Authorization", credential)
+                        .header("X-DataCollector-Work-Item-Id", staleWorkId.toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isConflict());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submissions WHERE instance_id=?", Integer.class,
+                staleInstance)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_attachments WHERE file_name=?", Integer.class,
+                staleFileName)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?", Integer.class,
+                sourceId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM record_work_items WHERE id=?", String.class,
+                staleWorkId)).isEqualTo("READY");
+        assertThat(java.nio.file.Files.readAllBytes(java.nio.file.Path.of(oldPhotoPath)))
+                .containsExactly(sourcePhoto);
+        assertThat(java.nio.file.Files.readAllBytes(java.nio.file.Path.of(amendedPhotoPath)))
+                .containsExactly(revisedPhoto);
+
+        // Fresh work created against the most recently submitted revision
+        // MUST still work: the stale guard cannot prohibit legitimate later
+        // corrections that reference the newest instance instead of V1.
+        UUID freshWorkId = UUID.randomUUID();
+        jdbcTemplate.update(
+                "INSERT INTO record_work_items(id,project_id,source_submission_id,"
+                        + "source_form_version_id,source_instance_id,target_form_version_id,"
+                        + "assigned_app_user_id,work_type,state,client_request_id) "
+                        + "VALUES (?,?,?,?,?,?,?,'AMENDMENT','READY',?)",
+                freshWorkId, project, amendedId, v2, revisedInstance,
+                v2, appUser, "fresh-pg-" + freshWorkId);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/v1/projects/{projectId}/record-work-items/{workId}/prepare",
+                                project, freshWorkId)
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isOk());
+        String freshInstance = "uuid:" + UUID.randomUUID();
+        String freshXml = """
+                <data id="%s" version="2.0">
+                  <name>Fresh correction on latest</name>
+                  <children><child_name>Amina</child_name>
+                    <child_age_text>six years</child_age_text></children>
+                  <meta><instanceID>%s</instanceID><deprecatedID>%s</deprecatedID></meta>
+                </data>
+                """.formatted(formName, freshInstance, revisedInstance);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "xml_submission_file", "fresh-correction.xml", "text/xml",
+                                freshXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .header("Authorization", credential)
+                        .header("X-DataCollector-Work-Item-Id", freshWorkId.toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isCreated());
+        UUID latestId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id=?", UUID.class, freshInstance);
+        assertThat(latestId).isNotEqualTo(sourceId).isNotEqualTo(amendedId);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM record_work_items WHERE id=?", String.class,
+                freshWorkId)).isEqualTo("COMPLETED");
+        var freshLink = jdbcTemplate.queryForMap(
+                "SELECT source_submission_id,child_submission_id,link_type "
+                        + "FROM record_links WHERE work_item_id=?", freshWorkId);
+        assertThat(freshLink.get("source_submission_id")).isEqualTo(amendedId);
+        assertThat(freshLink.get("child_submission_id")).isEqualTo(latestId);
+        assertThat(freshLink.get("link_type")).isEqualTo("AMENDMENT");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?", Integer.class,
+                amendedId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?", Integer.class,
+                sourceId)).isEqualTo(1);
 
         // Repeat submission with a stale instance ID is never a second edit.
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
