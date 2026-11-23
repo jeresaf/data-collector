@@ -723,10 +723,18 @@ class PostgreSqlContainerMigrationIT {
                   </h:body>
                 </h:html>
                 """.formatted(xmlns);
+        // The newer form renames an integer to a string. There is no
+        // authorization to copy the old age value into the new field.
         String xformV2 = xformV1.replace(
                 "<data id=\"" + xmlns + "\" version=\"1\">",
-                "<data id=\"" + xmlns + "\" version=\"2\">");
-        assertThat(xformV2).isNotEqualTo(xformV1);
+                "<data id=\"" + xmlns + "\" version=\"2\">")
+                .replace("<age/>", "<ageYears/>")
+                .replace("/data/age", "/data/ageYears")
+                .replace("nodeset=\"/data/ageYears\" type=\"int\"",
+                        "nodeset=\"/data/ageYears\" type=\"string\"");
+        assertThat(xformV2).contains("<ageYears/>")
+                .contains("nodeset=\"/data/ageYears\" type=\"string\"")
+                .isNotEqualTo(xformV1);
 
         jdbcTemplate.update(
                 "INSERT INTO projects(id,name,owner_id,created_by_id) VALUES (?,?,?,?)",
@@ -787,9 +795,81 @@ class PostgreSqlContainerMigrationIT {
                         + "VALUES (?,?,?,?,?,?,?,'FOLLOW_UP','READY',?,?)",
                 workId, project, sourceId, v1, sourceInstance, v2, appUser,
                 "u06-http-" + workId, "second-visit");
+        // Production PostgreSQL + real Basic auth: preparation must show
+        // exact source and target schemas and a review-only bind diff.
+        var previewResult = mockMvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                                .get("/v1/projects/{projectId}/record-work-items/{workId}/prepare",
+                                        project, workId)
+                                .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isOk())
+                .andReturn();
+        var preview = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                previewResult.getResponse().getContentAsString());
+        assertThat(preview.path("sourceXml").asText()).isEqualTo(sourceXml);
+        assertThat(preview.path("sourceXFormXml").asText()).isEqualTo(xformV1);
+        assertThat(preview.path("targetXFormXml").asText()).isEqualTo(xformV2);
+        assertThat(preview.path("mappingApprovalRequired").asBoolean()).isTrue();
+        assertThat(preview.path("compatibility").path("status").asText())
+                .isEqualTo("BIND_DELTA_REVIEW_REQUIRED");
+        assertThat(preview.path("compatibility").path("mappingApprovalRequired").asBoolean())
+                .isTrue();
+        var changes = preview.path("compatibility").path("changes");
+        assertThat(changes.findValuesAsText("kind")).contains("REMOVED", "ADDED");
+        assertThat(changes.findValuesAsText("path")).contains(
+                "/data/age", "/data/ageYears");
+        assertThat(preview.path("submissionSemantics").asText())
+                .contains("WITHOUT deprecatedID");
+
+        // Typed mapping authority never issues an implicit read/transfer
+        // grant. It must not leak raw answers/XForms even though prepare()
+        // may expose them to the authorized source owner.
+        var authorityResponse = mockMvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                                .get("/v1/projects/{projectId}/record-work-items/{workId}/typed-mapping-authority",
+                                        project, workId)
+                                .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        var authority = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                authorityResponse);
+        assertThat(authority.path("state").asText())
+                .isEqualTo("DENIED_INDEPENDENT_VISIT");
+        assertThat(authority.path("canTransfer").asBoolean()).isFalse();
+        assertThat(authority.path("canReadHistoricalAnswers").asBoolean()).isFalse();
+        assertThat(authority.path("canSubmit").asBoolean()).isFalse();
+        assertThat(authority.path("approvedPaths").size()).isZero();
+        assertThat(authorityResponse).doesNotContain("First observation")
+                .doesNotContain("<data").doesNotContain("<h:html");
+
+        // Revoked assignment must deny BOTH preparation and mapping
+        // authority, even when the exact READY work item still exists.
+        jdbcTemplate.update(
+                "UPDATE app_user_projects SET status = 'INACTIVE' "
+                        + "WHERE app_user_id = ? AND project_id = ? AND form_id = ?",
+                appUser, project, form);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/v1/projects/{projectId}/record-work-items/{workId}/prepare",
+                                project, workId)
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isForbidden());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/v1/projects/{projectId}/record-work-items/{workId}/typed-mapping-authority",
+                                project, workId)
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isForbidden());
+        jdbcTemplate.update(
+                "UPDATE app_user_projects SET status = 'ACTIVE' "
+                        + "WHERE app_user_id = ? AND project_id = ? AND form_id = ?",
+                appUser, project, form);
+
         String followUpXml = """
                 <data id="%s" version="2">
-                    <name>Second observation</name><age>31</age>
+                    <name>Second observation</name><ageYears>thirty-one</ageYears>
                     <meta><instanceID>%s</instanceID></meta>
                 </data>
                 """.formatted(xmlns, visitInstance);
@@ -810,6 +890,20 @@ class PostgreSqlContainerMigrationIT {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT form_version_id FROM submissions WHERE id=?", UUID.class, visitId))
                 .isEqualTo(v2);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT value_number FROM submission_answers "
+                        + "WHERE submission_id=? AND path='age'",
+                java.math.BigDecimal.class, sourceId))
+                .isEqualByComparingTo("30");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT value_text FROM submission_answers "
+                        + "WHERE submission_id=? AND path='ageYears'",
+                String.class, visitId))
+                .isEqualTo("thirty-one");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_answers "
+                        + "WHERE submission_id=? AND path='age'",
+                Integer.class, visitId)).isZero();
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT xml_content FROM submissions WHERE id=?", String.class, sourceId))
                 .isEqualTo(sourceXml);
@@ -838,6 +932,21 @@ class PostgreSqlContainerMigrationIT {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
                 Integer.class, workId)).isEqualTo(1);
+
+        // Completed work must no longer expose source XML in preparation or
+        // a typed-mapping response, even to its former authorized owner.
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/v1/projects/{projectId}/record-work-items/{workId}/prepare",
+                                project, workId)
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isConflict());
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/v1/projects/{projectId}/record-work-items/{workId}/typed-mapping-authority",
+                                project, workId)
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isConflict());
     }
 
 }
