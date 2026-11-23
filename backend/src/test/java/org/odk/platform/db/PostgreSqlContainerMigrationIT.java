@@ -74,6 +74,9 @@ class PostgreSqlContainerMigrationIT {
     @Autowired
     SubmissionRepository submissionRepository;
 
+    @Autowired
+    org.springframework.transaction.PlatformTransactionManager transactionManager;
+
     @Test
     void productionFlywayChainBuildsCurrentSchemaOnRealPostgreSql() {
         String databaseVersion =
@@ -359,6 +362,7 @@ class PostgreSqlContainerMigrationIT {
         UUID sourceId = UUID.randomUUID();
         UUID childId = UUID.randomUUID();
         UUID workId = UUID.randomUUID();
+        UUID failedWorkId = UUID.randomUUID();
         UUID appUserId = UUID.randomUUID();
         String originalInstance = "uuid:u06-first-" + sourceId;
         String secondInstance = "uuid:u06-second-" + childId;
@@ -471,9 +475,43 @@ class PostgreSqlContainerMigrationIT {
             assertThat(jdbcTemplate.queryForObject(
                     "SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
                     Integer.class, workId)).isEqualTo(1);
+
+            // A different READY follow-up work item incorrectly points to an
+            // already-linked child. The work-item UPDATE succeeds first;
+            // record_links(child_submission_id UNIQUE) must reject insertion.
+            // Verify the Spring transaction rolls back the UPDATE as well.
+            jdbcTemplate.update(
+                    "INSERT INTO record_work_items(id,project_id,source_submission_id,"
+                            + "source_form_version_id,source_instance_id,target_form_version_id,"
+                            + "assigned_app_user_id,work_type,state,client_request_id,visit_key) "
+                            + "VALUES (?,?,?,?,?,?,?,'FOLLOW_UP','READY',?,?)",
+                    failedWorkId, project, sourceId, v1, originalInstance, v2, appUserId,
+                    "u06-work-" + failedWorkId, "third-visit");
+            var transaction = new org.springframework.transaction.support.TransactionTemplate(
+                    transactionManager);
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    org.springframework.dao.DataAccessException.class,
+                    () -> transaction.executeWithoutResult(ignored ->
+                            work.completeIfPresent(project, actor, null, childEntity,
+                                    target, failedWorkId.toString())));
+            var failedItem = jdbcTemplate.queryForMap(
+                    "SELECT state,completed_submission_id "
+                            + "FROM record_work_items WHERE id=?", failedWorkId);
+            assertThat(failedItem.get("state")).isEqualTo("READY");
+            assertThat(failedItem.get("completed_submission_id")).isNull();
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                    Integer.class, failedWorkId)).isZero();
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM record_links WHERE child_submission_id=?",
+                    Integer.class, childId)).isEqualTo(1);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM submissions WHERE id IN (?,?)",
+                    Integer.class, sourceId, childId)).isEqualTo(2);
         } finally {
             jdbcTemplate.update("DELETE FROM record_links WHERE work_item_id=?", workId);
             jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", workId);
+            jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", failedWorkId);
             jdbcTemplate.update("DELETE FROM submissions WHERE id IN (?,?)", childId, sourceId);
             jdbcTemplate.update("DELETE FROM form_versions WHERE id IN (?,?)", v1, v2);
             jdbcTemplate.update("DELETE FROM app_users WHERE id=?", appUserId);
