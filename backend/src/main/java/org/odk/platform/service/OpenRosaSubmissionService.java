@@ -131,6 +131,23 @@ public class OpenRosaSubmissionService {
                     .findByFormIdAndInstanceId(form.getId(), envelope.deprecatedId())
                     .orElseThrow(() -> new IntakeException(
                             HttpStatus.NOT_FOUND, "Deprecated submission not found"));
+
+            // A form assignment permits submitting a NEW observation; it does
+            // not permit amending another enumerator's existing record. The
+            // deprecatedID route is also available without a work-item header,
+            // so work ownership checks alone do not protect this legacy path.
+            //
+            // A historical record with no App User owner cannot be reassigned
+            // implicitly. An explicit, audited delegation flow must be designed
+            // separately before supporting edits to such records.
+            if (appUser == null
+                    || original.getSubmittedBy() == null
+                    || !appUser.getId().equals(original.getSubmittedBy().getId())) {
+                // Do not reveal whether an enumerated instanceID belongs to a
+                // different owner or has no known owner.
+                throw new IntakeException(
+                        HttpStatus.NOT_FOUND, "Deprecated submission not found");
+            }
         }
 
         final SubmissionXmlParser.ValidatedSubmission validated;
