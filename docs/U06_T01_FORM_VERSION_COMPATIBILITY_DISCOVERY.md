@@ -64,6 +64,12 @@ The real PostgreSQL Testcontainers/Flyway suite now includes `followUpWorkPersis
 
 **Boundary:** This is real PostgreSQL relationship persistence but uses mocked repository lookups and explicitly inserted synthetic submissions rather than the entire authenticated HTTP/JavaRosa intake pipeline. The test invokes the service directly, so it does not prove Spring-proxied transactional rollback on a failed link insert, cross-device offline synchronization or real mapping approval. The complete end-to-end acceptance remains pending.
 
+## U06 PostgreSQL link-failure atomicity regression — exact-head CI pending
+
+Extended the real PostgreSQL/Flyway `followUpWorkPersistsDistinctSubmissionAndDurableRecordLinkOnPostgreSql` test with a **second READY work item** targeting a submission already linked to an earlier FOLLOW_UP. The service updates the work item first and then attempts to insert `record_links`; PostgreSQL's unique child-submission constraint must reject the duplicate. The call is enclosed in a Spring `TransactionTemplate` using the application's transaction manager, and the regression asserts that the failed work item stays `READY`, `completed_submission_id` remains NULL, there is no link for the failed work item, the previously completed link is unchanged, and both original and second-visit submissions remain present. This specifically verifies an atomic work-item UPDATE + record-link INSERT under transaction rollback.
+
+**Boundary:** Synthetic submissions were inserted ahead of the transaction. This does **not** yet establish end-to-end rollback of a newly inserted submission/attachments within the authenticated HTTP/JavaRosa intake transaction. Nor does it prove Android offline conflict handling, migrated answer mapping, or physical-device acceptance.
+
 ## First bounded implementation step
 
 Before changing production code, locate existing version/replacement/record-work tests on this safe branch and add **server-side regressions for U06-A04/A05/A06**, with explicit version resolution and no partial persistence on rejection. Then add V1 → V2 amendment and second-visit matrix using synthetic XLSForms and submit/replacement fixtures. Maintain both negative and positive evidence. Android physical tests remain deferred; collect automated emulator evidence separately if available.
