@@ -3,8 +3,16 @@
 **Date:** 2026-11-22  
 **Branch:** `codex/u06-t01-form-version-compatibility-discovery`  
 **Base:** `codex/u01-t03-openrosa-auth-fail-closed` — deliberately not based on U05's experimental custody branch.  
-**Status:** DISCOVERY / ACCEPTANCE CRITERIA NOT YET VERIFIED.  
+**Status:** PARTIAL AUTOMATED QUALIFICATION; FULL ACCEPTANCE AND RELEASE BLOCKED.  
 **Related U05 checkpoint:** `docs/U05_ACCEPTANCE_CHECKPOINT_AND_U06_HANDOFF_2026-11-22.md` lives on the separate U05 Draft PR #28 branch.
+
+## Exact-commit CI checkpoint — 2026-11-23
+
+- **Verified green head:** `879945f8a9e2c3efcdec103e2c72216fe0e5cee0` — [CI Quality Gate #45127162192](https://github.com/jeresaf/data-collector/actions/runs/45127162192), **SUCCESS**. This establishes automated qualification for the service-unit version routing and the PostgreSQL/Flyway synthetic history, follow-up linkage, uniqueness rollback and provisional attachment-metadata rollback tests described below.
+- **New U06-A02/A08 semantic separation tests:** `a4ed50d32728680ad1f689599d10eb5e6d5d7db8` extends the real PostgreSQL fixture. A READY FOLLOW_UP must reject an input that tries to replace an earlier submission; a READY AMENDMENT must reject a new submission that does not replace its source. Both must remain READY, with no invalid record links, and the original and successful second visit preserved.
+- **New increment qualification:** This new commit is **not yet CI-confirmed in this checkpoint**. The older SUCCESS must not be attributed to it. Source inspection/test existence does not equal green qualification.
+- **Boundaries:** Transactional JDBC state is tested; physical attachment-file rollback, authenticated end-to-end OpenRosa/JavaRosa flows, Android offline/version switching, changed-type or repeat mapping approvals, production upgrade and real-device certification remain unverified. All such release gates remain closed.
+- **Reading the historical entries below:** Earlier “CI pending” headings record the state *when each test was introduced*. The verified baseline above supersedes those historical CI-pending labels, not their technical limitations.
 
 ## Source inspection (observations, not acceptance claims)
 
@@ -18,14 +26,14 @@
 
 | ID | Acceptance scenario | Expected invariant | Evidence |
 |---|---|---|---|
-| U06-A01 | Original V1 instance submitted; form upgrades to V2 | V1 remains readable; source raw XML and history preserved | Pending |
-| U06-A02 | Amend V1 record using V2 form (known version) | Stable source linkage; new revision; V2 schema validation; audit trail | Pending |
+| U06-A01 | Original V1 instance submitted; form upgrades to V2 | V1 remains readable; source raw XML and history preserved | Partial: PostgreSQL historical XML/version preservation; read API unverified |
+| U06-A02 | Amend V1 record using V2 form (known version) | Stable source linkage; new revision; V2 schema validation; audit trail | Partial: unit intake route and PostgreSQL archive; complete HTTP pipeline unverified |
 | U06-A03 | V2 removes/renames/retypes V1 question | No silent remapping or loss of old answers; explicit compatibility decision or fail closed | Pending |
-| U06-A04 | Old version explicitly submitted after V2 published | Validate against the submitted version, never latest by assumption | Pending |
-| U06-A05 | Unknown explicit form version | Deterministic rejection; no partially persisted submission | Pending |
-| U06-A06 | Submission without version | Document latest-version fallback policy and its backward-compatibility limits | Pending |
-| U06-A07 | Instance ID replay, deprecatedID replacement, work-item retry | No duplicate source or revision, stable linkage and exactly-one audit semantics | Pending |
-| U06-A08 | Second periodic visit | New observation ID with reference to earlier visit, never overwrite original | Pending |
+| U06-A04 | Old version explicitly submitted after V2 published | Validate against the submitted version, never latest by assumption | Unit route CI green at 879945f; real HTTP unverified |
+| U06-A05 | Unknown explicit form version | Deterministic rejection; no partially persisted submission | Unit pre-write rejection CI green at 879945f; full HTTP/physical storage unverified |
+| U06-A06 | Submission without version | Document latest-version fallback policy and its backward-compatibility limits | Unit fallback CI green at 879945f; client migration policy unresolved |
+| U06-A07 | Instance ID replay, deprecatedID replacement, work-item retry | No duplicate source or revision, stable linkage and exactly-one audit semantics | Partial: unit duplicate path and PostgreSQL work-item uniqueness; full audit/retry HTTP unverified |
+| U06-A08 | Second periodic visit | New observation ID with reference to earlier visit, never overwrite original | Partial: PostgreSQL durable linkage and rollback CI green at 879945f; semantic swap increment awaiting CI |
 | U06-A09 | Repeats, attachments and media across V1/V2 amendment | No orphaning, dropped attachments or repeat order corruption | Pending |
 | U06-A10 | Latest form/manifest download while existing draft is V1 | Client can continue or deliberately migrate draft with safe conflict handling | Pending |
 | U06-A11 | Offline edits then server V2 update and sync | No silent client-side migration of answers; conflict/version policy tested | Pending |
