@@ -509,6 +509,40 @@ class PostgreSqlContainerMigrationIT {
                     "SELECT COUNT(*) FROM submissions WHERE id IN (?,?)",
                     Integer.class, sourceId, childId)).isEqualTo(2);
         } finally {
+
+            // The prior duplicate-link failure tests UPDATE+INSERT atomicity.
+            // Now ensure a proposed visit and its attachment do not survive
+            // an invalid work-item completion in the same transaction.
+            UUID provisional = UUID.randomUUID();
+            UUID provisionalMedia = UUID.randomUUID();
+            var candidate = org.odk.platform.domain.Submission.builder()
+                    .id(provisional).instanceId("uuid:" + provisional).build();
+            var wrongVersion = org.odk.platform.domain.FormVersion.builder().id(v1).build();
+            var tx = new org.springframework.transaction.support.TransactionTemplate(
+                    transactionManager);
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    org.springframework.web.server.ResponseStatusException.class,
+                    () -> tx.executeWithoutResult(status -> {
+                        jdbcTemplate.update(
+                                "INSERT INTO submissions(id,form_id,form_version_id,instance_id,"
+                                        + "xml_content,submitted_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
+                                provisional, form, v2, "uuid:" + provisional, "<visit>3</visit>");
+                        jdbcTemplate.update(
+                                "INSERT INTO submission_attachments(id,submission_id,file_name,"
+                                        + "storage_path) VALUES (?,?,?,?)",
+                                provisionalMedia, provisional, "test.jpg", "synthetic/test.jpg");
+                        work.completeIfPresent(project, actor, null, candidate,
+                                wrongVersion, failedWorkId.toString());
+                    }));
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM submissions WHERE id=?", Integer.class, provisional))
+                    .isZero();
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM submission_attachments WHERE id=?",
+                    Integer.class, provisionalMedia)).isZero();
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT state FROM record_work_items WHERE id=?", String.class,
+                    failedWorkId)).isEqualTo("READY");
             jdbcTemplate.update("DELETE FROM record_links WHERE work_item_id=?", workId);
             jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", workId);
             jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", failedWorkId);
