@@ -798,6 +798,151 @@ class PostgreSqlContainerMigrationIT {
                         + "VALUES (?,?,?,?,?,?,?,'FOLLOW_UP','READY',?,?)",
                 workId, project, sourceId, v1, sourceInstance, v2, appUser,
                 "u06-http-" + workId, "second-visit");
+        // A different, fully authenticated enumerator has the SAME active
+        // project/form assignment but not ownership of the source record or
+        // work item. Assignment alone must not grant record access or permit
+        // a deprecatedID update (even without a work-item header).
+        UUID foreignUser = UUID.randomUUID();
+        String foreignLogin = "u06_foreign_" + foreignUser;
+        String foreignPassword = "foreign-enumerator-test-password";
+        String foreignCredential = "Basic " + java.util.Base64.getEncoder()
+                .encodeToString((foreignLogin + ":" + foreignPassword)
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        jdbcTemplate.update(
+                "INSERT INTO app_users(id,username,email,password_hash,full_name,"
+                        + "is_active,is_verified) VALUES (?,?,?,?,?,TRUE,TRUE)",
+                foreignUser, foreignLogin, foreignUser + "@example.test",
+                passwordEncoder.encode(foreignPassword),
+                "Other enumerator assigned to same form");
+        jdbcTemplate.update(
+                "INSERT INTO app_user_projects(id,app_user_id,project_id,form_id,status,"
+                        + "assigned_at,created_at,updated_at) "
+                        + "VALUES (?,?,?,?,'ACTIVE',CURRENT_TIMESTAMP,"
+                        + "CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                UUID.randomUUID(), foreignUser, project, form);
+
+        for (String endpoint : new String[] {
+                "/v1/projects/{projectId}/record-work-items/{workId}/prepare",
+                "/v1/projects/{projectId}/record-work-items/{workId}/typed-mapping-authority"
+        }) {
+            var response = mockMvc.perform(
+                            org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                                    .get(endpoint, project, workId)
+                                    .header("Authorization", foreignCredential))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                            .status().isNotFound())
+                    .andReturn().getResponse().getContentAsString();
+            assertThat(response).doesNotContain("First observation")
+                    .doesNotContain("<data").doesNotContain("<h:html");
+        }
+        for (String endpoint : new String[] {
+                "/v1/projects/{projectId}/records/{sourceId}/target-versions?workType=FOLLOW_UP",
+                "/v1/projects/{projectId}/records/{sourceId}/timeline"
+        }) {
+            var response = mockMvc.perform(
+                            org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                                    .get(endpoint, project, sourceId)
+                                    .header("Authorization", foreignCredential))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                            .status().isNotFound())
+                    .andReturn().getResponse().getContentAsString();
+            assertThat(response).doesNotContain("First observation")
+                    .doesNotContain("age");
+        }
+
+        var foreignRecords = mockMvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                                .get("/v1/projects/{projectId}/records", project)
+                                .header("Authorization", foreignCredential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        var foreignWork = mockMvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                                .get("/v1/projects/{projectId}/record-work-items", project)
+                                .header("Authorization", foreignCredential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        assertThat(json.readTree(foreignRecords).size()).isZero();
+        assertThat(json.readTree(foreignWork).size()).isZero();
+
+        // Attack 1: no work-item header at all. The legacy deprecatedID route
+        // previously looked up the original but failed to check source owner.
+        // A forged same-form amendment must fail before any submission write.
+        String forgedReplacementId = "uuid:" + UUID.randomUUID();
+        String forgedReplacementXml = """
+                <data id="%s" version="2">
+                    <name>Cross-enumerator forged replacement</name>
+                    <ageYears>untrusted</ageYears>
+                    <meta><instanceID>%s</instanceID><deprecatedID>%s</deprecatedID></meta>
+                </data>
+                """.formatted(xmlns, forgedReplacementId, sourceInstance);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "xml_submission_file", "foreign-replacement.xml", "text/xml",
+                                forgedReplacementXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .header("Authorization", foreignCredential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isNotFound());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submissions WHERE instance_id=?", Integer.class,
+                forgedReplacementId)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?", Integer.class,
+                sourceId)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submissions WHERE id=?", String.class, sourceId))
+                .isEqualTo(sourceXml);
+
+        // Attack 2: a new valid instance with the other enumerator's work-id
+        // reaches the transactional work-completion check. It must fail and
+        // roll back the new submission and its physical upload.
+        String stolenWorkInstance = "uuid:" + UUID.randomUUID();
+        String stolenFileName = "foreign-" + UUID.randomUUID() + ".jpg";
+        String stolenXml = """
+                <data id="%s" version="2">
+                    <name>Foreign work completion</name><ageYears>not allowed</ageYears>
+                    <meta><instanceID>%s</instanceID></meta>
+                </data>
+                """.formatted(xmlns, stolenWorkInstance);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "xml_submission_file", "foreign-visit.xml", "text/xml",
+                                stolenXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "photo", stolenFileName, "image/jpeg",
+                                new byte[]{13, 12, 11, 10}))
+                        .header("Authorization", foreignCredential)
+                        .header("X-DataCollector-Work-Item-Id", workId.toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isNotFound());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submissions WHERE instance_id=?", Integer.class,
+                stolenWorkInstance)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_attachments WHERE file_name=?", Integer.class,
+                stolenFileName)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM record_links WHERE work_item_id=?", Integer.class,
+                workId)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM record_work_items WHERE id=?", String.class, workId))
+                .isEqualTo("READY");
+        java.nio.file.Path foreignRoot = java.nio.file.Path.of(submissionsRoot)
+                .toAbsolutePath().normalize();
+        if (java.nio.file.Files.isDirectory(foreignRoot)) {
+            try (var localFiles = java.nio.file.Files.walk(foreignRoot)) {
+                assertThat(localFiles.filter(java.nio.file.Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString()
+                                .endsWith("_" + stolenFileName))
+                        .count()).isZero();
+            }
+        }
+
         // Production PostgreSQL + real Basic auth: preparation must show
         // exact source and target schemas and a review-only bind diff.
         var previewResult = mockMvc.perform(
