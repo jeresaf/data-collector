@@ -847,7 +847,9 @@ class PostgreSqlContainerMigrationIT {
                             .status().isNotFound())
                     .andReturn().getResponse().getContentAsString();
             assertThat(response).doesNotContain("First observation")
-                    .doesNotContain("age");
+                    .doesNotContain("thirty-one")
+                    .doesNotContain("<data")
+                    .doesNotContain("<h:html");
         }
 
         var foreignRecords = mockMvc.perform(
