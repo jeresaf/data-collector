@@ -949,4 +949,212 @@ class PostgreSqlContainerMigrationIT {
                         .status().isConflict());
     }
 
+    @Test
+    void authenticatedHttpV1ToV2AmendmentPreservesIndexedRepeatsOnPostgreSql()
+            throws Exception {
+        // Real PostgreSQL 15/Flyway, MockMvc Basic authentication, JavaRosa
+        // and normalized answer persistence; no mocked intake repositories.
+        UUID owner = jdbcTemplate.queryForObject(
+                "SELECT id FROM users WHERE username='admin' LIMIT 1", UUID.class);
+        UUID project = UUID.randomUUID();
+        UUID form = UUID.randomUUID();
+        UUID v1 = UUID.randomUUID();
+        UUID v2 = UUID.randomUUID();
+        UUID appUser = UUID.randomUUID();
+        String formName = "u06_pg_repeat_" + project.toString().replace("-", "");
+        String sourceInstance = "uuid:" + UUID.randomUUID();
+        String revisedInstance = "uuid:" + UUID.randomUUID();
+        String login = "u06_pg_repeat_" + appUser;
+        String password = "test-repeat-amendment-only";
+        String credential = "Basic " + java.util.Base64.getEncoder().encodeToString(
+                (login + ":" + password)
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        String xformV1 = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <h:html xmlns:h="http://www.w3.org/1999/xhtml"
+                    xmlns="http://www.w3.org/2002/xforms">
+                  <h:head><h:title>U06 PostgreSQL repeat amendment</h:title>
+                    <model>
+                      <instance>
+                        <data id="%s" version="1.0">
+                          <name/>
+                          <children><child_name/><child_age/></children>
+                          <meta><instanceID/></meta>
+                        </data>
+                      </instance>
+                      <bind nodeset="/data/name" type="string"/>
+                      <bind nodeset="/data/children/child_name" type="string"/>
+                      <bind nodeset="/data/children/child_age" type="int"/>
+                    </model>
+                  </h:head>
+                  <h:body>
+                    <input ref="/data/name"><label>Respondent</label></input>
+                    <repeat nodeset="/data/children">
+                      <label>Children</label>
+                      <input ref="/data/children/child_name"><label>Child name</label></input>
+                      <input ref="/data/children/child_age"><label>Age</label></input>
+                    </repeat>
+                  </h:body>
+                </h:html>
+                """.formatted(formName);
+        String xformV2 = xformV1
+                .replace("<data id=\"" + formName + "\" version=\"1.0\">",
+                        "<data id=\"" + formName + "\" version=\"2.0\">")
+                .replace("<child_age/>", "<child_age_text/>")
+                .replace("/data/children/child_age", "/data/children/child_age_text")
+                .replace("nodeset=\"/data/children/child_age_text\" type=\"int\"",
+                        "nodeset=\"/data/children/child_age_text\" type=\"string\"");
+        assertThat(xformV2).contains("version=\"2.0\"")
+                .contains("nodeset=\"/data/children/child_age_text\" type=\"string\"")
+                .doesNotContain("nodeset=\"/data/children/child_age\" type=\"int\"");
+
+        jdbcTemplate.update(
+                "INSERT INTO projects(id,name,owner_id,created_by_id) VALUES (?,?,?,?)",
+                project, "U06 PG Repeat", owner, owner);
+        jdbcTemplate.update(
+                "INSERT INTO xforms(id,title,xmlns,project_id,created_by_id,is_published) "
+                        + "VALUES (?,?,?,?,?,TRUE)",
+                form, "U06 PG Repeat", formName, project, owner);
+        jdbcTemplate.update(
+                "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                        + "created_by_id,is_published,is_latest) "
+                        + "VALUES (?,?,?,?,?,?,TRUE,FALSE)",
+                v1, form, "1.0", xformV1, formName, owner);
+        jdbcTemplate.update(
+                "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                        + "created_by_id,is_published,is_latest) "
+                        + "VALUES (?,?,?,?,?,?,TRUE,TRUE)",
+                v2, form, "2.0", xformV2, formName, owner);
+        jdbcTemplate.update("UPDATE xforms SET current_version_id=? WHERE id=?", v2, form);
+        jdbcTemplate.update(
+                "INSERT INTO app_users(id,username,email,password_hash,full_name,"
+                        + "is_active,is_verified) VALUES (?,?,?,?,?,TRUE,TRUE)",
+                appUser, login, appUser + "@example.test",
+                passwordEncoder.encode(password), "U06 PostgreSQL repeat owner");
+        jdbcTemplate.update(
+                "INSERT INTO app_user_projects(id,app_user_id,project_id,form_id,status,"
+                        + "assigned_at,created_at,updated_at) "
+                        + "VALUES (?,?,?,?,'ACTIVE',CURRENT_TIMESTAMP,"
+                        + "CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                UUID.randomUUID(), appUser, project, form);
+
+        // Late V1 intake after V2 publication must select exactly the V1
+        // definition and retain both integer-valued child repeats.
+        String originalXml = """
+                <data id="%s" version="1.0">
+                  <name>Original household</name>
+                  <children><child_name>Amina</child_name><child_age>5</child_age></children>
+                  <children><child_name>Juma</child_name><child_age>3</child_age></children>
+                  <meta><instanceID>%s</instanceID></meta>
+                </data>
+                """.formatted(formName, sourceInstance);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "xml_submission_file", "repeat-v1.xml", "text/xml",
+                                originalXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isCreated());
+        UUID sourceId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id=?", UUID.class, sourceInstance);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id=?", UUID.class, sourceId))
+                .isEqualTo(v1);
+        var v1Rows = jdbcTemplate.queryForList(
+                "SELECT path,value_number,repeat_path,repeat_index FROM submission_answers "
+                        + "WHERE submission_id=? AND path LIKE 'children%/child_age' ORDER BY path",
+                sourceId);
+        assertThat(v1Rows).hasSize(2);
+        assertThat(v1Rows.get(0).get("path")).isEqualTo("children[0]/child_age");
+        assertThat(v1Rows.get(1).get("path")).isEqualTo("children[1]/child_age");
+        assertThat(v1Rows.get(0).get("repeat_path")).isEqualTo("children");
+        assertThat(((Number) v1Rows.get(0).get("repeat_index")).intValue()).isZero();
+        assertThat(((Number) v1Rows.get(1).get("repeat_index")).intValue()).isEqualTo(1);
+        assertThat(new java.math.BigDecimal(v1Rows.get(0).get("value_number").toString()))
+                .isEqualByComparingTo("5");
+        assertThat(new java.math.BigDecimal(v1Rows.get(1).get("value_number").toString()))
+                .isEqualByComparingTo("3");
+
+        String amendedXml = """
+                <data id="%s" version="2.0">
+                  <name>Corrected household</name>
+                  <children><child_name>Amina</child_name>
+                    <child_age_text>five years</child_age_text></children>
+                  <children><child_name>Juma</child_name>
+                    <child_age_text>three years</child_age_text></children>
+                  <meta><instanceID>%s</instanceID><deprecatedID>%s</deprecatedID></meta>
+                </data>
+                """.formatted(formName, revisedInstance, sourceInstance);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "xml_submission_file", "repeat-v2.xml", "text/xml",
+                                amendedXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isCreated());
+
+        UUID amendedId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id=?", UUID.class, revisedInstance);
+        assertThat(amendedId).isNotEqualTo(sourceId);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id=?", UUID.class, sourceId))
+                .isEqualTo(v1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submissions WHERE id=?", String.class, sourceId))
+                .isEqualTo(originalXml);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id=?", UUID.class, amendedId))
+                .isEqualTo(v2);
+        var archive = jdbcTemplate.queryForMap(
+                "SELECT xml_content,source_form_version_id,instance_id "
+                        + "FROM submission_versions WHERE submission_id=?", sourceId);
+        assertThat(archive.get("xml_content")).isEqualTo(originalXml);
+        assertThat(archive.get("source_form_version_id")).isEqualTo(v1);
+        assertThat(archive.get("instance_id")).isEqualTo(sourceInstance);
+
+        var intactV1 = jdbcTemplate.queryForList(
+                "SELECT path,value_number,repeat_index FROM submission_answers "
+                        + "WHERE submission_id=? AND path LIKE 'children%/child_age' ORDER BY path",
+                sourceId);
+        assertThat(intactV1).hasSize(2);
+        assertThat(new java.math.BigDecimal(intactV1.get(0).get("value_number").toString()))
+                .isEqualByComparingTo("5");
+        assertThat(new java.math.BigDecimal(intactV1.get(1).get("value_number").toString()))
+                .isEqualByComparingTo("3");
+        var newRows = jdbcTemplate.queryForList(
+                "SELECT path,value_text,repeat_path,repeat_index FROM submission_answers "
+                        + "WHERE submission_id=? AND path LIKE 'children%/child_age_text' "
+                        + "ORDER BY path", amendedId);
+        assertThat(newRows).hasSize(2);
+        assertThat(newRows.get(0).get("path")).isEqualTo("children[0]/child_age_text");
+        assertThat(newRows.get(1).get("path")).isEqualTo("children[1]/child_age_text");
+        assertThat(newRows.get(0).get("value_text")).isEqualTo("five years");
+        assertThat(newRows.get(1).get("value_text")).isEqualTo("three years");
+        assertThat(((Number) newRows.get(0).get("repeat_index")).intValue()).isZero();
+        assertThat(((Number) newRows.get(1).get("repeat_index")).intValue()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_answers "
+                        + "WHERE submission_id=? AND path LIKE 'children%/child_age'",
+                Integer.class, amendedId)).isZero();
+
+        // Repeat submission with a stale instance ID is never a second edit.
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "xml_submission_file", "repeat-v2-replay.xml", "text/xml",
+                                amendedXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isConflict());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?",
+                Integer.class, sourceId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submissions WHERE instance_id=?", Integer.class,
+                revisedInstance)).isEqualTo(1);
+    }
+
 }
