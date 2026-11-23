@@ -1459,17 +1459,90 @@ class PostgreSqlContainerMigrationIT {
         assertThat(java.nio.file.Files.readAllBytes(java.nio.file.Path.of(amendedPhotoPath)))
                 .containsExactly(revisedPhoto);
 
+        // An old V1 submission remains visible in the audit/listing API,
+        // but must be marked as superseded once its replacement is archived.
+        // Recovery UI may display history; it cannot assume the old source is
+        // eligible to start a NEW amendment just because it is still listed.
+        var recordsJson = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                                .get("/v1/projects/{projectId}/records", project)
+                                .header("Authorization", credential))
+                        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                                .status().isOk())
+                        .andReturn().getResponse().getContentAsString());
+        assertThat(recordsJson.isArray()).isTrue();
+        assertThat(recordsJson.size()).isEqualTo(2);
+        java.util.Map<String, Boolean> superseded = new java.util.HashMap<>();
+        recordsJson.forEach(node -> {
+            assertThat(node.has("amendmentSuperseded")).isTrue();
+            superseded.put(node.get("submissionId").asText(),
+                    node.get("amendmentSuperseded").asBoolean());
+        });
+        assertThat(superseded.get(sourceId.toString())).isTrue();
+        assertThat(superseded.get(amendedId.toString())).isFalse();
+
+        // New AMENDMENT against the *old* V1 source is denied even if a
+        // previous offline task has already become stale. The rejection
+        // occurs in work-item creation BEFORE exposing another draft.
+        String oldRequestId = "old-source-" + UUID.randomUUID();
+        String oldAmendmentRequest = """
+                {"sourceSubmissionId":"%s","targetFormVersionId":"%s",
+                 "workType":"AMENDMENT","clientRequestId":"%s"}
+                """.formatted(sourceId, v2, oldRequestId);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/v1/projects/{projectId}/record-work-items", project)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content(oldAmendmentRequest)
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isConflict());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM record_work_items WHERE client_request_id=?",
+                Integer.class, oldRequestId)).isZero();
+
+        // FOLLOW_UP is an independent second visit, not an amendment. It is
+        // still allowed against V1 if the enumerator explicitly chooses that
+        // historic visit, and it does not change the V1 archive.
+        String followUpRequestId = "historic-visit-" + UUID.randomUUID();
+        String followUpRequest = """
+                {"sourceSubmissionId":"%s","targetFormVersionId":"%s",
+                 "workType":"FOLLOW_UP","clientRequestId":"%s",
+                 "visitKey":"visit-from-historic-source"}
+                """.formatted(sourceId, v2, followUpRequestId);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/v1/projects/{projectId}/record-work-items", project)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content(followUpRequest)
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isCreated());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?",
+                Integer.class, sourceId)).isEqualTo(1);
+
         // Fresh work created against the most recently submitted revision
         // MUST still work: the stale guard cannot prohibit legitimate later
         // corrections that reference the newest instance instead of V1.
-        UUID freshWorkId = UUID.randomUUID();
-        jdbcTemplate.update(
-                "INSERT INTO record_work_items(id,project_id,source_submission_id,"
-                        + "source_form_version_id,source_instance_id,target_form_version_id,"
-                        + "assigned_app_user_id,work_type,state,client_request_id) "
-                        + "VALUES (?,?,?,?,?,?,?,'AMENDMENT','READY',?)",
-                freshWorkId, project, amendedId, v2, revisedInstance,
-                v2, appUser, "fresh-pg-" + freshWorkId);
+        String freshRequestId = "fresh-source-" + UUID.randomUUID();
+        String freshRequest = """
+                {"sourceSubmissionId":"%s","targetFormVersionId":"%s",
+                 "workType":"AMENDMENT","clientRequestId":"%s"}
+                """.formatted(amendedId, v2, freshRequestId);
+        String freshWorkResponse = mockMvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                                .post("/v1/projects/{projectId}/record-work-items", project)
+                                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                                .content(freshRequest)
+                                .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        UUID freshWorkId = UUID.fromString(
+                new com.fasterxml.jackson.databind.ObjectMapper()
+                        .readTree(freshWorkResponse).get("id").asText());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT source_submission_id FROM record_work_items WHERE id=?",
+                UUID.class, freshWorkId)).isEqualTo(amendedId);
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                         .get("/v1/projects/{projectId}/record-work-items/{workId}/prepare",
                                 project, freshWorkId)
