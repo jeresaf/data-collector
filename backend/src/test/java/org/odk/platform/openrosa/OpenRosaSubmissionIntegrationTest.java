@@ -597,6 +597,100 @@ class OpenRosaSubmissionIntegrationTest {
     }
 
     @Test
+    void v1RecordAfterV2PublicationRetainsExactHistoryThroughAuthenticatedAmendment()
+            throws Exception {
+        // Real MockMvc -> Mobile Basic auth -> JavaRosa -> JDBC/H2, not mocked
+        // intake services. A published V2 must never reinterpret a V1 instance.
+        UUID formId = jdbcTemplate.queryForObject(
+                "SELECT id FROM xforms WHERE project_id = ? AND xmlns = ?",
+                UUID.class, testProjectId, testFormXmlns);
+        assertNotNull(formId);
+        Map<String, Object> previous = jdbcTemplate.queryForMap(
+                "SELECT id,xml_content FROM form_versions WHERE form_id = ? AND is_latest = true",
+                formId);
+        UUID v1Id = UUID.fromString(previous.get("id").toString());
+        String oldDefinition = previous.get("xml_content").toString();
+        String newDefinition = oldDefinition.replaceFirst(
+                "(<data[^>]*\\bversion=\\\")1\\.0(\\\")", "$1" + "2.0" + "$2");
+        assertNotEquals(oldDefinition, newDefinition,
+                "V2 must change only the XForm instance version, not the XML declaration");
+        UUID v2Id = UUID.randomUUID();
+        jdbcTemplate.update("UPDATE form_versions SET is_latest = false WHERE id = ?", v1Id);
+        jdbcTemplate.update(
+                "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                        + "created_by_id,is_published,is_latest) "
+                        + "SELECT ?,form_id,'2.0',?,xmlns,created_by_id,true,true "
+                        + "FROM form_versions WHERE id = ?",
+                v2Id, newDefinition, v1Id);
+        jdbcTemplate.update(
+                "UPDATE xforms SET current_version_id = ? WHERE id = ?", v2Id, formId);
+
+        String sourceId = "uuid:" + UUID.randomUUID();
+        String amendedId = "uuid:" + UUID.randomUUID();
+        String firstXml = """
+                <data id="test_submission_form" version="1.0">
+                    <name>First visit</name><age>26</age>
+                    <meta><instanceID>%s</instanceID></meta>
+                </data>
+                """.formatted(sourceId);
+        var firstFile = new MockMultipartFile("xml_submission_file", "v1.xml",
+                MediaType.APPLICATION_XML_VALUE, firstXml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
+                        .file(firstFile).header("Authorization", validCredentials))
+                .andExpect(status().isCreated());
+        UUID originalRowId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, sourceId);
+        assertNotNull(originalRowId);
+        assertEquals(v1Id, jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id = ?", UUID.class, originalRowId));
+
+        // A known V2 version is selected for the correction, but deprecatedID
+        // still identifies the V1 source; the source XML must remain immutable.
+        String correctedXml = """
+                <data id="test_submission_form" version="2.0">
+                    <name>Corrected visit</name><age>27</age>
+                    <meta><instanceID>%s</instanceID><deprecatedID>%s</deprecatedID></meta>
+                </data>
+                """.formatted(amendedId, sourceId);
+        var correctedFile = new MockMultipartFile("xml_submission_file", "v2.xml",
+                MediaType.APPLICATION_XML_VALUE,
+                correctedXml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
+                        .file(correctedFile).header("Authorization", validCredentials))
+                .andExpect(status().isCreated());
+
+        assertEquals(firstXml, jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submissions WHERE id = ?", String.class, originalRowId));
+        assertEquals(v1Id, jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id = ?", UUID.class, originalRowId));
+        assertEquals(v2Id, jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE instance_id = ?",
+                UUID.class, amendedId));
+        Map<String, Object> archive = jdbcTemplate.queryForMap(
+                "SELECT source_form_version_id,xml_content,instance_id "
+                        + "FROM submission_versions WHERE submission_id = ?", originalRowId);
+        assertEquals(v1Id, UUID.fromString(archive.get("source_form_version_id").toString()));
+        assertEquals(sourceId, archive.get("instance_id"));
+        assertEquals(firstXml, archive.get("xml_content"));
+
+        // Explicitly unknown versions fail before any persisted submission.
+        String unknownId = "uuid:" + UUID.randomUUID();
+        var invalidVersion = new MockMultipartFile("xml_submission_file", "unknown.xml",
+                MediaType.APPLICATION_XML_VALUE, ("""
+                <data id="test_submission_form" version="999">
+                    <name>Do not persist</name>
+                    <meta><instanceID>%s</instanceID></meta>
+                </data>
+                """.formatted(unknownId)).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
+                        .file(invalidVersion).header("Authorization", validCredentials))
+                .andExpect(status().isBadRequest());
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submissions WHERE instance_id = ?",
+                Integer.class, unknownId));
+    }
+
+    @Test
     void submissionPostEndpoint_WithDeprecatedIdForNonExistentInstance_Returns404() throws Exception {
         String instanceId2 = "uuid:22222222-2222-2222-2222-222222222222";
         String nonExistentDeprecatedId = "uuid:99999999-9999-9999-9999-999999999999";
