@@ -52,6 +52,12 @@ Added two JUnit/Mockito regression tests on `OpenRosaSubmissionServiceTest`:
 
 **Limits:** These tests establish the intake *routing and service invocation contracts* with mocked storage. They do **not** yet demonstrate durable `submission_versions` history, exact `record_links` state, rollback, version-change answer mapping, attachment/repeat preservation or Android offline editing. Those must be verified with PostgreSQL-backed integration and client tests before accepting the full scenarios.
 
+## PostgreSQL V1 archive regression — CI qualification pending
+
+Added a database-backed test to `PostgreSqlContainerMigrationIT` which runs the **real production Flyway chain in an isolated Testcontainers PostgreSQL instance**. The synthetic fixture creates one project/form, V1 and V2 form-version records, and a durable V1 submission. It invokes the real `SubmissionReplacementService.createReplacement` archive SQL through `JdbcTemplate`, while mocking only the repository save for the new submission. It inspects `submission_versions` for the exact source XML, source instance ID, source form-version ID and sequential version numbers, and checks the original `submissions` row still holds its V1 identity and XML.
+
+**Limitation:** This isolates the history SQL and does not yet exercise the whole HTTP intake transaction, actual replacement-row persistence, real work-item completion or the `record_links` relationship. It must not be counted as satisfying second-visit durable lineage; a further PostgreSQL integration slice is required. The first CI attempt failed test compilation due to a missing `java.util.UUID` import, which has been corrected. Await exact-head CI before qualifying this archive test.
+
 ## First bounded implementation step
 
 Before changing production code, locate existing version/replacement/record-work tests on this safe branch and add **server-side regressions for U06-A04/A05/A06**, with explicit version resolution and no partial persistence on rejection. Then add V1 → V2 amendment and second-visit matrix using synthetic XLSForms and submit/replacement fixtures. Maintain both negative and positive evidence. Android physical tests remain deferred; collect automated emulator evidence separately if available.
