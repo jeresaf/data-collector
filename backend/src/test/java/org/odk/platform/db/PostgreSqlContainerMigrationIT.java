@@ -978,18 +978,20 @@ class PostgreSqlContainerMigrationIT {
                     <model>
                       <instance>
                         <data id="%s" version="1.0">
-                          <name/>
+                          <name/><photo/>
                           <children><child_name/><child_age/></children>
                           <meta><instanceID/></meta>
                         </data>
                       </instance>
                       <bind nodeset="/data/name" type="string"/>
+                      <bind nodeset="/data/photo" type="binary"/>
                       <bind nodeset="/data/children/child_name" type="string"/>
                       <bind nodeset="/data/children/child_age" type="int"/>
                     </model>
                   </h:head>
                   <h:body>
                     <input ref="/data/name"><label>Respondent</label></input>
+                    <upload ref="/data/photo" mediatype="image/*"><label>Photo</label></upload>
                     <repeat nodeset="/data/children">
                       <label>Children</label>
                       <input ref="/data/children/child_name"><label>Child name</label></input>
@@ -1044,16 +1046,20 @@ class PostgreSqlContainerMigrationIT {
         String originalXml = """
                 <data id="%s" version="1.0">
                   <name>Original household</name>
+                  <photo>household-v1.jpg</photo>
                   <children><child_name>Amina</child_name><child_age>5</child_age></children>
                   <children><child_name>Juma</child_name><child_age>3</child_age></children>
                   <meta><instanceID>%s</instanceID></meta>
                 </data>
                 """.formatted(formName, sourceInstance);
+        byte[] sourcePhoto = new byte[]{1, 3, 5, 7, 9, 11};
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                         .multipart("/v1/projects/{projectId}/submission", project)
                         .file(new org.springframework.mock.web.MockMultipartFile(
                                 "xml_submission_file", "repeat-v1.xml", "text/xml",
                                 originalXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "photo", "household-v1.jpg", "image/jpeg", sourcePhoto))
                         .header("Authorization", credential))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
                         .status().isCreated());
@@ -1062,6 +1068,21 @@ class PostgreSqlContainerMigrationIT {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT form_version_id FROM submissions WHERE id=?", UUID.class, sourceId))
                 .isEqualTo(v1);
+        // PostgreSQL metadata must point to a real source-specific file,
+        // linked to the exact binary answer of the original V1 submission.
+        var sourceAttachment = jdbcTemplate.queryForMap(
+                "SELECT sa.file_name,sa.storage_path,sa.content_hash,sa.answer_id,"
+                        + "a.path AS answer_path FROM submission_attachments sa "
+                        + "LEFT JOIN submission_answers a ON a.id=sa.answer_id "
+                        + "WHERE sa.submission_id=?", sourceId);
+        assertThat(sourceAttachment.get("file_name")).isEqualTo("household-v1.jpg");
+        assertThat(sourceAttachment.get("answer_id")).isNotNull();
+        assertThat(sourceAttachment.get("answer_path")).isEqualTo("photo");
+        String oldPhotoPath = sourceAttachment.get("storage_path").toString();
+        assertThat(java.nio.file.Files.readAllBytes(java.nio.file.Path.of(oldPhotoPath)))
+                .containsExactly(sourcePhoto);
+        String oldPhotoHash = sourceAttachment.get("content_hash").toString();
+
         var v1Rows = jdbcTemplate.queryForList(
                 "SELECT path,value_number,repeat_path,repeat_index FROM submission_answers "
                         + "WHERE submission_id=? AND path LIKE 'children%/child_age' ORDER BY path",
@@ -1080,6 +1101,7 @@ class PostgreSqlContainerMigrationIT {
         String amendedXml = """
                 <data id="%s" version="2.0">
                   <name>Corrected household</name>
+                  <photo>household-v2.jpg</photo>
                   <children><child_name>Amina</child_name>
                     <child_age_text>five years</child_age_text></children>
                   <children><child_name>Juma</child_name>
@@ -1087,11 +1109,14 @@ class PostgreSqlContainerMigrationIT {
                   <meta><instanceID>%s</instanceID><deprecatedID>%s</deprecatedID></meta>
                 </data>
                 """.formatted(formName, revisedInstance, sourceInstance);
+        byte[] revisedPhoto = new byte[]{2, 4, 6, 8, 10, 12, 14};
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                         .multipart("/v1/projects/{projectId}/submission", project)
                         .file(new org.springframework.mock.web.MockMultipartFile(
                                 "xml_submission_file", "repeat-v2.xml", "text/xml",
                                 amendedXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "photo", "household-v2.jpg", "image/jpeg", revisedPhoto))
                         .header("Authorization", credential))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
                         .status().isCreated());
@@ -1099,6 +1124,30 @@ class PostgreSqlContainerMigrationIT {
         UUID amendedId = jdbcTemplate.queryForObject(
                 "SELECT id FROM submissions WHERE instance_id=?", UUID.class, revisedInstance);
         assertThat(amendedId).isNotEqualTo(sourceId);
+        var amendedAttachment = jdbcTemplate.queryForMap(
+                "SELECT sa.file_name,sa.storage_path,sa.content_hash,sa.answer_id,"
+                        + "a.path AS answer_path FROM submission_attachments sa "
+                        + "LEFT JOIN submission_answers a ON a.id=sa.answer_id "
+                        + "WHERE sa.submission_id=?", amendedId);
+        assertThat(amendedAttachment.get("file_name")).isEqualTo("household-v2.jpg");
+        assertThat(amendedAttachment.get("answer_id")).isNotNull();
+        assertThat(amendedAttachment.get("answer_path")).isEqualTo("photo");
+        String amendedPhotoPath = amendedAttachment.get("storage_path").toString();
+        assertThat(amendedPhotoPath).isNotEqualTo(oldPhotoPath);
+        assertThat(amendedAttachment.get("content_hash"))
+                .isNotEqualTo(oldPhotoHash);
+        assertThat(java.nio.file.Files.readAllBytes(java.nio.file.Path.of(amendedPhotoPath)))
+                .containsExactly(revisedPhoto);
+        // V1 media remains byte-identical and in the V1 submission directory
+        // after V2 creates its own attachment and new child repeat answers.
+        assertThat(java.nio.file.Files.readAllBytes(java.nio.file.Path.of(oldPhotoPath)))
+                .containsExactly(sourcePhoto);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_attachments WHERE submission_id=?",
+                Integer.class, sourceId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_attachments WHERE submission_id=?",
+                Integer.class, amendedId)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT form_version_id FROM submissions WHERE id=?", UUID.class, sourceId))
                 .isEqualTo(v1);
@@ -1155,6 +1204,13 @@ class PostgreSqlContainerMigrationIT {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM submissions WHERE instance_id=?", Integer.class,
                 revisedInstance)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_attachments WHERE submission_id=?",
+                Integer.class, amendedId)).isEqualTo(1);
+        assertThat(java.nio.file.Files.readAllBytes(java.nio.file.Path.of(oldPhotoPath)))
+                .containsExactly(sourcePhoto);
+        assertThat(java.nio.file.Files.readAllBytes(java.nio.file.Path.of(amendedPhotoPath)))
+                .containsExactly(revisedPhoto);
     }
 
 }
