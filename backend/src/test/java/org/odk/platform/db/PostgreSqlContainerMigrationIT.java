@@ -363,6 +363,7 @@ class PostgreSqlContainerMigrationIT {
         UUID childId = UUID.randomUUID();
         UUID workId = UUID.randomUUID();
         UUID failedWorkId = UUID.randomUUID();
+        UUID amendmentWorkId = UUID.randomUUID();
         UUID appUserId = UUID.randomUUID();
         String originalInstance = "uuid:u06-first-" + sourceId;
         String secondInstance = "uuid:u06-second-" + childId;
@@ -541,11 +542,64 @@ class PostgreSqlContainerMigrationIT {
             assertThat(jdbcTemplate.queryForObject(
                     "SELECT state FROM record_work_items WHERE id=?", String.class,
                     failedWorkId)).isEqualTo("READY");
+
+            // The server owns the distinction between AMENDMENT (must replace
+            // precisely its source) and FOLLOW_UP (must create a new record).
+            // A client must not switch workflows just by altering deprecatedID.
+            var followUpMisclassifiedAsReplacement =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            org.springframework.web.server.ResponseStatusException.class,
+                            () -> tx.executeWithoutResult(ignored ->
+                                    work.completeIfPresent(project, actor, sourceEntity,
+                                            childEntity, target, failedWorkId.toString())));
+            assertThat(followUpMisclassifiedAsReplacement.getStatusCode().value())
+                    .isEqualTo(409);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT state FROM record_work_items WHERE id=?", String.class,
+                    failedWorkId)).isEqualTo("READY");
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                    Integer.class, failedWorkId)).isZero();
+
+            jdbcTemplate.update(
+                    "INSERT INTO record_work_items(id,project_id,source_submission_id,"
+                            + "source_form_version_id,source_instance_id,target_form_version_id,"
+                            + "assigned_app_user_id,work_type,state,client_request_id) "
+                            + "VALUES (?,?,?,?,?,?,?,'AMENDMENT','READY',?)",
+                    amendmentWorkId, project, sourceId, v1, originalInstance, v2,
+                    appUserId, "u06-work-" + amendmentWorkId);
+            var amendmentMisclassifiedAsNewVisit =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            org.springframework.web.server.ResponseStatusException.class,
+                            () -> tx.executeWithoutResult(ignored ->
+                                    work.completeIfPresent(project, actor, null,
+                                            childEntity, target, amendmentWorkId.toString())));
+            assertThat(amendmentMisclassifiedAsNewVisit.getStatusCode().value())
+                    .isEqualTo(409);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT state FROM record_work_items WHERE id=?", String.class,
+                    amendmentWorkId)).isEqualTo("READY");
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                    Integer.class, amendmentWorkId)).isZero();
+
+            // Both invalid routes leave the committed original and valid
+            // follow-up intact, with no synthetic replacement-history entry.
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                    Integer.class, workId)).isEqualTo(1);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM submissions WHERE id IN (?,?)",
+                    Integer.class, sourceId, childId)).isEqualTo(2);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?",
+                    Integer.class, sourceId)).isZero();
         } finally {
 
             jdbcTemplate.update("DELETE FROM record_links WHERE work_item_id=?", workId);
             jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", workId);
             jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", failedWorkId);
+            jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", amendmentWorkId);
             jdbcTemplate.update("DELETE FROM submissions WHERE id IN (?,?)", childId, sourceId);
             jdbcTemplate.update("DELETE FROM form_versions WHERE id IN (?,?)", v1, v2);
             jdbcTemplate.update("DELETE FROM app_users WHERE id=?", appUserId);
