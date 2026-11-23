@@ -308,6 +308,7 @@ class OpenRosaSubmissionServiceTest {
                 + "<deprecatedID>" + previousId + "</deprecatedID></meta></data>";
         Submission original = Submission.builder()
                 .id(UUID.randomUUID()).form(form).formVersion(version)
+                .submittedBy(appUser)
                 .instanceId(previousId).xmlContent("<original-v1/>").build();
         when(parser.parseEnvelope(xml)).thenReturn(
                 new SubmissionXmlParser.SubmissionEnvelope("demo", "2", newId, previousId));
@@ -361,6 +362,82 @@ class OpenRosaSubmissionServiceTest {
         verify(audit).log(eq(AuditActions.SUBMISSION_REPLACED), eq("SUBMISSION"),
                 eq(replacementId), eq(newId), anyMap());
         verify(versions, never()).findLatestByFormId(any());
+    }
+
+    @Test
+    void crossEnumeratorDeprecatedIdCannotReplaceAnotherUsersRecord() {
+        String originalId = "uuid:other-enumerator-original";
+        String attemptedId = "uuid:attacker-amendment";
+        String xml = "<data id=\"demo\" version=\"1\"><meta>"
+                + "<instanceID>" + attemptedId + "</instanceID>"
+                + "<deprecatedID>" + originalId + "</deprecatedID>"
+                + "</meta></data>";
+        MockMultipartFile xmlFile = new MockMultipartFile(
+                "xml_submission_file", "forged.xml", "text/xml",
+                xml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        AppUser otherEnumerator = AppUser.builder()
+                .id(UUID.randomUUID()).username("another-collector").build();
+        Submission protectedOriginal = Submission.builder()
+                .id(UUID.randomUUID()).form(form)
+                .formVersion(version).submittedBy(otherEnumerator)
+                .instanceId(originalId).xmlContent("<protected-v1/>").build();
+
+        when(parser.parseEnvelope(xml)).thenReturn(
+                new SubmissionXmlParser.SubmissionEnvelope(
+                        "demo", "1", attemptedId, originalId));
+        when(submissions.findByFormIdAndInstanceId(form.getId(), attemptedId))
+                .thenReturn(Optional.empty());
+        when(submissions.findByFormIdAndInstanceId(form.getId(), originalId))
+                .thenReturn(Optional.of(protectedOriginal));
+
+        var error = assertThrows(OpenRosaSubmissionService.IntakeException.class,
+                () -> service.receive(projectId, xmlFile,
+                        new LinkedMultiValueMap<>(), request));
+
+        assertEquals(HttpStatus.NOT_FOUND, error.getStatus(),
+                "A foreign source ID must not be disclosed or amended");
+        assertEquals("<protected-v1/>", protectedOriginal.getXmlContent());
+        verify(parser, never()).parseAndValidate(anyString(), anyString(), anyMap());
+        verify(datasets, never()).loadActiveDatasetContents(any());
+        verify(replacements, never()).createReplacement(any(), any(), anyString());
+        verify(persistence, never()).persistProcessedData(
+                any(), any(), any(), any(), any(), any(), any(), any());
+        verify(attachments, never()).store(any(), any(), anyString());
+        verify(recordWork, never()).completeIfPresent(any(), any(), any(), any(), any(), any());
+        verify(audit, never()).log(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void ownerlessHistoricalSourceCannotBeClaimedViaDeprecatedId() {
+        String originalId = "uuid:ownerless-original";
+        String attemptedId = "uuid:claim-ownerless";
+        String xml = "<data id=\"demo\" version=\"1\"><meta>"
+                + "<instanceID>" + attemptedId + "</instanceID>"
+                + "<deprecatedID>" + originalId + "</deprecatedID>"
+                + "</meta></data>";
+        MockMultipartFile xmlFile = new MockMultipartFile(
+                "xml_submission_file", "claim.xml", "text/xml",
+                xml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Submission ownerless = Submission.builder().id(UUID.randomUUID())
+                .form(form).formVersion(version).instanceId(originalId)
+                .xmlContent("<untouched/>").build();
+        when(parser.parseEnvelope(xml)).thenReturn(
+                new SubmissionXmlParser.SubmissionEnvelope(
+                        "demo", "1", attemptedId, originalId));
+        when(submissions.findByFormIdAndInstanceId(form.getId(), attemptedId))
+                .thenReturn(Optional.empty());
+        when(submissions.findByFormIdAndInstanceId(form.getId(), originalId))
+                .thenReturn(Optional.of(ownerless));
+
+        var error = assertThrows(OpenRosaSubmissionService.IntakeException.class,
+                () -> service.receive(projectId, xmlFile,
+                        new LinkedMultiValueMap<>(), request));
+
+        assertEquals(HttpStatus.NOT_FOUND, error.getStatus());
+        verify(replacements, never()).createReplacement(any(), any(), anyString());
+        verify(parser, never()).parseAndValidate(anyString(), anyString(), anyMap());
+        verify(submissions, never()).saveAndFlush(any());
+        assertEquals("<untouched/>", ownerless.getXmlContent());
     }
 
     @Test
