@@ -351,7 +351,8 @@ class PostgreSqlContainerMigrationIT {
     }
 
     @Test
-    void followUpWorkPersistsDistinctSubmissionAndDurableRecordLinkOnPostgreSql()
+    void followUpWorkPersistsDistinctSubmissionAndDurableRecordLinkOnPostgreSql(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path testFiles)
             throws Exception {
         UUID owner = jdbcTemplate.queryForObject(
                 "SELECT id FROM users WHERE username='admin' LIMIT 1", UUID.class);
@@ -594,6 +595,71 @@ class PostgreSqlContainerMigrationIT {
             assertThat(jdbcTemplate.queryForObject(
                     "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?",
                     Integer.class, sourceId)).isZero();
+
+            // The earlier test exercises rollback of attachment *metadata*.
+            // This second transaction invokes the real local file writer and
+            // proves an actual Spring/PostgreSQL rollback removes its file too.
+            UUID onDiskSubmission = UUID.randomUUID();
+            UUID onDiskAttachment = UUID.randomUUID();
+            var attachmentRepository = org.mockito.Mockito.mock(
+                    org.odk.platform.repository.SubmissionAttachmentRepository.class);
+            var answerRepository = org.mockito.Mockito.mock(
+                    org.odk.platform.repository.SubmissionAnswerRepository.class);
+            org.mockito.Mockito.when(attachmentRepository.saveAndFlush(
+                    org.mockito.Mockito.any(org.odk.platform.domain.SubmissionAttachment.class)))
+                    .thenAnswer(invocation -> {
+                        var row = (org.odk.platform.domain.SubmissionAttachment)
+                                invocation.getArgument(0);
+                        jdbcTemplate.update(
+                                "INSERT INTO submission_attachments(id,submission_id,file_name,"
+                                        + "storage_path) VALUES (?,?,?,?)",
+                                onDiskAttachment, onDiskSubmission,
+                                row.getFileName(), row.getStoragePath());
+                        return row;
+                    });
+            var attachmentWriter = new org.odk.platform.service.SubmissionAttachmentService(
+                    attachmentRepository, answerRepository);
+            org.springframework.test.util.ReflectionTestUtils.setField(
+                    attachmentWriter, "submissionsRoot", testFiles.toString());
+            var savedPath = new java.util.concurrent.atomic.AtomicReference<java.nio.file.Path>();
+            var onDiskCandidate = org.odk.platform.domain.Submission.builder()
+                    .id(onDiskSubmission).instanceId("uuid:" + onDiskSubmission).build();
+            var onDiskPhoto = new org.springframework.mock.web.MockMultipartFile(
+                    "photo", "physical-visit.jpg", "image/jpeg", new byte[]{11, 22, 33});
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    org.springframework.web.server.ResponseStatusException.class,
+                    () -> tx.executeWithoutResult(ignored -> {
+                        jdbcTemplate.update(
+                                "INSERT INTO submissions(id,form_id,form_version_id,instance_id,"
+                                        + "xml_content,submitted_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
+                                onDiskSubmission, form, v2,
+                                "uuid:" + onDiskSubmission, "<visit>4</visit>");
+                        var attachment = org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                                () -> attachmentWriter.store(
+                                        onDiskCandidate, onDiskPhoto,
+                                        "<photo>physical-visit.jpg</photo>"));
+                        savedPath.set(java.nio.file.Path.of(attachment.getStoragePath()));
+                        assertThat(java.nio.file.Files.isRegularFile(savedPath.get()))
+                                .isTrue();
+                        work.completeIfPresent(project, actor, null, onDiskCandidate,
+                                wrongVersion, failedWorkId.toString());
+                    }));
+            assertThat(savedPath.get()).isNotNull();
+            assertThat(java.nio.file.Files.exists(savedPath.get()))
+                    .as("rollback must remove physical attachment, not only its JDBC row")
+                    .isFalse();
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM submissions WHERE id=?",
+                    Integer.class, onDiskSubmission)).isZero();
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM submission_attachments WHERE id=?",
+                    Integer.class, onDiskAttachment)).isZero();
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT state FROM record_work_items WHERE id=?",
+                    String.class, failedWorkId)).isEqualTo("READY");
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                    Integer.class, workId)).isEqualTo(1);
         } finally {
 
             jdbcTemplate.update("DELETE FROM record_links WHERE work_item_id=?", workId);
