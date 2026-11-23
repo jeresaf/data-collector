@@ -77,7 +77,10 @@ public class RecordWorkService {
 
     public record RecordSummary(
             UUID submissionId, String instanceId, UUID formId,
-            UUID formVersionId, Instant submittedAt) { }
+            UUID formVersionId, Instant submittedAt,
+            // An archived revision is historical. Clients must never infer
+            // that this source remains current merely from its own XML.
+            boolean amendmentSuperseded) { }
 
     public record RelatedRecord(
             UUID submissionId, String instanceId, UUID formId,
@@ -174,6 +177,23 @@ public class RecordWorkService {
         }
 
         Submission source = accessibleSource(actor, projectId, request.sourceSubmissionId());
+        // A source row is immutable even after it is amended. Do not allow a
+        // newly created offline task to fork that historical revision. Lock
+        // the exact original row to serialize this check with OpenRosa's
+        // replacement/archive transaction; the subsequent SELECT sees the
+        // committed history after any in-flight replacement finishes.
+        if (request.workType() == WorkType.AMENDMENT) {
+            jdbc.queryForObject("SELECT id FROM submissions WHERE id = ? FOR UPDATE",
+                    UUID.class, source.getId());
+            Boolean alreadyAmended = jdbc.queryForObject(
+                    "SELECT EXISTS(SELECT 1 FROM submission_versions "
+                            + "WHERE submission_id = ?)",
+                    Boolean.class, source.getId());
+            if (Boolean.TRUE.equals(alreadyAmended)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Source was already amended; select the latest authorized revision");
+            }
+        }
         FormVersion target = targetVersion(actor, projectId, request.targetFormVersionId());
         if (request.workType() == WorkType.AMENDMENT &&
                 !Objects.equals(source.getForm().getId(), target.getForm().getId())) {
@@ -467,7 +487,9 @@ public class RecordWorkService {
         AppUser actor = currentAppUser();
         requireActiveProject(projectId);
         return jdbc.query("""
-                SELECT s.id, s.instance_id, s.form_id, s.form_version_id, s.submitted_at
+                SELECT s.id, s.instance_id, s.form_id, s.form_version_id, s.submitted_at,
+                       EXISTS(SELECT 1 FROM submission_versions sv
+                              WHERE sv.submission_id = s.id) AS amendment_superseded
                 FROM submissions s JOIN xforms f ON f.id = s.form_id
                 WHERE f.project_id = ? AND s.submitted_by_id = ?
                   AND EXISTS (SELECT 1 FROM app_user_projects aup
@@ -480,7 +502,8 @@ public class RecordWorkService {
             return new RecordSummary(rs.getObject("id", UUID.class),
                     rs.getString("instance_id"), rs.getObject("form_id", UUID.class),
                     rs.getObject("form_version_id", UUID.class),
-                    at == null ? null : at.toInstant());
+                    at == null ? null : at.toInstant(),
+                    rs.getBoolean("amendment_superseded"));
         }, projectId, actor.getId());
     }
 
