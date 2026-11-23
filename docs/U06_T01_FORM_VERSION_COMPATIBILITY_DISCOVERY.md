@@ -70,6 +70,12 @@ Extended the real PostgreSQL/Flyway `followUpWorkPersistsDistinctSubmissionAndDu
 
 **Boundary:** Synthetic submissions were inserted ahead of the transaction. This does **not** yet establish end-to-end rollback of a newly inserted submission/attachments within the authenticated HTTP/JavaRosa intake transaction. Nor does it prove Android offline conflict handling, migrated answer mapping, or physical-device acceptance.
 
+## Provisional follow-up and attachment rollback — exact-head CI pending
+
+The PostgreSQL/Flyway integration fixture now inserts a **new** synthetic follow-up submission and its submission-attachment metadata **inside one Spring-managed transaction**, then invokes real `RecordWorkService.completeIfPresent` with a stale target form-version ID. The work completion is expected to reject the target, causing the transaction to roll back both new rows; the work item remains READY and the original record/previous valid follow-up remain intact. This extends the previously verified uniqueness-conflict rollback test to pending submission and attachment metadata, without changing production code.
+
+**Limitations:** the synthetic attachment is database metadata only and does not write or remove a physical file. The test does not run through the full authenticated OpenRosa HTTP/JavaRosa intake pipeline, nor does it exercise an actual client offline retry. Do not claim end-to-end visit rollback until those paths are tested.
+
 ## First bounded implementation step
 
 Before changing production code, locate existing version/replacement/record-work tests on this safe branch and add **server-side regressions for U06-A04/A05/A06**, with explicit version resolution and no partial persistence on rejection. Then add V1 → V2 amendment and second-visit matrix using synthetic XLSForms and submit/replacement fixtures. Maintain both negative and positive evidence. Android physical tests remain deferred; collect automated emulator evidence separately if available.
