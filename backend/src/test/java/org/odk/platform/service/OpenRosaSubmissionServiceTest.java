@@ -365,7 +365,7 @@ class OpenRosaSubmissionServiceTest {
     }
 
     @Test
-    void crossEnumeratorDeprecatedIdCannotReplaceAnotherUsersRecord() {
+    void crossEnumeratorDeprecatedIdCannotReplaceAnotherUsersRecord() throws Exception {
         String originalId = "uuid:other-enumerator-original";
         String attemptedId = "uuid:attacker-amendment";
         String xml = "<data id=\"demo\" version=\"1\"><meta>"
