@@ -347,4 +347,139 @@ class PostgreSqlContainerMigrationIT {
         }
     }
 
+    @Test
+    void followUpWorkPersistsDistinctSubmissionAndDurableRecordLinkOnPostgreSql()
+            throws Exception {
+        UUID owner = jdbcTemplate.queryForObject(
+                "SELECT id FROM users WHERE username='admin' LIMIT 1", UUID.class);
+        UUID project = UUID.randomUUID();
+        UUID form = UUID.randomUUID();
+        UUID v1 = UUID.randomUUID();
+        UUID v2 = UUID.randomUUID();
+        UUID sourceId = UUID.randomUUID();
+        UUID childId = UUID.randomUUID();
+        UUID workId = UUID.randomUUID();
+        UUID appUserId = UUID.randomUUID();
+        String originalInstance = "uuid:u06-first-" + sourceId;
+        String secondInstance = "uuid:u06-second-" + childId;
+        String originalXml = "<data id=\"u06\" version=\"1\"><visit>1</visit></data>";
+        String secondXml = "<data id=\"u06\" version=\"2\"><visit>2</visit></data>";
+        try {
+            jdbcTemplate.update(
+                    "INSERT INTO projects(id,name,owner_id,created_by_id) VALUES (?,?,?,?)",
+                    project, "U06 linked visits", owner, owner);
+            jdbcTemplate.update(
+                    "INSERT INTO xforms(id,title,xmlns,project_id,created_by_id,is_published) "
+                            + "VALUES (?,?,?,?,?,TRUE)",
+                    form, "U06 visits", "u06-visits", project, owner);
+            jdbcTemplate.update(
+                    "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                            + "created_by_id,is_published,is_latest) "
+                            + "VALUES (?,?,?,?,?,?,TRUE,FALSE)",
+                    v1, form, "1", "<form-v1/>", "u06-visits", owner);
+            jdbcTemplate.update(
+                    "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                            + "created_by_id,is_published,is_latest) "
+                            + "VALUES (?,?,?,?,?,?,TRUE,TRUE)",
+                    v2, form, "2", "<form-v2/>", "u06-visits", owner);
+            jdbcTemplate.update(
+                    "INSERT INTO app_users (id,username,email,password_hash,full_name,"
+                            + "is_active,is_verified) VALUES (?,?,?,?,?,TRUE,TRUE)",
+                    appUserId, "u06-" + appUserId, appUserId + "@example.test",
+                    "not-used", "U06 Test");
+            jdbcTemplate.update(
+                    "INSERT INTO submissions(id,form_id,form_version_id,instance_id,"
+                            + "xml_content,submitted_at,submitted_by_id) "
+                            + "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP,?)",
+                    sourceId, form, v1, originalInstance, originalXml, appUserId);
+            jdbcTemplate.update(
+                    "INSERT INTO submissions(id,form_id,form_version_id,instance_id,"
+                            + "xml_content,submitted_at,submitted_by_id) "
+                            + "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP,?)",
+                    childId, form, v2, secondInstance, secondXml, appUserId);
+            jdbcTemplate.update(
+                    "INSERT INTO record_work_items(id,project_id,source_submission_id,"
+                            + "source_form_version_id,source_instance_id,target_form_version_id,"
+                            + "assigned_app_user_id,work_type,state,client_request_id,visit_key) "
+                            + "VALUES (?,?,?,?,?,?,?,'FOLLOW_UP','READY',?,?)",
+                    workId, project, sourceId, v1, originalInstance, v2, appUserId,
+                    "u06-work-" + workId, "second-visit");
+
+            var actor = org.odk.platform.domain.AppUser.builder().id(appUserId).build();
+            var projectEntity = org.odk.platform.domain.Project.builder().id(project).build();
+            var formEntity = org.odk.platform.domain.XForm.builder()
+                    .id(form).project(projectEntity).build();
+            var sourceEntity = org.odk.platform.domain.Submission.builder()
+                    .id(sourceId).form(formEntity).submittedBy(actor)
+                    .instanceId(originalInstance).xmlContent(originalXml).build();
+            var childEntity = org.odk.platform.domain.Submission.builder()
+                    .id(childId).form(formEntity).submittedBy(actor)
+                    .instanceId(secondInstance).xmlContent(secondXml).build();
+            var target = org.odk.platform.domain.FormVersion.builder().id(v2).build();
+            var sources = org.mockito.Mockito.mock(
+                    org.odk.platform.repository.SubmissionRepository.class);
+            org.mockito.Mockito.when(sources.findByIdWithForm(sourceId))
+                    .thenReturn(java.util.Optional.of(sourceEntity));
+            var assignments = org.mockito.Mockito.mock(
+                    org.odk.platform.repository.AppUserProjectRepository.class);
+            org.mockito.Mockito.when(assignments.findAssignedFormIdsByAppUserIdAndProjectId(
+                    appUserId, project)).thenReturn(java.util.List.of(form));
+            var work = new org.odk.platform.service.RecordWorkService(
+                    jdbcTemplate,
+                    org.mockito.Mockito.mock(org.odk.platform.security.CurrentUserService.class),
+                    org.mockito.Mockito.mock(org.odk.platform.repository.ProjectRepository.class),
+                    sources,
+                    org.mockito.Mockito.mock(org.odk.platform.repository.FormVersionRepository.class),
+                    assignments);
+
+            work.completeIfPresent(project, actor, null, childEntity, target, workId.toString());
+
+            var item = jdbcTemplate.queryForMap(
+                    "SELECT state,completed_submission_id FROM record_work_items WHERE id=?",
+                    workId);
+            assertThat(item.get("state")).isEqualTo("COMPLETED");
+            assertThat(item.get("completed_submission_id")).isEqualTo(childId);
+
+            var link = jdbcTemplate.queryForMap(
+                    "SELECT source_submission_id,child_submission_id,work_item_id,"
+                            + "link_type,visit_key FROM record_links WHERE work_item_id=?",
+                    workId);
+            assertThat(link.get("source_submission_id")).isEqualTo(sourceId);
+            assertThat(link.get("child_submission_id")).isEqualTo(childId);
+            assertThat(link.get("work_item_id")).isEqualTo(workId);
+            assertThat(link.get("link_type")).isEqualTo("FOLLOW_UP");
+            assertThat(link.get("visit_key")).isEqualTo("second-visit");
+            assertThat(sourceId).isNotEqualTo(childId);
+            assertThat(originalInstance).isNotEqualTo(secondInstance);
+            var unchangedSource = jdbcTemplate.queryForMap(
+                    "SELECT instance_id,xml_content,form_version_id FROM submissions WHERE id=?",
+                    sourceId);
+            assertThat(unchangedSource.get("instance_id")).isEqualTo(originalInstance);
+            assertThat(unchangedSource.get("xml_content")).isEqualTo(originalXml);
+            assertThat(unchangedSource.get("form_version_id")).isEqualTo(v1);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM submissions WHERE id IN (?,?)",
+                    Integer.class, sourceId, childId)).isEqualTo(2);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?",
+                    Integer.class, sourceId)).isZero();
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    org.springframework.web.server.ResponseStatusException.class,
+                    () -> work.completeIfPresent(
+                            project, actor, null, childEntity, target, workId.toString()));
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                    Integer.class, workId)).isEqualTo(1);
+        } finally {
+            jdbcTemplate.update("DELETE FROM record_links WHERE work_item_id=?", workId);
+            jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", workId);
+            jdbcTemplate.update("DELETE FROM submissions WHERE id IN (?,?)", childId, sourceId);
+            jdbcTemplate.update("DELETE FROM form_versions WHERE id IN (?,?)", v1, v2);
+            jdbcTemplate.update("DELETE FROM app_users WHERE id=?", appUserId);
+            jdbcTemplate.update("DELETE FROM xforms WHERE id=?", form);
+            jdbcTemplate.update("DELETE FROM projects WHERE id=?", project);
+        }
+    }
+
 }
