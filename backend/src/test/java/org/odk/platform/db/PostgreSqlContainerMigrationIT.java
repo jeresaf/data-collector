@@ -6,6 +6,7 @@ import org.odk.platform.repository.SubmissionRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -30,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * real-database gate.
  */
 @Testcontainers
+@AutoConfigureMockMvc
 @SpringBootTest(
         properties = {
                 "spring.sql.init.mode=never",
@@ -73,6 +75,12 @@ class PostgreSqlContainerMigrationIT {
 
     @Autowired
     SubmissionRepository submissionRepository;
+
+    @Autowired
+    org.springframework.test.web.servlet.MockMvc mockMvc;
+
+    @Autowired
+    org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
 
     @Autowired
     org.springframework.transaction.PlatformTransactionManager transactionManager;
@@ -672,6 +680,164 @@ class PostgreSqlContainerMigrationIT {
             jdbcTemplate.update("DELETE FROM xforms WHERE id=?", form);
             jdbcTemplate.update("DELETE FROM projects WHERE id=?", project);
         }
+    }
+
+    @Test
+    void authenticatedHttpV1ToV2FollowUpPersistsSeparateRecordOnPostgreSql() throws Exception {
+        // HTTP -> Basic principal -> JavaRosa -> the actual PostgreSQL Flyway
+        // schema, with no mocked intake, record-work or persistence services.
+        UUID owner = jdbcTemplate.queryForObject(
+                "SELECT id FROM users WHERE username='admin' LIMIT 1", UUID.class);
+        UUID project = UUID.randomUUID();
+        UUID form = UUID.randomUUID();
+        UUID v1 = UUID.randomUUID();
+        UUID v2 = UUID.randomUUID();
+        UUID appUser = UUID.randomUUID();
+        UUID workId = UUID.randomUUID();
+        String xmlns = "u06_http_" + project.toString().replace("-", "");
+        String sourceInstance = "uuid:" + UUID.randomUUID();
+        String visitInstance = "uuid:" + UUID.randomUUID();
+        String password = "u06-http-test-password";
+        String credential = "Basic " + java.util.Base64.getEncoder().encodeToString(
+                ("u06_" + appUser + ":" + password).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        String xformV1 = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <h:html xmlns:h="http://www.w3.org/1999/xhtml"
+                    xmlns="http://www.w3.org/2002/xforms">
+                  <h:head>
+                    <h:title>U06 PostgreSQL visits</h:title>
+                    <model>
+                      <instance>
+                        <data id="%s" version="1">
+                          <name/><age/><meta><instanceID/></meta>
+                        </data>
+                      </instance>
+                      <bind nodeset="/data/name" type="string"/>
+                      <bind nodeset="/data/age" type="int"/>
+                    </model>
+                  </h:head>
+                  <h:body>
+                    <input ref="/data/name"><label>Name</label></input>
+                    <input ref="/data/age"><label>Age</label></input>
+                  </h:body>
+                </h:html>
+                """.formatted(xmlns);
+        String xformV2 = xformV1.replace(
+                "<data id=\"" + xmlns + "\" version=\"1\">",
+                "<data id=\"" + xmlns + "\" version=\"2\">");
+        assertThat(xformV2).isNotEqualTo(xformV1);
+
+        jdbcTemplate.update(
+                "INSERT INTO projects(id,name,owner_id,created_by_id) VALUES (?,?,?,?)",
+                project, "U06 PostgreSQL HTTP", owner, owner);
+        jdbcTemplate.update(
+                "INSERT INTO xforms(id,title,xmlns,project_id,created_by_id,is_published) "
+                        + "VALUES (?,?,?,?,?,TRUE)",
+                form, "U06 PostgreSQL HTTP", xmlns, project, owner);
+        jdbcTemplate.update(
+                "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                        + "created_by_id,is_published,is_latest) "
+                        + "VALUES (?,?,?,?,?,?,TRUE,FALSE)",
+                v1, form, "1", xformV1, xmlns, owner);
+        jdbcTemplate.update(
+                "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                        + "created_by_id,is_published,is_latest) "
+                        + "VALUES (?,?,?,?,?,?,TRUE,TRUE)",
+                v2, form, "2", xformV2, xmlns, owner);
+        jdbcTemplate.update(
+                "UPDATE xforms SET current_version_id = ? WHERE id = ?", v2, form);
+        jdbcTemplate.update(
+                "INSERT INTO app_users(id,username,email,password_hash,full_name,"
+                        + "is_active,is_verified) VALUES (?,?,?,?,?,TRUE,TRUE)",
+                appUser, "u06_" + appUser, appUser + "@example.test",
+                passwordEncoder.encode(password), "U06 PG HTTP");
+        jdbcTemplate.update(
+                "INSERT INTO app_user_projects(id,app_user_id,project_id,form_id,status,"
+                        + "assigned_at,created_at,updated_at) "
+                        + "VALUES (?,?,?,?,'ACTIVE',CURRENT_TIMESTAMP,"
+                        + "CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                UUID.randomUUID(), appUser, project, form);
+
+        String sourceXml = """
+                <data id="%s" version="1">
+                    <name>First observation</name><age>30</age>
+                    <meta><instanceID>%s</instanceID></meta>
+                </data>
+                """.formatted(xmlns, sourceInstance);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "xml_submission_file", "visit1.xml", "text/xml",
+                                sourceXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .header("Authorization", credential))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isCreated());
+        UUID sourceId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id=?", UUID.class, sourceInstance);
+        assertThat(sourceId).isNotNull();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id=?", UUID.class, sourceId))
+                .isEqualTo(v1);
+
+        jdbcTemplate.update(
+                "INSERT INTO record_work_items(id,project_id,source_submission_id,"
+                        + "source_form_version_id,source_instance_id,target_form_version_id,"
+                        + "assigned_app_user_id,work_type,state,client_request_id,visit_key) "
+                        + "VALUES (?,?,?,?,?,?,?,'FOLLOW_UP','READY',?,?)",
+                workId, project, sourceId, v1, sourceInstance, v2, appUser,
+                "u06-http-" + workId, "second-visit");
+        String followUpXml = """
+                <data id="%s" version="2">
+                    <name>Second observation</name><age>31</age>
+                    <meta><instanceID>%s</instanceID></meta>
+                </data>
+                """.formatted(xmlns, visitInstance);
+        var followUp = new org.springframework.mock.web.MockMultipartFile(
+                "xml_submission_file", "visit2.xml", "text/xml",
+                followUpXml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(followUp)
+                        .header("Authorization", credential)
+                        .header("X-DataCollector-Work-Item-Id", workId.toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isCreated());
+
+        UUID visitId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id=?", UUID.class, visitInstance);
+        assertThat(visitId).isNotNull().isNotEqualTo(sourceId);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id=?", UUID.class, visitId))
+                .isEqualTo(v2);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submissions WHERE id=?", String.class, sourceId))
+                .isEqualTo(sourceXml);
+        var link = jdbcTemplate.queryForMap(
+                "SELECT source_submission_id,child_submission_id,link_type,visit_key "
+                        + "FROM record_links WHERE work_item_id=?", workId);
+        assertThat(link.get("source_submission_id")).isEqualTo(sourceId);
+        assertThat(link.get("child_submission_id")).isEqualTo(visitId);
+        assertThat(link.get("link_type")).isEqualTo("FOLLOW_UP");
+        assertThat(link.get("visit_key")).isEqualTo("second-visit");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM record_work_items WHERE id=?", String.class, workId))
+                .isEqualTo("COMPLETED");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?",
+                Integer.class, sourceId)).isZero();
+
+        // Idempotent submission replay cannot create another child or link.
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(followUp)
+                        .header("Authorization", credential)
+                        .header("X-DataCollector-Work-Item-Id", workId.toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isConflict());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                Integer.class, workId)).isEqualTo(1);
     }
 
 }
