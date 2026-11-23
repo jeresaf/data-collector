@@ -253,4 +253,97 @@ class PostgreSqlContainerMigrationIT {
                 .as("PostgreSQL constraint %s should exist", constraintName)
                 .isTrue();
     }
+    @Test
+    void v1ToV2ReplacementArchivesExactSourceVersionAndXmlInPostgreSql()
+            throws Exception {
+        // Real production Flyway schema; no live database, no HTTP identity.
+        UUID owner = jdbcTemplate.queryForObject(
+                "SELECT id FROM users WHERE username='admin' LIMIT 1", UUID.class);
+        assertThat(owner).isNotNull();
+        UUID project = java.util.UUID.randomUUID();
+        UUID form = java.util.UUID.randomUUID();
+        UUID v1 = java.util.UUID.randomUUID();
+        UUID v2 = java.util.UUID.randomUUID();
+        UUID sourceId = java.util.UUID.randomUUID();
+        String sourceInstance = "uuid:u06-source-" + sourceId;
+        String targetInstance = "uuid:u06-revised-" + sourceId;
+        String sourceXml = "<data id=\"u06\" version=\"1\"><name>Original</name></data>";
+        String targetXml = "<data id=\"u06\" version=\"2\"><name>Revised</name></data>";
+        try {
+            jdbcTemplate.update(
+                    "INSERT INTO projects(id,name,owner_id,created_by_id) VALUES (?,?,?,?)",
+                    project,"U06 PostgreSQL synthetic",owner,owner);
+            jdbcTemplate.update(
+                    "INSERT INTO xforms(id,title,xmlns,project_id,created_by_id,is_published) "
+                            + "VALUES (?,?,?,?,?,TRUE)",
+                    form,"U06 versioned form","u06",project,owner);
+            jdbcTemplate.update(
+                    "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                            + "created_by_id,is_published,is_latest) "
+                            + "VALUES (?,?,?,?,?,?,TRUE,FALSE)",
+                    v1,form,"1","<form-v1/>","u06",owner);
+            jdbcTemplate.update(
+                    "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                            + "created_by_id,is_published,is_latest) "
+                            + "VALUES (?,?,?,?,?,?,TRUE,TRUE)",
+                    v2,form,"2","<form-v2/>","u06",owner);
+            jdbcTemplate.update(
+                    "INSERT INTO submissions(id,form_id,form_version_id,instance_id,xml_content,"
+                            + "submitted_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
+                    sourceId,form,v1,sourceInstance,sourceXml);
+            // Exercise the real archive SQL in SubmissionReplacementService
+            // against the migrated PostgreSQL schema; repository save is
+            // mocked so the test isolates the historical archive boundary.
+            var repository = org.mockito.Mockito.mock(
+                    org.odk.platform.repository.SubmissionRepository.class);
+            var service = new org.odk.platform.service.SubmissionReplacementService(
+                    jdbcTemplate,repository);
+            var source = org.odk.platform.domain.Submission.builder()
+                    .id(sourceId).instanceId(sourceInstance)
+                    .xmlContent(sourceXml).status("SUBMITTED")
+                    .formVersion(org.odk.platform.domain.FormVersion.builder().id(v1).build())
+                    .submittedAt(java.time.Instant.now()).build();
+            var next = org.odk.platform.domain.Submission.builder()
+                    .instanceId(targetInstance).xmlContent(targetXml)
+                    .formVersion(org.odk.platform.domain.FormVersion.builder().id(v2).build())
+                    .build();
+            org.mockito.Mockito.when(repository.saveAndFlush(next)).thenReturn(next);
+            org.junit.jupiter.api.Assertions.assertSame(next,
+                    service.createReplacement(source,next,sourceInstance));
+
+            var history = jdbcTemplate.queryForMap(
+                    "SELECT submission_id,version_number,instance_id,xml_content,"
+                            + "source_form_version_id,deprecated_id "
+                            + "FROM submission_versions WHERE submission_id=?",
+                    sourceId);
+            assertThat(history.get("submission_id")).isEqualTo(sourceId);
+            assertThat(((Number) history.get("version_number")).intValue()).isEqualTo(1);
+            assertThat(history.get("instance_id")).isEqualTo(sourceInstance);
+            assertThat(history.get("xml_content")).isEqualTo(sourceXml);
+            assertThat(history.get("source_form_version_id")).isEqualTo(v1);
+            assertThat(history.get("deprecated_id")).isEqualTo(sourceInstance);
+
+            var persistedOriginal = jdbcTemplate.queryForMap(
+                    "SELECT instance_id,xml_content,form_version_id "
+                            + "FROM submissions WHERE id=?",sourceId);
+            assertThat(persistedOriginal.get("instance_id")).isEqualTo(sourceInstance);
+            assertThat(persistedOriginal.get("xml_content")).isEqualTo(sourceXml);
+            assertThat(persistedOriginal.get("form_version_id")).isEqualTo(v1);
+
+            // A second archive of the same source advances version number
+            // without destroying historical evidence.
+            service.createReplacement(source,next,sourceInstance);
+            var historyVersions = jdbcTemplate.queryForList(
+                    "SELECT version_number FROM submission_versions "
+                            + "WHERE submission_id=? ORDER BY version_number",Integer.class,sourceId);
+            assertThat(historyVersions).containsExactly(1,2);
+        } finally {
+            jdbcTemplate.update("DELETE FROM submission_versions WHERE submission_id=?",sourceId);
+            jdbcTemplate.update("DELETE FROM submissions WHERE id=?",sourceId);
+            jdbcTemplate.update("DELETE FROM form_versions WHERE id IN (?,?)",v1,v2);
+            jdbcTemplate.update("DELETE FROM xforms WHERE id=?",form);
+            jdbcTemplate.update("DELETE FROM projects WHERE id=?",project);
+        }
+    }
+
 }
