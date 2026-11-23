@@ -47,3 +47,11 @@ All tests use synthetic temporary data. Actual follow-up submission, source/medi
 - **Still unqualified:** actual ODK editor and EncryptedPrivateTextDraftStore restart restoration, airplane-mode network outage, physical device reboot, new follow-up submissions, repeat/image preservation through upload and lost acknowledgement idempotency. These remain separate milestone gates.
 
 No production, release signing, merges, or physical-device signoff.
+
+## U06-T04C-02B process restart closure and C-03A follow-up intake (2026-11-23)
+
+- **U06-T04C-02B PASS** at Android exact head `cb756d51c6b8de665c3c77ca1b958cc7944d52d6`: [GitHub Actions #45204231612 SUCCESS](https://github.com/jeresaf/collect/actions/runs/45204231612). Two distinct AndroidJUnitRunner invocations with application force-stop in between retained synthetic Android Keystore AES-GCM ciphertext in noBackup; actor binding survived and stale server prepare remained HTTP 409 after restart. Not full native ODK editor restart.
+- **U06-T04C-03A PENDING**, [Android Draft PR #49](https://github.com/jeresaf/collect/pull/49), exact head `92b953c18119bd9f05e3ce933a4a1bd0b773a6cf`, [CI #45207031294](https://github.com/jeresaf/collect/actions/runs/45207031294) in progress when checked. Minimal real Android HTTPS multipart follow-up from historical V1 to V2, with a server-issued independent work item and new instanceID (no deprecatedID); expected HTTP 201, duplicate replay HTTP 409, one completed link, untouched source and archive, three total synthetic submissions. PostgreSQL durable checks embedded in workflow. **No exact-head PASS claimed yet**.
+- Still out of scope: Android production ODK InstanceSubmitter transport, true airplane-mode handling, native editor restoration, media and repeat reconciliation, lost-ack semantics, and real physical device qualification.
+
+All changes remain Draft and no production databases, deployments, release signing or merges are authorized.
