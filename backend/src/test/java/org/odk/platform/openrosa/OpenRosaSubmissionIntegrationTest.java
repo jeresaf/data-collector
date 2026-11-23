@@ -1449,6 +1449,120 @@ class OpenRosaSubmissionIntegrationTest {
                 instanceId);
         
         assert storedInstanceId != null : "Submission with repeats should be stored";
+
+        // Evolve the form while preserving the same repeat container: child_age
+        // (V1 integer) becomes child_age_text (V2 text). A deprecatedID
+        // amendment must never backfill or reinterpret V1 repeat values.
+        UUID repeatFormId = jdbcTemplate.queryForObject(
+                "SELECT id FROM xforms WHERE project_id = ? AND xmlns = ?",
+                UUID.class, repeatProjectId, xmlns);
+        UUID v1Id = jdbcTemplate.queryForObject(
+                "SELECT id FROM form_versions WHERE form_id = ? AND is_latest = true",
+                UUID.class, repeatFormId);
+        UUID originalRowId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id = ?",
+                UUID.class, instanceId);
+        var oldRepeatRows = jdbcTemplate.queryForList(
+                "SELECT path, value_number, repeat_path, repeat_index "
+                        + "FROM submission_answers WHERE submission_id = ? "
+                        + "AND path LIKE 'children%/child_age' ORDER BY path",
+                originalRowId);
+        assertEquals(2, oldRepeatRows.size());
+        assertEquals("children", oldRepeatRows.get(0).get("repeat_path"));
+        assertEquals("children", oldRepeatRows.get(1).get("repeat_path"));
+        assertEquals(0, ((Number) oldRepeatRows.get(0).get("repeat_index")).intValue());
+        assertEquals(1, ((Number) oldRepeatRows.get(1).get("repeat_index")).intValue());
+        assertEquals(0, new java.math.BigDecimal(
+                oldRepeatRows.get(0).get("value_number").toString())
+                .compareTo(new java.math.BigDecimal("5")));
+        assertEquals(0, new java.math.BigDecimal(
+                oldRepeatRows.get(1).get("value_number").toString())
+                .compareTo(new java.math.BigDecimal("3")));
+
+        String repeatV2 = repeatFormXml
+                .replace("<data id=\"repeat_test_form\" version=\"1.0\"",
+                        "<data id=\"repeat_test_form\" version=\"2.0\"")
+                .replace("<child_age/>", "<child_age_text/>")
+                .replace("/data/children/child_age", "/data/children/child_age_text")
+                .replace("nodeset=\"/data/children/child_age_text\" type=\"int\"",
+                        "nodeset=\"/data/children/child_age_text\" type=\"string\"");
+        assertTrue(repeatV2.contains("version=\"2.0\""));
+        assertTrue(repeatV2.contains("nodeset=\"/data/children/child_age_text\" type=\"string\""));
+        UUID v2Id = UUID.randomUUID();
+        jdbcTemplate.update("UPDATE form_versions SET is_latest = false WHERE id = ?", v1Id);
+        jdbcTemplate.update(
+                "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                        + "created_by_id,is_published,is_latest) "
+                        + "SELECT ?,form_id,'2.0',?,xmlns,created_by_id,true,true "
+                        + "FROM form_versions WHERE id = ?",
+                v2Id, repeatV2, v1Id);
+        jdbcTemplate.update(
+                "UPDATE xforms SET current_version_id = ? WHERE id = ?",
+                v2Id, repeatFormId);
+
+        String v2InstanceId = "uuid:" + UUID.randomUUID();
+        String revisedXml = """
+                <data id="%s" version="2.0">
+                    <name>Parent, revisited</name>
+                    <children>
+                        <child_name>Child 1</child_name>
+                        <child_age_text>five years</child_age_text>
+                    </children>
+                    <children>
+                        <child_name>Child 2</child_name>
+                        <child_age_text>three years</child_age_text>
+                    </children>
+                    <meta><instanceID>%s</instanceID><deprecatedID>%s</deprecatedID></meta>
+                </data>
+                """.formatted(xmlns, v2InstanceId, instanceId);
+        mockMvc.perform(multipart("/v1/projects/{projectId}/submission", repeatProjectId)
+                        .file(new MockMultipartFile(
+                                "xml_submission_file", "repeated-v2.xml",
+                                MediaType.APPLICATION_XML_VALUE,
+                                revisedXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .header("Authorization", validCredentials))
+                .andExpect(status().isCreated());
+
+        UUID revisedRowId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id = ?",
+                UUID.class, v2InstanceId);
+        assertNotEquals(originalRowId, revisedRowId);
+        assertEquals(v1Id, jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id = ?", UUID.class, originalRowId));
+        assertEquals(v2Id, jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id = ?", UUID.class, revisedRowId));
+        assertEquals(submissionXml, jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submissions WHERE id = ?", String.class, originalRowId));
+        assertEquals(submissionXml, jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submission_versions WHERE submission_id = ?",
+                String.class, originalRowId));
+
+        var preservedRepeatRows = jdbcTemplate.queryForList(
+                "SELECT path, value_number, repeat_index FROM submission_answers "
+                        + "WHERE submission_id = ? AND path LIKE 'children%/child_age' "
+                        + "ORDER BY path", originalRowId);
+        assertEquals(2, preservedRepeatRows.size());
+        assertEquals(0, new java.math.BigDecimal(
+                preservedRepeatRows.get(0).get("value_number").toString())
+                .compareTo(new java.math.BigDecimal("5")));
+        assertEquals(0, new java.math.BigDecimal(
+                preservedRepeatRows.get(1).get("value_number").toString())
+                .compareTo(new java.math.BigDecimal("3")));
+
+        var newRepeatRows = jdbcTemplate.queryForList(
+                "SELECT path, value_text, repeat_path, repeat_index "
+                        + "FROM submission_answers WHERE submission_id = ? "
+                        + "AND path LIKE 'children%/child_age_text' ORDER BY path",
+                revisedRowId);
+        assertEquals(2, newRepeatRows.size());
+        assertEquals("five years", newRepeatRows.get(0).get("value_text"));
+        assertEquals("three years", newRepeatRows.get(1).get("value_text"));
+        assertEquals(0, ((Number) newRepeatRows.get(0).get("repeat_index")).intValue());
+        assertEquals(1, ((Number) newRepeatRows.get(1).get("repeat_index")).intValue());
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_answers WHERE submission_id = ? "
+                        + "AND path LIKE 'children%/child_age'",
+                Integer.class, revisedRowId));
     }
 
     @Test
