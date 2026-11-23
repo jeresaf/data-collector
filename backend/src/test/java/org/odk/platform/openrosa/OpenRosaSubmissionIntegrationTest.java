@@ -662,6 +662,22 @@ class OpenRosaSubmissionIntegrationTest {
         assertArrayEquals(v1Photo, java.nio.file.Files.readAllBytes(
                 java.nio.file.Path.of(originalPhotoPath)));
 
+        // A mobile device prepares a server-owned AMENDMENT while offline.
+        // Another authenticated legacy session amends the same V1 source
+        // before that device gets connectivity. The old work must become
+        // stale without relying on the mobile clock or client-side XML.
+        UUID staleAmendmentWork = UUID.randomUUID();
+        UUID enumeratorId = jdbcTemplate.queryForObject(
+                "SELECT submitted_by_id FROM submissions WHERE id = ?",
+                UUID.class, originalRowId);
+        jdbcTemplate.update(
+                "INSERT INTO record_work_items(id,project_id,source_submission_id,"
+                        + "source_form_version_id,source_instance_id,target_form_version_id,"
+                        + "assigned_app_user_id,work_type,state,client_request_id) "
+                        + "VALUES (?,?,?,?,?,?,?,'AMENDMENT','READY',?)",
+                staleAmendmentWork, testProjectId, originalRowId, v1Id, sourceId,
+                v2Id, enumeratorId, "offline-" + staleAmendmentWork);
+
         // A known V2 version is selected for the correction, but deprecatedID
         // still identifies the V1 source; the source XML must remain immutable.
         String correctedXml = """
@@ -734,6 +750,53 @@ class OpenRosaSubmissionIntegrationTest {
         assertEquals(1, jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM submission_attachments WHERE submission_id = ?",
                 Integer.class, revisedRowId));
+
+        mockMvc.perform(get("/v1/projects/{projectId}/record-work-items/{workId}/prepare",
+                        testProjectId, staleAmendmentWork)
+                        .header("Authorization", validCredentials))
+                .andExpect(status().isConflict());
+
+        String staleInstance = "uuid:" + UUID.randomUUID();
+        String stalePhotoName = "stale-" + UUID.randomUUID() + ".jpg";
+        String staleXml = """
+                <data id="test_submission_form" version="2.0">
+                    <name>Offline stale amendment</name>
+                    <ageYears>should not appear</ageYears>
+                    <photo>%s</photo>
+                    <meta><instanceID>%s</instanceID>
+                    <deprecatedID>%s</deprecatedID></meta>
+                </data>
+                """.formatted(stalePhotoName, staleInstance, sourceId);
+        mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
+                        .file(new MockMultipartFile(
+                                "xml_submission_file", "stale.xml",
+                                MediaType.APPLICATION_XML_VALUE,
+                                staleXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .file(new MockMultipartFile("photo", stalePhotoName,
+                                MediaType.IMAGE_JPEG_VALUE, new byte[]{12, 13, 14}))
+                        .header("Authorization", validCredentials)
+                        .header("X-DataCollector-Work-Item-Id",
+                                staleAmendmentWork.toString()))
+                .andExpect(status().isConflict());
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submissions WHERE instance_id = ?",
+                Integer.class, staleInstance));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_attachments WHERE file_name = ?",
+                Integer.class, stalePhotoName));
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id = ?",
+                Integer.class, originalRowId));
+        assertEquals("READY", jdbcTemplate.queryForObject(
+                "SELECT state FROM record_work_items WHERE id = ?",
+                String.class, staleAmendmentWork));
+        assertEquals(firstXml, jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submissions WHERE id = ?",
+                String.class, originalRowId));
+        assertArrayEquals(v1Photo, java.nio.file.Files.readAllBytes(
+                java.nio.file.Path.of(originalPhotoPath)));
+        assertArrayEquals(v2Photo, java.nio.file.Files.readAllBytes(
+                java.nio.file.Path.of(revisedPhotoPath)));
 
         // Explicitly unknown versions fail before any persisted submission.
         String unknownId = "uuid:" + UUID.randomUUID();
