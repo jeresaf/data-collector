@@ -612,8 +612,16 @@ class OpenRosaSubmissionIntegrationTest {
         String oldDefinition = previous.get("xml_content").toString();
         String newDefinition = oldDefinition.replaceFirst(
                 "(<data[^>]*\\bversion=\\\")1\\.0(\\\")", "$1" + "2.0" + "$2");
-        assertNotEquals(oldDefinition, newDefinition,
-                "V2 must change only the XForm instance version, not the XML declaration");
+        // Simulate a schema evolution: age (V1 int) is renamed to ageYears
+        // (V2 string). There must be no implicit copy/coercion of old answers.
+        newDefinition = newDefinition.replace("<age/>", "<ageYears/>")
+                .replace("/data/age", "/data/ageYears")
+                .replace("nodeset=\"/data/ageYears\" type=\"int\"",
+                        "nodeset=\"/data/ageYears\" type=\"string\"");
+        assertNotEquals(oldDefinition, newDefinition);
+        assertTrue(newDefinition.contains("<ageYears/>"));
+        assertTrue(newDefinition.contains(
+                "nodeset=\"/data/ageYears\" type=\"string\""));
         UUID v2Id = UUID.randomUUID();
         jdbcTemplate.update("UPDATE form_versions SET is_latest = false WHERE id = ?", v1Id);
         jdbcTemplate.update(
@@ -630,33 +638,48 @@ class OpenRosaSubmissionIntegrationTest {
         String firstXml = """
                 <data id="test_submission_form" version="1.0">
                     <name>First visit</name><age>26</age>
+                    <photo>v1-photo.jpg</photo>
                     <meta><instanceID>%s</instanceID></meta>
                 </data>
                 """.formatted(sourceId);
         var firstFile = new MockMultipartFile("xml_submission_file", "v1.xml",
                 MediaType.APPLICATION_XML_VALUE, firstXml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        byte[] v1Photo = new byte[]{10, 20, 30, 40};
         mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
-                        .file(firstFile).header("Authorization", validCredentials))
+                        .file(firstFile)
+                        .file(new MockMultipartFile("photo", "v1-photo.jpg",
+                                MediaType.IMAGE_JPEG_VALUE, v1Photo))
+                        .header("Authorization", validCredentials))
                 .andExpect(status().isCreated());
         UUID originalRowId = jdbcTemplate.queryForObject(
                 "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, sourceId);
         assertNotNull(originalRowId);
         assertEquals(v1Id, jdbcTemplate.queryForObject(
                 "SELECT form_version_id FROM submissions WHERE id = ?", UUID.class, originalRowId));
+        String originalPhotoPath = jdbcTemplate.queryForObject(
+                "SELECT storage_path FROM submission_attachments WHERE submission_id = ?",
+                String.class, originalRowId);
+        assertArrayEquals(v1Photo, java.nio.file.Files.readAllBytes(
+                java.nio.file.Path.of(originalPhotoPath)));
 
         // A known V2 version is selected for the correction, but deprecatedID
         // still identifies the V1 source; the source XML must remain immutable.
         String correctedXml = """
                 <data id="test_submission_form" version="2.0">
-                    <name>Corrected visit</name><age>27</age>
+                    <name>Corrected visit</name><ageYears>twenty-seven</ageYears>
+                    <photo>v2-photo.jpg</photo>
                     <meta><instanceID>%s</instanceID><deprecatedID>%s</deprecatedID></meta>
                 </data>
                 """.formatted(amendedId, sourceId);
         var correctedFile = new MockMultipartFile("xml_submission_file", "v2.xml",
                 MediaType.APPLICATION_XML_VALUE,
                 correctedXml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        byte[] v2Photo = new byte[]{40, 30, 20, 10, 1};
         mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
-                        .file(correctedFile).header("Authorization", validCredentials))
+                        .file(correctedFile)
+                        .file(new MockMultipartFile("photo", "v2-photo.jpg",
+                                MediaType.IMAGE_JPEG_VALUE, v2Photo))
+                        .header("Authorization", validCredentials))
                 .andExpect(status().isCreated());
 
         assertEquals(firstXml, jdbcTemplate.queryForObject(
@@ -672,6 +695,45 @@ class OpenRosaSubmissionIntegrationTest {
         assertEquals(v1Id, UUID.fromString(archive.get("source_form_version_id").toString()));
         assertEquals(sourceId, archive.get("instance_id"));
         assertEquals(firstXml, archive.get("xml_content"));
+
+        UUID revisedRowId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, amendedId);
+        assertNotEquals(originalRowId, revisedRowId);
+
+        // The original numeric answer is neither overwritten nor implicitly
+        // copied to the renamed/retyped V2 question. The V2 string is explicit.
+        java.math.BigDecimal originalAge = jdbcTemplate.queryForObject(
+                "SELECT value_number FROM submission_answers WHERE submission_id = ? "
+                        + "AND path = 'age'",
+                java.math.BigDecimal.class, originalRowId);
+        assertNotNull(originalAge);
+        assertEquals(0, originalAge.compareTo(new java.math.BigDecimal("26")));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_answers WHERE submission_id = ? "
+                        + "AND path = 'age'",
+                Integer.class, revisedRowId));
+        assertEquals("twenty-seven", jdbcTemplate.queryForObject(
+                "SELECT value_text FROM submission_answers WHERE submission_id = ? "
+                        + "AND path = 'ageYears'",
+                String.class, revisedRowId));
+
+        // The V1 and V2 attachments remain separate, with byte-identical
+        // contents for each revision. New media must not relocate/overwrite
+        // the source image or inherit a historical answer's foreign key.
+        String revisedPhotoPath = jdbcTemplate.queryForObject(
+                "SELECT storage_path FROM submission_attachments WHERE submission_id = ?",
+                String.class, revisedRowId);
+        assertNotEquals(originalPhotoPath, revisedPhotoPath);
+        assertArrayEquals(v1Photo, java.nio.file.Files.readAllBytes(
+                java.nio.file.Path.of(originalPhotoPath)));
+        assertArrayEquals(v2Photo, java.nio.file.Files.readAllBytes(
+                java.nio.file.Path.of(revisedPhotoPath)));
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_attachments WHERE submission_id = ?",
+                Integer.class, originalRowId));
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_attachments WHERE submission_id = ?",
+                Integer.class, revisedRowId));
 
         // Explicitly unknown versions fail before any persisted submission.
         String unknownId = "uuid:" + UUID.randomUUID();
