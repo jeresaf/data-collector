@@ -508,8 +508,6 @@ class PostgreSqlContainerMigrationIT {
             assertThat(jdbcTemplate.queryForObject(
                     "SELECT COUNT(*) FROM submissions WHERE id IN (?,?)",
                     Integer.class, sourceId, childId)).isEqualTo(2);
-        } finally {
-
             // The prior duplicate-link failure tests UPDATE+INSERT atomicity.
             // Now ensure a proposed visit and its attachment do not survive
             // an invalid work-item completion in the same transaction.
@@ -543,6 +541,8 @@ class PostgreSqlContainerMigrationIT {
             assertThat(jdbcTemplate.queryForObject(
                     "SELECT state FROM record_work_items WHERE id=?", String.class,
                     failedWorkId)).isEqualTo("READY");
+        } finally {
+
             jdbcTemplate.update("DELETE FROM record_links WHERE work_item_id=?", workId);
             jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", workId);
             jdbcTemplate.update("DELETE FROM record_work_items WHERE id=?", failedWorkId);
