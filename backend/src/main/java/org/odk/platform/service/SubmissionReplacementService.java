@@ -26,6 +26,23 @@ public class SubmissionReplacementService {
     private final JdbcTemplate jdbcTemplate;
     private final SubmissionRepository submissionRepository;
 
+    /**
+     * Serializes edits to the same historical source in the enclosing
+     * submission transaction. A server-issued offline work item must recheck
+     * its revision watermark while holding this row lock, BEFORE a new
+     * submission or archive is written. This also makes archive sequence
+     * allocation safe for concurrent legacy deprecatedID submissions.
+     */
+    @Transactional
+    public void lockOriginalForReplacement(Submission original) {
+        if (original == null || original.getId() == null) {
+            throw new IllegalArgumentException("Original submission is required");
+        }
+        jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE id = ? FOR UPDATE",
+                UUID.class, original.getId());
+    }
+
     @Transactional
     public Submission createReplacement(
             Submission original,
@@ -38,6 +55,10 @@ public class SubmissionReplacementService {
         if (replacement == null) {
             throw new IllegalArgumentException("Replacement submission is required");
         }
+
+        // The caller may already hold this lock for its snapshot preflight.
+        // Reacquiring the same row lock is safe in one Spring transaction.
+        lockOriginalForReplacement(original);
 
         Integer nextVersion = jdbcTemplate.queryForObject(
                 """
