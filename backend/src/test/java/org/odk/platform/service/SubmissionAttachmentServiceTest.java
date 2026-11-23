@@ -11,6 +11,9 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import java.util.List;
 import java.util.UUID;
 
@@ -106,6 +109,62 @@ class SubmissionAttachmentServiceTest {
         assertNull(saved.getAnswer());
         assertEquals(Boolean.FALSE, saved.getMetadata().get("referencedInAnswers"));
         assertFalse(saved.getMetadata().containsKey("answerId"));
+    }
+
+    @Test
+    void failedIntakeTransactionRemovesAlreadyWrittenAttachment() throws Exception {
+        Path file = fileAfterSimulatedTransactionCompletion(
+                TransactionSynchronization.STATUS_ROLLED_BACK);
+        assertFalse(Files.exists(file),
+                "A rolled-back submission must not leave its image on disk");
+    }
+
+    @Test
+    void successfulIntakeTransactionKeepsWrittenAttachment() throws Exception {
+        Path file = fileAfterSimulatedTransactionCompletion(
+                TransactionSynchronization.STATUS_COMMITTED);
+        assertTrue(Files.exists(file),
+                "A committed submission must retain its attachment");
+    }
+
+    private Path fileAfterSimulatedTransactionCompletion(int completionStatus)
+            throws Exception {
+        SubmissionAttachmentRepository attachmentRepository =
+                mock(SubmissionAttachmentRepository.class);
+        SubmissionAnswerRepository answerRepository =
+                mock(SubmissionAnswerRepository.class);
+        when(attachmentRepository.saveAndFlush(any(SubmissionAttachment.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        UUID submissionId = UUID.randomUUID();
+        when(answerRepository.findBySubmissionIdAndValueText(
+                submissionId, "visit-photo.jpg")).thenReturn(List.of());
+        var service = new SubmissionAttachmentService(
+                attachmentRepository, answerRepository);
+        ReflectionTestUtils.setField(service, "submissionsRoot", tempDir.toString());
+        var submission = Submission.builder().id(submissionId).build();
+        var photo = new MockMultipartFile(
+                "photo", "visit-photo.jpg", "image/jpeg", new byte[]{1, 2, 3, 4});
+
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            var result = service.store(
+                    submission, photo, "<photo>visit-photo.jpg</photo>");
+            Path stored = Path.of(result.getStoragePath());
+            assertTrue(Files.exists(stored), "The file must exist before completion");
+
+            var synchronizations = TransactionSynchronizationManager.getSynchronizations();
+            assertEquals(1, synchronizations.size(),
+                    "Attachment storage must register a rollback callback");
+            for (TransactionSynchronization synchronization : synchronizations) {
+                synchronization.afterCompletion(completionStatus);
+            }
+            return stored;
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
     }
 
     @Test
