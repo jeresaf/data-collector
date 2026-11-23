@@ -188,6 +188,22 @@ public class OpenRosaSubmissionService {
                 .build();
 
         boolean replacement = original != null;
+        if (replacement) {
+            // Serializes concurrent edits against the same source. The
+            // server-owned work item carries its original creation-time
+            // watermark, so an offline AMENDMENT cannot overwrite changes
+            // made while the phone was disconnected. No new files, archive
+            // rows or replacement submissions have been written yet.
+            replacementService.lockOriginalForReplacement(original);
+            try {
+                recordWorkService.requireFreshAmendmentWork(
+                        projectId, appUser, original, formVersion,
+                        request.getHeader("X-DataCollector-Work-Item-Id"));
+            } catch (ResponseStatusException ex) {
+                throw new IntakeException(HttpStatus.valueOf(ex.getStatusCode().value()),
+                        ex.getReason() == null ? "Stale amendment work" : ex.getReason());
+            }
+        }
         Submission saved = replacement
                 ? replacementService.createReplacement(original, submission, envelope.deprecatedId())
                 : submissionRepository.saveAndFlush(submission);
