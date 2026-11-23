@@ -55,3 +55,9 @@ No production, release signing, merges, or physical-device signoff.
 - Still out of scope: Android production ODK InstanceSubmitter transport, true airplane-mode handling, native editor restoration, media and repeat reconciliation, lost-ack semantics, and real physical device qualification.
 
 All changes remain Draft and no production databases, deployments, release signing or merges are authorized.
+
+## U06-T04C-03A qualified; U06-T04C-03B under CI (2026-11-23)
+
+- **U06-T04C-03A PASS:** Android stacked Draft PR [#49](https://github.com/jeresaf/collect/pull/49), exact commit `92b953c18119bd9f05e3ce933a4a1bd0b773a6cf`, [CI #45207031294 SUCCESS](https://github.com/jeresaf/collect/actions/runs/45207031294). Real Android emulator TLS multipart follow-up creates one new observation with server-issued work ID, no deprecatedID, duplicate retry 409; persisted link and historical source/archive integrity asserted in PostgreSQL. Not native InstanceSubmitter or lost-ack qualification.
+- **U06-T04C-03B PENDING:** Android stacked Draft [PR #50](https://github.com/jeresaf/collect/pull/50), exact head `693cbf8fdefd2fcbadb511c5650925b96656b30e`, [CI #45209871013](https://github.com/jeresaf/collect/actions/runs/45209871013) RUNNING at checkpoint. Synthetic V2 target XForm includes a binary photo and repeated child name/age fields; actual Android HTTPS multipart submits two repeats and disposable JPEG-signature bytes. PostgreSQL postflight requires exact indexed normalized answers, attachment linked to its binary answer, physical bytes and SHA-256 match, no altered source/archive and duplicate HTTP 409. **Do not claim PASS until exact-head CI succeeds**.
+- Still pending: full native ODK InstanceSubmitter/media repeat editing workflow, real offline and lost-ack post-commit reconciliation, and U06-T04D native UI evidence. No production merge or release.
