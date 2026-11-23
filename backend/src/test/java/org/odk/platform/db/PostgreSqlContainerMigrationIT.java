@@ -33,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 @AutoConfigureMockMvc
 @SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "spring.sql.init.mode=never",
                 "spring.jpa.defer-datasource-initialization=false",
@@ -69,6 +70,9 @@ class PostgreSqlContainerMigrationIT {
         registry.add("spring.datasource.driver-class-name",
                 () -> "org.postgresql.Driver");
     }
+
+    @org.springframework.boot.test.web.server.LocalServerPort
+    int loopbackPort;
 
     @Autowired
     JdbcTemplate jdbcTemplate;
@@ -1481,6 +1485,39 @@ class PostgreSqlContainerMigrationIT {
         assertThat(superseded.get(sourceId.toString())).isTrue();
         assertThat(superseded.get(amendedId.toString())).isFalse();
 
+        // Real TCP loopback exercises embedded servlet listener, Basic filter,
+        // and exact JSON responses on PostgreSQL/Flyway, not MockMvc.
+        var socketClient = java.net.http.HttpClient.newBuilder()
+                .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+                .connectTimeout(java.time.Duration.ofSeconds(10)).build();
+        String socketBase = "http://127.0.0.1:" + loopbackPort
+                + "/v1/projects/" + project;
+        var wireRecords = socketClient.send(
+                java.net.http.HttpRequest.newBuilder(
+                                java.net.URI.create(socketBase + "/records"))
+                        .header("Authorization", credential)
+                        .header("Accept", "application/json")
+                        .timeout(java.time.Duration.ofSeconds(15)).GET().build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertThat(wireRecords.statusCode()).isEqualTo(200);
+        var realRecords = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(wireRecords.body());
+        assertThat(realRecords.size()).isEqualTo(2);
+        java.util.Map<String, Boolean> realStatus = new java.util.HashMap<>();
+        realRecords.forEach(node -> realStatus.put(node.path("submissionId").asText(),
+                node.path("amendmentSuperseded").asBoolean(false)));
+        assertThat(realStatus.get(sourceId.toString())).isTrue();
+        assertThat(realStatus.get(amendedId.toString())).isFalse();
+
+        var unauthorized = socketClient.send(
+                java.net.http.HttpRequest.newBuilder(
+                                java.net.URI.create(socketBase + "/records"))
+                        .timeout(java.time.Duration.ofSeconds(15)).GET().build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertThat(unauthorized.statusCode()).isEqualTo(401);
+        assertThat(unauthorized.body()).doesNotContain("Original household")
+                .doesNotContain("Corrected household").doesNotContain(sourceInstance);
+
         // New AMENDMENT against the *old* V1 source is denied even if a
         // previous offline task has already become stale. The rejection
         // occurs in work-item creation BEFORE exposing another draft.
@@ -1489,13 +1526,18 @@ class PostgreSqlContainerMigrationIT {
                 {"sourceSubmissionId":"%s","targetFormVersionId":"%s",
                  "workType":"AMENDMENT","clientRequestId":"%s"}
                 """.formatted(sourceId, v2, oldRequestId);
-        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                        .post("/v1/projects/{projectId}/record-work-items", project)
-                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                        .content(oldAmendmentRequest)
-                        .header("Authorization", credential))
-                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
-                        .status().isConflict());
+        var staleWire = socketClient.send(
+                java.net.http.HttpRequest.newBuilder(
+                                java.net.URI.create(socketBase + "/record-work-items"))
+                        .header("Authorization", credential)
+                        .header("Content-Type", "application/json")
+                        .timeout(java.time.Duration.ofSeconds(15))
+                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(
+                                oldAmendmentRequest)).build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertThat(staleWire.statusCode()).isEqualTo(409);
+        assertThat(staleWire.body()).doesNotContain("Original household")
+                .doesNotContain(sourceInstance);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM record_work_items WHERE client_request_id=?",
                 Integer.class, oldRequestId)).isZero();
@@ -1528,15 +1570,17 @@ class PostgreSqlContainerMigrationIT {
                 {"sourceSubmissionId":"%s","targetFormVersionId":"%s",
                  "workType":"AMENDMENT","clientRequestId":"%s"}
                 """.formatted(amendedId, v2, freshRequestId);
-        String freshWorkResponse = mockMvc.perform(
-                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                                .post("/v1/projects/{projectId}/record-work-items", project)
-                                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                                .content(freshRequest)
-                                .header("Authorization", credential))
-                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
-                        .status().isCreated())
-                .andReturn().getResponse().getContentAsString();
+        var freshWire = socketClient.send(
+                java.net.http.HttpRequest.newBuilder(
+                                java.net.URI.create(socketBase + "/record-work-items"))
+                        .header("Authorization", credential)
+                        .header("Content-Type", "application/json")
+                        .timeout(java.time.Duration.ofSeconds(15))
+                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(
+                                freshRequest)).build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertThat(freshWire.statusCode()).isEqualTo(201);
+        String freshWorkResponse = freshWire.body();
         UUID freshWorkId = UUID.fromString(
                 new com.fasterxml.jackson.databind.ObjectMapper()
                         .readTree(freshWorkResponse).get("id").asText());
