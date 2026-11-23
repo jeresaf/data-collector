@@ -225,6 +225,68 @@ public class RecordWorkService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Work item not found"));
     }
 
+    /**
+     * A mobile draft may be prepared while offline. If another amendment was
+     * committed against the same exact source after this work item was created,
+     * its cached answers must NOT be submitted as though still current.
+     *
+     * Call this after locking the source row and BEFORE adding the incoming
+     * submission or archiving its historical source. The work item creation
+     * timestamp is a durable, DB-owned revision watermark; no phone clock or
+     * caller-supplied token can move it forward.
+     *
+     * FOLLOW_UP observations remain independent visits, so this guard applies
+     * only to AMENDMENT. Legacy OpenRosa edits without a server work ID are
+     * supported separately and do not claim offline-snapshot qualification.
+     */
+    @Transactional
+    public void requireFreshAmendmentWork(
+            UUID projectId, AppUser actor, Submission original,
+            FormVersion target, String taskId) {
+        if (taskId == null || taskId.isBlank()) return;
+        if (actor == null) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "App User required");
+        }
+        UUID id;
+        try {
+            id = UUID.fromString(taskId);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid work item ID");
+        }
+        WorkView work = getOwnedWork(actor, projectId, id);
+        if (work.workType() != WorkType.AMENDMENT) return;
+        if (!"READY".equals(work.state()) ||
+                target == null || !work.targetFormVersionId().equals(target.getId()) ||
+                original == null || !work.sourceSubmissionId().equals(original.getId())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Amendment work item or target has changed");
+        }
+        Submission source = accessibleSource(actor, projectId, work.sourceSubmissionId());
+        if (!Objects.equals(source.getInstanceId(), work.sourceInstanceId())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Source record changed");
+        }
+        requireUnchangedSourceSinceWorkCreated(work.id(), source.getId());
+    }
+
+    private void requireUnchangedSourceSinceWorkCreated(UUID workId, UUID sourceId) {
+        // Historical submissions themselves remain immutable. Their revision
+        // archive is the durable server-side indicator of intervening edits.
+        // Recheck under the original-submission row lock in the intake path.
+        Boolean changed = jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM submission_versions sv
+                    JOIN record_work_items rw
+                      ON rw.source_submission_id = sv.submission_id
+                    WHERE rw.id = ? AND rw.source_submission_id = ?
+                      AND sv.created_at >= rw.created_at
+                )
+                """, Boolean.class, workId, sourceId);
+        if (Boolean.TRUE.equals(changed)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Source amended since work item was created; refresh the record");
+        }
+    }
+
     @Transactional(readOnly = true)
     public Preparation prepare(UUID projectId, UUID workId) {
         AppUser actor = currentAppUser();
@@ -239,6 +301,9 @@ public class RecordWorkService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Source record changed");
         }
         FormVersion target = targetVersion(actor, projectId, work.targetFormVersionId());
+        if (work.workType() == WorkType.AMENDMENT) {
+            requireUnchangedSourceSinceWorkCreated(work.id(), source.getId());
+        }
         // A historical source version is not necessarily the current version.
         // Never substitute the target XML or current XForm for a missing source
         // schema: that could silently reinterpret legacy answers.
