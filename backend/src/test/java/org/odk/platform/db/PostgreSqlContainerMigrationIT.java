@@ -85,6 +85,9 @@ class PostgreSqlContainerMigrationIT {
     @Autowired
     org.springframework.transaction.PlatformTransactionManager transactionManager;
 
+    @org.springframework.beans.factory.annotation.Value("${odk.storage.submissions-root:uploads/submissions}")
+    String submissionsRoot;
+
     @Test
     void productionFlywayChainBuildsCurrentSchemaOnRealPostgreSql() {
         String databaseVersion =
@@ -866,6 +869,63 @@ class PostgreSqlContainerMigrationIT {
                 "UPDATE app_user_projects SET status = 'ACTIVE' "
                         + "WHERE app_user_id = ? AND project_id = ? AND form_id = ?",
                 appUser, project, form);
+
+        // Invalid client semantics: a FOLLOW_UP work item cannot be used
+        // with deprecatedID to amend its V1 source. This rejection happens
+        // AFTER the intake pipeline has written submission/answer/media.
+        // The real Spring rollback must remove both JDBC rows and physical file.
+        String invalidInstance = "uuid:" + UUID.randomUUID();
+        String failedPhotoName = "rejected-" + UUID.randomUUID() + ".jpg";
+        String invalidAmendmentXml = """
+                <data id="%s" version="2">
+                    <name>Forbidden follow-up amendment</name>
+                    <ageYears>must not persist</ageYears>
+                    <meta><instanceID>%s</instanceID>
+                          <deprecatedID>%s</deprecatedID></meta>
+                </data>
+                """.formatted(xmlns, invalidInstance, sourceInstance);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/v1/projects/{projectId}/submission", project)
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "xml_submission_file", "invalid-amendment.xml", "text/xml",
+                                invalidAmendmentXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .file(new org.springframework.mock.web.MockMultipartFile(
+                                "photo", failedPhotoName, "image/jpeg",
+                                new byte[]{8, 7, 6, 5, 4, 3, 2}))
+                        .header("Authorization", credential)
+                        .header("X-DataCollector-Work-Item-Id", workId.toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .status().isConflict());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submissions WHERE instance_id=?", Integer.class, invalidInstance))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id=?", Integer.class, sourceId))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_attachments WHERE file_name=?", Integer.class,
+                failedPhotoName)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM record_work_items WHERE id=?", String.class, workId))
+                .isEqualTo("READY");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM record_links WHERE work_item_id=?", Integer.class, workId))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submissions WHERE id=?", String.class, sourceId))
+                .isEqualTo(sourceXml);
+
+        java.nio.file.Path localRoot = java.nio.file.Path.of(submissionsRoot)
+                .toAbsolutePath().normalize();
+        if (java.nio.file.Files.isDirectory(localRoot)) {
+            try (var files = java.nio.file.Files.walk(localRoot)) {
+                assertThat(files.filter(java.nio.file.Files::isRegularFile)
+                        .filter(file -> file.getFileName().toString().endsWith("_" + failedPhotoName))
+                        .count())
+                        .as("Rejected amendment must not orphan the physical uploaded media")
+                        .isZero();
+            }
+        }
 
         String followUpXml = """
                 <data id="%s" version="2">
