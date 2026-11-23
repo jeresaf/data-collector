@@ -691,6 +691,154 @@ class OpenRosaSubmissionIntegrationTest {
     }
 
     @Test
+    void authenticatedV2FollowUpAfterV1PreservesSourceAndRejectsWrongWorkSemantics()
+            throws Exception {
+        // Exercise the real Basic-authenticated OpenRosa/JavaRosa/H2 stack.
+        // FOLLOW_UP creates a new visit, unlike an AMENDMENT/deprecatedID update.
+        UUID formId = jdbcTemplate.queryForObject(
+                "SELECT id FROM xforms WHERE project_id = ? AND xmlns = ?",
+                UUID.class, testProjectId, testFormXmlns);
+        Map<String, Object> initial = jdbcTemplate.queryForMap(
+                "SELECT id,xml_content FROM form_versions WHERE form_id = ? AND is_latest = true",
+                formId);
+        UUID v1Id = UUID.fromString(initial.get("id").toString());
+        String v1Definition = initial.get("xml_content").toString();
+        String v2Definition = v1Definition.replaceFirst(
+                "(<data[^>]*\\bversion=\\\")1\\.0(\\\")", "$1" + "2.0" + "$2");
+        assertNotEquals(v1Definition, v2Definition);
+        UUID v2Id = UUID.randomUUID();
+        jdbcTemplate.update("UPDATE form_versions SET is_latest = false WHERE id = ?", v1Id);
+        jdbcTemplate.update(
+                "INSERT INTO form_versions(id,form_id,version,xml_content,xmlns,"
+                        + "created_by_id,is_published,is_latest) "
+                        + "SELECT ?,form_id,'2.0',?,xmlns,created_by_id,true,true "
+                        + "FROM form_versions WHERE id = ?",
+                v2Id, v2Definition, v1Id);
+        jdbcTemplate.update(
+                "UPDATE xforms SET current_version_id = ? WHERE id = ?", v2Id, formId);
+
+        String firstInstance = "uuid:" + UUID.randomUUID();
+        String followUpInstance = "uuid:" + UUID.randomUUID();
+        String sourceXml = """
+                <data id="test_submission_form" version="1.0">
+                    <name>Initial household visit</name><age>29</age>
+                    <meta><instanceID>%s</instanceID></meta>
+                </data>
+                """.formatted(firstInstance);
+        mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
+                        .file(new MockMultipartFile("xml_submission_file",
+                                "first-visit.xml", MediaType.APPLICATION_XML_VALUE,
+                                sourceXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .header("Authorization", validCredentials))
+                .andExpect(status().isCreated());
+
+        Map<String, Object> source = jdbcTemplate.queryForMap(
+                "SELECT id,submitted_by_id FROM submissions WHERE instance_id = ?",
+                firstInstance);
+        UUID sourceId = UUID.fromString(source.get("id").toString());
+        UUID actorId = UUID.fromString(source.get("submitted_by_id").toString());
+        UUID readyWorkId = UUID.randomUUID();
+        jdbcTemplate.update(
+                "INSERT INTO record_work_items(id,project_id,source_submission_id,"
+                        + "source_form_version_id,source_instance_id,target_form_version_id,"
+                        + "assigned_app_user_id,work_type,state,client_request_id,visit_key) "
+                        + "VALUES (?,?,?,?,?,?,?,'FOLLOW_UP','READY',?,?)",
+                readyWorkId, testProjectId, sourceId, v1Id, firstInstance, v2Id,
+                actorId, "followup-" + readyWorkId, "second-visit");
+
+        String followUpXml = """
+                <data id="test_submission_form" version="2.0">
+                    <name>Periodic household visit</name><age>30</age>
+                    <meta><instanceID>%s</instanceID></meta>
+                </data>
+                """.formatted(followUpInstance);
+        var followUpFile = new MockMultipartFile("xml_submission_file",
+                "follow-up.xml", MediaType.APPLICATION_XML_VALUE,
+                followUpXml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
+                        .file(followUpFile)
+                        .header("Authorization", validCredentials)
+                        .header("X-DataCollector-Work-Item-Id", readyWorkId.toString()))
+                .andExpect(status().isCreated());
+
+        UUID visitId = jdbcTemplate.queryForObject(
+                "SELECT id FROM submissions WHERE instance_id = ?",
+                UUID.class, followUpInstance);
+        assertNotEquals(sourceId, visitId);
+        assertEquals(v2Id, jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id = ?", UUID.class, visitId));
+        assertEquals(v1Id, jdbcTemplate.queryForObject(
+                "SELECT form_version_id FROM submissions WHERE id = ?", UUID.class, sourceId));
+        assertEquals(sourceXml, jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submissions WHERE id = ?", String.class, sourceId));
+
+        Map<String, Object> completed = jdbcTemplate.queryForMap(
+                "SELECT state,completed_submission_id FROM record_work_items WHERE id = ?",
+                readyWorkId);
+        assertEquals("COMPLETED", completed.get("state"));
+        assertEquals(visitId, UUID.fromString(completed.get("completed_submission_id").toString()));
+        Map<String, Object> link = jdbcTemplate.queryForMap(
+                "SELECT source_submission_id,child_submission_id,link_type,visit_key "
+                        + "FROM record_links WHERE work_item_id = ?", readyWorkId);
+        assertEquals(sourceId, UUID.fromString(link.get("source_submission_id").toString()));
+        assertEquals(visitId, UUID.fromString(link.get("child_submission_id").toString()));
+        assertEquals("FOLLOW_UP", link.get("link_type"));
+        assertEquals("second-visit", link.get("visit_key"));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id = ?",
+                Integer.class, sourceId));
+
+        // Replaying the same instance cannot append a duplicate visit or link.
+        mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
+                        .file(followUpFile)
+                        .header("Authorization", validCredentials)
+                        .header("X-DataCollector-Work-Item-Id", readyWorkId.toString()))
+                .andExpect(status().isConflict());
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM record_links WHERE work_item_id = ?",
+                Integer.class, readyWorkId));
+
+        // A client must not change a READY FOLLOW_UP into an amendment by
+        // injecting deprecatedID: the entire attempted replacement must roll
+        // back, including its submission_versions archive.
+        UUID wrongWorkId = UUID.randomUUID();
+        jdbcTemplate.update(
+                "INSERT INTO record_work_items(id,project_id,source_submission_id,"
+                        + "source_form_version_id,source_instance_id,target_form_version_id,"
+                        + "assigned_app_user_id,work_type,state,client_request_id,visit_key) "
+                        + "VALUES (?,?,?,?,?,?,?,'FOLLOW_UP','READY',?,?)",
+                wrongWorkId, testProjectId, sourceId, v1Id, firstInstance, v2Id,
+                actorId, "followup-" + wrongWorkId, "third-visit");
+        String rejectedInstance = "uuid:" + UUID.randomUUID();
+        String misclassifiedXml = """
+                <data id="test_submission_form" version="2.0">
+                    <name>Invalid follow-up amendment</name><age>31</age>
+                    <meta><instanceID>%s</instanceID><deprecatedID>%s</deprecatedID></meta>
+                </data>
+                """.formatted(rejectedInstance, firstInstance);
+        mockMvc.perform(multipart("/v1/projects/{projectId}/submission", testProjectId)
+                        .file(new MockMultipartFile("xml_submission_file",
+                                "wrong-semantics.xml", MediaType.APPLICATION_XML_VALUE,
+                                misclassifiedXml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .header("Authorization", validCredentials)
+                        .header("X-DataCollector-Work-Item-Id", wrongWorkId.toString()))
+                .andExpect(status().isConflict());
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submissions WHERE instance_id = ?",
+                Integer.class, rejectedInstance));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM submission_versions WHERE submission_id = ?",
+                Integer.class, sourceId));
+        assertEquals("READY", jdbcTemplate.queryForObject(
+                "SELECT state FROM record_work_items WHERE id = ?", String.class, wrongWorkId));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM record_links WHERE work_item_id = ?",
+                Integer.class, wrongWorkId));
+        assertEquals(sourceXml, jdbcTemplate.queryForObject(
+                "SELECT xml_content FROM submissions WHERE id = ?", String.class, sourceId));
+    }
+
+    @Test
     void submissionPostEndpoint_WithDeprecatedIdForNonExistentInstance_Returns404() throws Exception {
         String instanceId2 = "uuid:22222222-2222-2222-2222-222222222222";
         String nonExistentDeprecatedId = "uuid:99999999-9999-9999-9999-999999999999";
