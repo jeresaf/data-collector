@@ -20,6 +20,18 @@ import org.springframework.web.server.ResponseStatusException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.HexFormat;
+import java.util.Comparator;
+import org.springframework.beans.factory.annotation.Value;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -44,7 +56,130 @@ public class RecordWorkService {
     private final FormVersionRepository formVersionRepository;
     private final AppUserProjectRepository appUserProjectRepository;
 
+    @Value("${odk.storage.submissions-root:uploads/submissions}")
+    private String submissionsRoot;
+
     public enum WorkType { AMENDMENT, FOLLOW_UP }
+
+    /** Digest-only evidence of current durable completed work, not resend authority. */
+    public record CompletionMedia(String filename, String mime, long bytes, String sha256) { }
+    public record CompletionEvidence(UUID workId, UUID sourceSubmissionId, String sourceInstanceId,
+            UUID targetFormVersionId, UUID formId, String visitKey, UUID submissionId,
+            String instanceId, int xmlBytes, String xmlSha256, List<CompletionMedia> attachments) { }
+
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public CompletionEvidence completionEvidence(UUID projectId, UUID workId) {
+        AppUser actor = currentAppUser();
+        requireActiveProject(projectId);
+        WorkView work = getOwnedWork(actor, projectId, workId);
+        if (work.workType() != WorkType.FOLLOW_UP || !"COMPLETED".equals(work.state()) ||
+                work.completedSubmissionId() == null || work.visitKey() == null) {
+            throw completionConflict();
+        }
+        Submission source = accessibleSource(actor, projectId, work.sourceSubmissionId());
+        Submission child = accessibleSource(actor, projectId, work.completedSubmissionId());
+        FormVersion target = targetVersion(actor, projectId, work.targetFormVersionId());
+        if (!Objects.equals(source.getInstanceId(), work.sourceInstanceId()) ||
+                child.getId().equals(source.getId()) || child.getInstanceId() == null ||
+                child.getInstanceId().equals(source.getInstanceId()) ||
+                child.getFormVersion() == null ||
+                !work.targetFormVersionId().equals(child.getFormVersion().getId()) ||
+                !target.getForm().getId().equals(child.getForm().getId())) {
+            throw completionConflict();
+        }
+        Integer links = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM record_links
+                WHERE work_item_id = ? AND project_id = ? AND source_submission_id = ?
+                  AND child_submission_id = ? AND link_type = 'FOLLOW_UP' AND visit_key = ?
+                """, Integer.class, workId, projectId, source.getId(), child.getId(), work.visitKey());
+        Integer allLinks = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM record_links WHERE work_item_id = ? OR child_submission_id = ?
+                """, Integer.class, workId, child.getId());
+        if (!Integer.valueOf(1).equals(links) || !Integer.valueOf(1).equals(allLinks) ||
+                child.getXmlContent() == null || child.getXmlContent().isBlank()) {
+            throw completionConflict();
+        }
+        byte[] xml = child.getXmlContent().getBytes(StandardCharsets.UTF_8);
+        if (xml.length > 8 * 1024 * 1024) throw completionConflict();
+        // Bounded query before allocating entity collections; no raw bytes,
+        // answer values, file paths or credentials are returned.
+        var media = jdbc.query("""
+                SELECT a.file_name, a.content_type, a.file_size, a.content_hash,
+                       a.storage_path, a.storage_driver, s.submission_id AS answer_submission,
+                       s.value_text AS answer_value
+                FROM submission_attachments a
+                LEFT JOIN submission_answers s ON s.id = a.answer_id
+                WHERE a.submission_id = ? ORDER BY a.file_name LIMIT 65
+                """, (rs, row) -> new StoredCompletionMedia(rs.getString("file_name"),
+                    rs.getString("content_type"), rs.getObject("file_size", Long.class),
+                    rs.getString("content_hash"), rs.getString("storage_path"),
+                    rs.getString("storage_driver"), rs.getObject("answer_submission", UUID.class),
+                    rs.getString("answer_value")), child.getId());
+        if (media.size() > 64) throw completionConflict();
+        var names = new HashSet<String>();
+        var result = new ArrayList<CompletionMedia>();
+        long total = xml.length;
+        for (var item : media) {
+            if (item.filename() == null || !item.filename().matches("[A-Za-z0-9._-]{1,255}") ||
+                    item.filename().contains("..") || !names.add(item.filename()) ||
+                    item.mime() == null || !item.mime().matches("[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+") ||
+                    item.bytes() == null || item.bytes() < 1 || item.bytes() > 1_500_000 ||
+                    item.sha256() == null || !item.sha256().matches("[0-9a-f]{64}") ||
+                    !"local".equals(item.driver()) || !child.getId().equals(item.answerSubmission()) ||
+                    !item.filename().equals(item.answerValue())) throw completionConflict();
+            total += item.bytes();
+            if (total > 12L * 1024 * 1024) throw completionConflict();
+            verifyCompletionMedia(child.getId(), item);
+            result.add(new CompletionMedia(item.filename(), item.mime(), item.bytes(), item.sha256()));
+        }
+        result.sort(Comparator.comparing(CompletionMedia::filename));
+        return new CompletionEvidence(workId, source.getId(), source.getInstanceId(),
+                work.targetFormVersionId(), child.getForm().getId(), work.visitKey(),
+                child.getId(), child.getInstanceId(), xml.length, digest(xml), List.copyOf(result));
+    }
+
+    private record StoredCompletionMedia(String filename, String mime, Long bytes, String sha256,
+            String path, String driver, UUID answerSubmission, String answerValue) { }
+
+    private void verifyCompletionMedia(UUID child, StoredCompletionMedia item) {
+        try {
+            Path root = Path.of(submissionsRoot).toAbsolutePath().normalize();
+            Path directory = root.resolve(child.toString());
+            Path path = Path.of(item.path());
+            if (!path.isAbsolute() || !path.equals(path.normalize()) ||
+                    !directory.equals(path.getParent()) ||
+                    !directory.toRealPath().equals(directory) ||
+                    !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) ||
+                    Files.size(path) != item.bytes()) throw completionConflict();
+            MessageDigest hash = MessageDigest.getInstance("SHA-256");
+            long count = 0;
+            try (var in = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) {
+                byte[] buffer = new byte[8192];
+                int n;
+                while ((n = in.read(buffer)) != -1) {
+                    count += n;
+                    if (count > item.bytes()) throw completionConflict();
+                    hash.update(buffer, 0, n);
+                }
+            }
+            if (count != item.bytes() || !HexFormat.of().formatHex(hash.digest()).equals(item.sha256()))
+                throw completionConflict();
+        } catch (IOException | NoSuchAlgorithmException | IllegalArgumentException | NullPointerException e) {
+            throw completionConflict();
+        }
+    }
+
+    private static String digest(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    private static ResponseStatusException completionConflict() {
+        return new ResponseStatusException(HttpStatus.CONFLICT, "Completed work evidence unavailable");
+    }
 
     public record CreateWork(
             UUID sourceSubmissionId, UUID targetFormVersionId, WorkType workType,

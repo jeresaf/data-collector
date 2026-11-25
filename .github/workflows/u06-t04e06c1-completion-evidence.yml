@@ -1,0 +1,64 @@
+name: U06-T04E-06C1 Completed Work Evidence
+
+on:
+  push:
+    branches:
+      - codex/u06-t04e06c1-completion-evidence
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: u06-completion-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  m3-http-h2:
+    name: M3 amendment and follow-up on real HTTP + H2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpIntegrationTest,SubmissionReplacementServiceTest test
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3-h2-surefire
+          path: backend/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  m3-http-postgres:
+    name: M3 amendment and follow-up on PostgreSQL 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - run: docker info
+      - run: mvn -B -ntp -Dtest=OpenRosaRealHttpPostgresIT test
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3-postgres-surefire
+          path: backend/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 14

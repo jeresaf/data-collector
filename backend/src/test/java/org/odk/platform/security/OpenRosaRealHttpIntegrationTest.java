@@ -625,9 +625,16 @@ class OpenRosaRealHttpIntegrationTest {
             "Never substitute the current/target schema for the original");
 
 
+        String evidenceUrl = projectBase + "/record-work-items/" + workId + "/completion-evidence";
+        assertEquals(409, sendM3("GET", evidenceUrl, null, null).statusCode());
         String secondInstance = "uuid:" + UUID.randomUUID();
-        var second = sendM3("POST", projectBase + "/submission",
-            multipartM3(m3Xml("2", secondInstance, null, "Household at Visit Two")), workId);
+        String mediaName = "synthetic-evidence.txt";
+        String mediaBytes = "Synthetic attachment evidence only";
+        String secondXml = m3Xml("2", secondInstance, null, mediaName);
+        String body = multipartM3(secondXml).replace("--m3Boundary--\r\n",
+            "--m3Boundary\r\nContent-Disposition: form-data; name=\"synthetic-evidence.txt\"; filename=\"synthetic-evidence.txt\"\r\n" +
+            "Content-Type: text/plain\r\n\r\n" + mediaBytes + "\r\n--m3Boundary--\r\n");
+        var second = sendM3("POST", projectBase + "/submission", body, workId);
         assertEquals(201, second.statusCode(), second.body());
         assertEquals(sourceXml, jdbcTemplate.queryForObject(
             "SELECT xml_content FROM submissions WHERE id = ?", String.class, sourceId));
@@ -645,6 +652,57 @@ class OpenRosaRealHttpIntegrationTest {
         assertTrue(timeline.body().contains(secondInstance));
         assertTrue(timeline.body().contains(visitKey));
         assertTrue(timeline.body().contains("FOLLOW_UP"));
+
+        var proof = sendM3("GET", evidenceUrl, null, null);
+        assertEquals(200, proof.statusCode(), proof.body());
+        assertTrue(proof.headers().firstValue("Cache-Control").orElse("").contains("no-store"));
+        var evidence = new com.fasterxml.jackson.databind.ObjectMapper().readTree(proof.body());
+        UUID childId = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id = ?",
+            UUID.class, secondInstance);
+        assertEquals(workId, evidence.get("workId").asText());
+        assertEquals(sourceId.toString(), evidence.get("sourceSubmissionId").asText());
+        assertEquals(firstInstance, evidence.get("sourceInstanceId").asText());
+        assertEquals(targetVersion.toString(), evidence.get("targetFormVersionId").asText());
+        assertEquals(childId.toString(), evidence.get("submissionId").asText());
+        assertEquals(secondInstance, evidence.get("instanceId").asText());
+        assertEquals(visitKey, evidence.get("visitKey").asText());
+        assertEquals(secondXml.getBytes(StandardCharsets.UTF_8).length, evidence.get("xmlBytes").asInt());
+        assertEquals(java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+            .digest(secondXml.getBytes(StandardCharsets.UTF_8))), evidence.get("xmlSha256").asText());
+        assertEquals(1, evidence.get("attachments").size());
+        var attachment = evidence.get("attachments").get(0);
+        assertEquals(mediaName, attachment.get("filename").asText());
+        assertEquals("text/plain", attachment.get("mime").asText());
+        assertEquals(mediaBytes.getBytes(StandardCharsets.UTF_8).length, attachment.get("bytes").asLong());
+        assertEquals(java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+            .digest(mediaBytes.getBytes(StandardCharsets.UTF_8))), attachment.get("sha256").asText());
+        assertFalse(proof.body().contains(mediaBytes));
+        assertFalse(proof.body().contains("<data"));
+        assertFalse(proof.body().contains("storagePath"));
+        assertEquals(404, sendM3("GET", projectBase + "/record-work-items/" +
+            UUID.randomUUID() + "/completion-evidence", null, null).statusCode());
+        var other = ensureAppUser("u06_evidence_other", "synthetic-evidence-only");
+        ensureAppUserAssignment(other, ensureFixtureOwner(), UUID.fromString(evidence.get("formId").asText()));
+        String otherAuth = "Basic " + Base64.getEncoder().encodeToString(
+            "u06_evidence_other:synthetic-evidence-only".getBytes(StandardCharsets.UTF_8));
+        var denied = client.send(HttpRequest.newBuilder(localUri(evidenceUrl))
+            .header("Authorization", otherAuth).GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, denied.statusCode());
+        assertFalse(denied.body().contains(childId.toString()));
+        var storedPath = java.nio.file.Path.of(jdbcTemplate.queryForObject(
+            "SELECT storage_path FROM submission_attachments WHERE submission_id = ?", String.class, childId));
+        byte[] originalBytes = java.nio.file.Files.readAllBytes(storedPath);
+        byte[] corrupt = originalBytes.clone();
+        corrupt[0] ^= 1;
+        try {
+            java.nio.file.Files.write(storedPath, corrupt);
+            assertEquals(409, sendM3("GET", evidenceUrl, null, null).statusCode());
+            assertArrayEquals(corrupt, java.nio.file.Files.readAllBytes(storedPath));
+        } finally { java.nio.file.Files.write(storedPath, originalBytes); }
+        assertEquals(evidence, new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+            sendM3("GET", evidenceUrl, null, null).body()));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM record_links WHERE work_item_id = ?",
+            Integer.class, UUID.fromString(workId)));
 
         // A malicious second completion with a different instance ID must roll
         // the new submission back, not create another linked visit.

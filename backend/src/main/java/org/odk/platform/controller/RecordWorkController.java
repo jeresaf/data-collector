@@ -64,6 +64,14 @@ public class RecordWorkController {
         return service.typedMappingAuthority(projectId, workId);
     }
 
+    /** Owner-scoped digest-only evidence. Never retries or modifies a submission. */
+    @GetMapping("/record-work-items/{workId}/completion-evidence")
+    public ResponseEntity<RecordWorkService.CompletionEvidence> completionEvidence(
+            @PathVariable UUID projectId, @PathVariable UUID workId) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(service.completionEvidence(projectId, workId));
+    }
+
     @GetMapping("/record-work-items/{workId}/prepare")
     public Preparation prepare(@PathVariable UUID projectId,
                                @PathVariable UUID workId) {
