@@ -17,7 +17,18 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HashSet;
+import java.util.HexFormat;
 import java.sql.ResultSet;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.transaction.annotation.Isolation;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.List;
@@ -44,7 +55,118 @@ public class RecordWorkService {
     private final FormVersionRepository formVersionRepository;
     private final AppUserProjectRepository appUserProjectRepository;
 
+    @Value("${odk.storage.submissions-root:uploads/submissions}")
+    private String receiptStorageRoot;
+
     public enum WorkType { AMENDMENT, FOLLOW_UP }
+
+    public record ReceiptMedia(String filename, String mime, long bytes, String sha256) { }
+
+    /** Read-only current persisted content evidence, not an upload capability. */
+    public record CompletedFollowUpEvidence(UUID projectId, UUID workId,
+            UUID sourceSubmissionId, String sourceInstanceId, UUID targetFormVersionId,
+            String targetXFormSha256, String visitKey, UUID submissionId,
+            String instanceId, int xmlBytes, String xmlSha256, List<ReceiptMedia> attachments) { }
+
+    /**
+     * Exact work lookup, not an inference from a bounded listing.
+     * No raw XML, media bytes, storage paths or credentials cross this boundary.
+     * A missing/READY/invalid work never proves that a resend is safe.
+     */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public CompletedFollowUpEvidence completedFollowUpEvidence(UUID projectId, UUID workId) {
+        AppUser actor = currentAppUser();
+        requireActiveProject(projectId);
+        WorkView work = getOwnedWork(actor, projectId, workId);
+        Submission source = accessibleSource(actor, projectId, work.sourceSubmissionId());
+        if (work.workType() != WorkType.FOLLOW_UP || !"COMPLETED".equals(work.state()) ||
+                work.completedSubmissionId() == null || work.visitKey() == null ||
+                !Objects.equals(source.getInstanceId(), work.sourceInstanceId())) {
+            throw receiptUnavailable();
+        }
+        Submission child = accessibleSource(actor, projectId, work.completedSubmissionId());
+        FormVersion version = targetVersion(actor, projectId, work.targetFormVersionId());
+        if (child.getId().equals(source.getId()) || child.getFormVersion() == null ||
+                !work.targetFormVersionId().equals(child.getFormVersion().getId()) ||
+                !version.getForm().getId().equals(child.getForm().getId()) ||
+                child.getInstanceId() == null || child.getInstanceId().equals(source.getInstanceId()) ||
+                child.getXmlContent() == null) {
+            throw receiptUnavailable();
+        }
+        Integer linked = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM record_links
+                WHERE work_item_id = ? AND project_id = ? AND source_submission_id = ?
+                  AND child_submission_id = ? AND link_type = 'FOLLOW_UP' AND visit_key = ?
+                """, Integer.class, workId, projectId, source.getId(), child.getId(), work.visitKey());
+        if (!Integer.valueOf(1).equals(linked)) throw receiptUnavailable();
+        byte[] xml = child.getXmlContent().getBytes(StandardCharsets.UTF_8);
+        byte[] xform = version.getXmlContent().getBytes(StandardCharsets.UTF_8);
+        if (xml.length == 0 || xml.length > 8 * 1024 * 1024 ||
+                xform.length == 0 || xform.length > 8 * 1024 * 1024) throw receiptUnavailable();
+        var rows = jdbc.query("""
+                SELECT file_name, content_type, file_size, content_hash, storage_path, storage_driver
+                FROM submission_attachments WHERE submission_id = ?
+                ORDER BY file_name, id LIMIT 65
+                """, (rs, i) -> new StoredReceiptMedia(rs.getString("file_name"),
+                    rs.getString("content_type"), rs.getLong("file_size"), rs.getString("content_hash"),
+                    rs.getString("storage_path"), rs.getString("storage_driver")), child.getId());
+        if (rows.size() > 64) throw receiptUnavailable();
+        var names = new HashSet<String>();
+        var verified = new java.util.ArrayList<ReceiptMedia>();
+        long total = xml.length;
+        for (StoredReceiptMedia row : rows) {
+            if (row.filename() == null || !row.filename().matches("[A-Za-z0-9._-]{1,255}") ||
+                    row.filename().contains("..") || !names.add(row.filename()) ||
+                    row.mime() == null || !row.mime().matches("[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+") ||
+                    row.bytes() < 1 || row.bytes() > 1_500_000 ||
+                    row.sha256() == null || !row.sha256().matches("[0-9a-f]{64}") ||
+                    !"local".equals(row.driver())) throw receiptUnavailable();
+            total += row.bytes();
+            if (total > 12L * 1024 * 1024) throw receiptUnavailable();
+            verified.add(verifyReceiptMedia(child.getId(), row));
+        }
+        return new CompletedFollowUpEvidence(projectId, workId, source.getId(),
+                source.getInstanceId(), work.targetFormVersionId(), digest(xform),
+                work.visitKey(), child.getId(), child.getInstanceId(), xml.length,
+                digest(xml), List.copyOf(verified));
+    }
+
+    private record StoredReceiptMedia(String filename, String mime, long bytes,
+            String sha256, String path, String driver) { }
+
+    private ReceiptMedia verifyReceiptMedia(UUID childId, StoredReceiptMedia row) {
+        try {
+            Path root = Path.of(receiptStorageRoot).toAbsolutePath().normalize();
+            Path dir = root.resolve(childId.toString());
+            Path file = Path.of(row.path()).toAbsolutePath().normalize();
+            if (!dir.equals(file.getParent()) || !file.toRealPath().equals(file) ||
+                    !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) ||
+                    Files.size(file) != row.bytes()) throw receiptUnavailable();
+            // Read at most the admitted size plus one; never allocate from an
+            // unbounded file. Verify actual stored bytes against DB metadata.
+            byte[] data;
+            try (var in = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+                data = in.readNBytes((int) row.bytes() + 1);
+            }
+            if (data.length != row.bytes() || !digest(data).equals(row.sha256()))
+                throw receiptUnavailable();
+            return new ReceiptMedia(row.filename(), row.mime(), row.bytes(), row.sha256());
+        } catch (IOException | IllegalArgumentException | NullPointerException ex) {
+            throw receiptUnavailable();
+        }
+    }
+
+    private static String digest(byte[] data) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable");
+        }
+    }
+
+    private static ResponseStatusException receiptUnavailable() {
+        return new ResponseStatusException(HttpStatus.CONFLICT, "Completed follow-up evidence unavailable");
+    }
 
     public record CreateWork(
             UUID sourceSubmissionId, UUID targetFormVersionId, WorkType workType,

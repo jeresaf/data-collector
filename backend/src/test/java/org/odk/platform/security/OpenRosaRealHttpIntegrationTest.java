@@ -658,6 +658,97 @@ class OpenRosaRealHttpIntegrationTest {
     }
 
     @Test
+    void u06CompletedEvidenceIsExactOwnedBoundAndVerifiesStoredBytes() throws Exception {
+        UUID targetVersion = m3VersionTwo();
+        String firstInstance = "uuid:" + UUID.randomUUID();
+        assertEquals(201, sendM3("POST", projectBase + "/submission",
+            multipartM3(m3Xml("1", firstInstance, null, "Synthetic evidence source")), null).statusCode());
+        UUID source = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, firstInstance);
+        String visit = "evidence-" + UUID.randomUUID();
+        var created = sendM3("POST", projectBase + "/record-work-items",
+            m3CreateWork(source, targetVersion, "FOLLOW_UP", visit, "receipt-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode());
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String work = mapper.readTree(created.body()).get("id").asText();
+        String endpoint = projectBase + "/record-work-items/" + work + "/completed-evidence";
+        assertEquals(409, sendM3("GET", endpoint, null, null).statusCode());
+        String instance = "uuid:" + UUID.randomUUID();
+        String xml = m3Xml("2", instance, null, "Synthetic evidence child");
+        String media = "Synthetic attachment bytes";
+        String filename = "synthetic-evidence.txt";
+        String body = multipartM3(xml).replace("\r\n--m3Boundary--\r\n",
+            "\r\n--m3Boundary\r\nContent-Disposition: form-data; name=\"attachment\"; filename=\"" +
+            filename + "\"\r\nContent-Type: text/plain\r\n\r\n" + media + "\r\n--m3Boundary--\r\n");
+        assertEquals(201, sendM3("POST", projectBase + "/submission", body, work).statusCode());
+        UUID child = jdbcTemplate.queryForObject(
+            "SELECT id FROM submissions WHERE instance_id = ?", UUID.class, instance);
+        String xform = jdbcTemplate.queryForObject("SELECT xml_content FROM form_versions WHERE id = ?",
+            String.class, targetVersion);
+        int submissionCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions", Integer.class);
+        int linkCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM record_links", Integer.class);
+        var response = sendM3("GET", endpoint, null, null);
+        assertEquals(200, response.statusCode());
+        assertTrue(response.headers().firstValue("Cache-Control").orElse("").contains("no-store"));
+        var evidence = mapper.readTree(response.body());
+        assertEquals(TEST_PROJECT_ID.toString(), evidence.get("projectId").asText());
+        assertEquals(work, evidence.get("workId").asText());
+        assertEquals(source.toString(), evidence.get("sourceSubmissionId").asText());
+        assertEquals(firstInstance, evidence.get("sourceInstanceId").asText());
+        assertEquals(targetVersion.toString(), evidence.get("targetFormVersionId").asText());
+        assertEquals(m3d4c2aHex(xform.getBytes(StandardCharsets.UTF_8)), evidence.get("targetXFormSha256").asText());
+        assertEquals(visit, evidence.get("visitKey").asText());
+        assertEquals(child.toString(), evidence.get("submissionId").asText());
+        assertEquals(instance, evidence.get("instanceId").asText());
+        assertEquals(xml.getBytes(StandardCharsets.UTF_8).length, evidence.get("xmlBytes").asInt());
+        assertEquals(m3d4c2aHex(xml.getBytes(StandardCharsets.UTF_8)), evidence.get("xmlSha256").asText());
+        var parts = evidence.get("attachments");
+        assertEquals(1, parts.size());
+        assertEquals(filename, parts.get(0).get("filename").asText());
+        assertEquals("text/plain", parts.get(0).get("mime").asText());
+        assertEquals(media.getBytes(StandardCharsets.UTF_8).length, parts.get(0).get("bytes").asLong());
+        assertEquals(m3d4c2aHex(media.getBytes(StandardCharsets.UTF_8)), parts.get(0).get("sha256").asText());
+        assertFalse(response.body().contains("Synthetic evidence child"));
+        assertFalse(response.body().contains(media));
+        String path = jdbcTemplate.queryForObject(
+            "SELECT storage_path FROM submission_attachments WHERE submission_id = ?", String.class, child);
+        assertFalse(response.body().contains(path));
+        assertEquals(evidence, mapper.readTree(sendM3("GET", endpoint, null, null).body()));
+        var file = java.nio.file.Path.of(path);
+        byte[] original = java.nio.file.Files.readAllBytes(file);
+        byte[] corrupted = original.clone();
+        corrupted[0] ^= 1;
+        try {
+            java.nio.file.Files.write(file, corrupted);
+            assertEquals(409, sendM3("GET", endpoint, null, null).statusCode());
+            assertArrayEquals(corrupted, java.nio.file.Files.readAllBytes(file));
+        } finally { java.nio.file.Files.write(file, original); }
+        assertEquals(404, sendM3("GET", projectBase + "/record-work-items/" +
+            UUID.randomUUID() + "/completed-evidence", null, null).statusCode());
+        UUID other = ensureAppUser("u06_evidence_other", "synthetic-evidence-only");
+        UUID form = jdbcTemplate.queryForObject("SELECT form_id FROM submissions WHERE id = ?", UUID.class, child);
+        ensureAppUserAssignment(other, ensureFixtureOwner(), form);
+        String otherAuth = "Basic " + Base64.getEncoder().encodeToString(
+            "u06_evidence_other:synthetic-evidence-only".getBytes(StandardCharsets.UTF_8));
+        assertEquals(404, client.send(HttpRequest.newBuilder(localUri(endpoint))
+            .header("Authorization", otherAuth).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(401, client.send(HttpRequest.newBuilder(localUri(endpoint)).GET().build(),
+            HttpResponse.BodyHandlers.ofString()).statusCode());
+        UUID owner = jdbcTemplate.queryForObject("SELECT submitted_by_id FROM submissions WHERE id = ?", UUID.class, child);
+        jdbcTemplate.update("UPDATE app_user_projects SET status = 'INACTIVE' WHERE app_user_id = ? AND project_id = ? AND form_id = ?",
+            owner, TEST_PROJECT_ID, form);
+        try {
+            assertEquals(403, sendM3("GET", endpoint, null, null).statusCode());
+        } finally {
+            jdbcTemplate.update("UPDATE app_user_projects SET status = 'ACTIVE' WHERE app_user_id = ? AND project_id = ? AND form_id = ?",
+                owner, TEST_PROJECT_ID, form);
+        }
+        assertEquals(evidence, mapper.readTree(sendM3("GET", endpoint, null, null).body()));
+        assertEquals(submissionCount, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions", Integer.class));
+        assertEquals(linkCount, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM record_links", Integer.class));
+    }
+
+    @Test
     void m3AmendmentOnPublishedVersionTwoPreservesVersionOneHistory() throws Exception {
         UUID targetVersion = m3VersionTwo();
         String firstInstance = "uuid:" + UUID.randomUUID();

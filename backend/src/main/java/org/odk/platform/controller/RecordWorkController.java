@@ -64,6 +64,14 @@ public class RecordWorkController {
         return service.typedMappingAuthority(projectId, workId);
     }
 
+    @GetMapping("/record-work-items/{workId}/completed-evidence")
+    public ResponseEntity<RecordWorkService.CompletedFollowUpEvidence> completedEvidence(
+            @PathVariable UUID projectId, @PathVariable UUID workId) {
+        return ResponseEntity.ok()
+                .cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(service.completedFollowUpEvidence(projectId, workId));
+    }
+
     @GetMapping("/record-work-items/{workId}/prepare")
     public Preparation prepare(@PathVariable UUID projectId,
                                @PathVariable UUID workId) {
