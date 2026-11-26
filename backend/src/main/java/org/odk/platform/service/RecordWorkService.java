@@ -62,6 +62,9 @@ public class RecordWorkService {
     @Value("${odk.protected-attempts.enabled:false}")
     private boolean protectedAttemptsEnabled;
 
+    @Value("${odk.protected-amendments.enabled:false}")
+    private boolean protectedAmendmentsEnabled;
+
     public enum WorkType { AMENDMENT, FOLLOW_UP }
 
     public record ReserveAttempt(UUID clientRequestId, String instanceId) {}
@@ -121,12 +124,39 @@ public class RecordWorkService {
                 workId).stream().findFirst().orElse(null);
     }
 
-    private FormVersion authorizeAttemptWork(AppUser actor, UUID projectId, WorkView work) {
-        if (work.workType() != WorkType.FOLLOW_UP || !"READY".equals(work.state()))
+    private void requireProtectedWorkType(WorkView work) {
+        if (work.workType() == WorkType.AMENDMENT) {
+            if (!protectedAmendmentsEnabled || work.visitKey() != null) throw attemptConflict();
+        } else if (work.workType() != WorkType.FOLLOW_UP || work.visitKey() == null) {
             throw attemptConflict();
+        }
+    }
+
+    /** Form lock first, then the exact amendment source, then work. */
+    private void lockProtectedAmendmentSource(WorkView work) {
+        requireProtectedWorkType(work);
+        if (work.workType() == WorkType.AMENDMENT)
+            jdbc.queryForObject("SELECT id FROM submissions WHERE id = ? FOR UPDATE",
+                    UUID.class, work.sourceSubmissionId());
+    }
+
+    private FormVersion authorizeAttemptWork(AppUser actor, UUID projectId, WorkView work) {
+        requireProtectedWorkType(work);
+        if (!"READY".equals(work.state())) throw attemptConflict();
         Submission source = accessibleSource(actor, projectId, work.sourceSubmissionId());
         if (!Objects.equals(source.getInstanceId(), work.sourceInstanceId())) throw attemptConflict();
-        return targetVersion(actor, projectId, work.targetFormVersionId());
+        FormVersion target = targetVersion(actor, projectId, work.targetFormVersionId());
+        if (work.workType() == WorkType.AMENDMENT) {
+            if (!source.getForm().getId().equals(target.getForm().getId()) ||
+                    source.getFormVersion() == null ||
+                    !Objects.equals(work.sourceFormVersionId(), source.getFormVersion().getId()))
+                throw attemptConflict();
+            requireUnchangedSourceSinceWorkCreated(work.id(), source.getId());
+            if (Boolean.TRUE.equals(jdbc.queryForObject(
+                    "SELECT EXISTS(SELECT 1 FROM submission_versions WHERE submission_id=?)",
+                    Boolean.class, source.getId()))) throw attemptConflict();
+        }
+        return target;
     }
 
     @Transactional
@@ -147,7 +177,10 @@ public class RecordWorkService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid attempt instance");
         }
         lockSubmissionForm(formId);
+        lockProtectedAmendmentSource(initial);
         WorkView work = lockOwnedWork(actor, projectId, workId);
+        if (!initial.sourceSubmissionId().equals(work.sourceSubmissionId()) ||
+                initial.workType() != work.workType()) throw attemptConflict();
         if (!formId.equals(authorizeAttemptWork(actor, projectId, work).getForm().getId()))
             throw attemptConflict();
         AttemptView prior = attempt(workId);
@@ -181,7 +214,10 @@ public class RecordWorkService {
         WorkView initial = getOwnedWork(actor, projectId, workId);
         UUID formId = authorizeAttemptWork(actor, projectId, initial).getForm().getId();
         lockSubmissionForm(formId);
+        lockProtectedAmendmentSource(initial);
         WorkView work = lockOwnedWork(actor, projectId, workId);
+        if (!initial.sourceSubmissionId().equals(work.sourceSubmissionId()) ||
+                initial.workType() != work.workType()) throw attemptConflict();
         if (!formId.equals(authorizeAttemptWork(actor, projectId, work).getForm().getId()))
             throw attemptConflict();
         AttemptView prior = attempt(workId);
@@ -225,13 +261,15 @@ public class RecordWorkService {
             if (attemptHeader != null || !instanceReservations.isEmpty()) throw attemptConflict();
             return null;
         }
+        requireProtectedWorkType(work);
         if (!protectedAttemptsEnabled || attemptHeader == null ||
                 !prior.attemptId().toString().equals(attemptHeader) ||
                 prior.wireSha256() == null || prior.acceptedSubmissionId() != null ||
                 !prior.projectId().equals(projectId) || !prior.actorId().equals(actor.getId()) ||
                 !prior.sourceId().equals(work.sourceSubmissionId()) ||
                 !prior.targetVersionId().equals(target.getId()) ||
-                !prior.formId().equals(formId) || !prior.instanceId().equals(instanceId) || replacement)
+                !prior.formId().equals(formId) || !prior.instanceId().equals(instanceId) ||
+                replacement != (work.workType() == WorkType.AMENDMENT))
             throw attemptConflict();
         AppUser current = currentAppUser();
         if (!current.getId().equals(actor.getId())) throw attemptConflict();
@@ -260,11 +298,12 @@ public class RecordWorkService {
 
     private void requireAttemptIdentity(AttemptView prior, WorkView work, AppUser actor,
                                         UUID projectId, UUID formId, UUID attemptId) {
+        requireProtectedWorkType(work);
         if (prior == null || !prior.attemptId().equals(attemptId) ||
                 !prior.projectId().equals(projectId) || !prior.actorId().equals(actor.getId()) ||
                 !prior.sourceId().equals(work.sourceSubmissionId()) ||
                 !prior.targetVersionId().equals(work.targetFormVersionId()) ||
-                !prior.formId().equals(formId) || work.workType() != WorkType.FOLLOW_UP)
+                !prior.formId().equals(formId))
             throw attemptConflict();
     }
 
@@ -274,7 +313,7 @@ public class RecordWorkService {
                 !prior.acceptedSubmissionId().equals(work.completedSubmissionId())) throw attemptConflict();
         // The caller holds the form and work row locks. Reuse the existing
         // ownership, exact link, attachment-answer and physical byte oracle.
-        CompletionEvidence evidence = completionEvidence(prior.projectId(), prior.workId());
+        CompletionEvidence evidence = completionEvidenceFor(currentAppUser(), prior.projectId(), work);
         if (!prior.acceptedSubmissionId().equals(evidence.submissionId()) ||
                 !prior.formId().equals(evidence.formId())) throw attemptConflict();
         try {
@@ -302,7 +341,10 @@ public class RecordWorkService {
         WorkView initial = getOwnedWork(actor, projectId, workId);
         UUID formId = targetVersion(actor, projectId, initial.targetFormVersionId()).getForm().getId();
         lockSubmissionForm(formId);
+        lockProtectedAmendmentSource(initial);
         WorkView work = lockOwnedWork(actor, projectId, workId);
+        if (!initial.sourceSubmissionId().equals(work.sourceSubmissionId()) ||
+                initial.workType() != work.workType()) throw attemptConflict();
         AttemptView prior = attempt(workId);
         requireAttemptIdentity(prior, work, actor, projectId, formId, attemptId);
         if (prior.acceptedSubmissionId() != null)
@@ -326,7 +368,7 @@ public class RecordWorkService {
             UUID duplicateId,
             org.springframework.util.MultiValueMap<String, org.springframework.web.multipart.MultipartFile> parts) {
         requireAttemptFeature();
-        if (actor == null || replacement || taskId == null || attemptHeader == null)
+        if (actor == null || taskId == null || attemptHeader == null)
             throw attemptConflict();
         UUID workId;
         UUID attemptId;
@@ -341,7 +383,12 @@ public class RecordWorkService {
         AppUser current = currentAppUser();
         if (!actor.getId().equals(current.getId())) throw attemptConflict();
         requireActiveProject(projectId);
+        WorkView initial = getOwnedWork(current, projectId, workId);
+        lockProtectedAmendmentSource(initial);
         WorkView work = lockOwnedWork(current, projectId, workId);
+        if (!initial.sourceSubmissionId().equals(work.sourceSubmissionId()) ||
+                initial.workType() != work.workType() ||
+                replacement != (work.workType() == WorkType.AMENDMENT)) throw attemptConflict();
         AttemptView prior = attempt(workId);
         requireAttemptIdentity(prior, work, current, projectId, target.getForm().getId(), attemptId);
         if (!target.getId().equals(prior.targetVersionId()) || !prior.instanceId().equals(instanceId) ||
@@ -390,10 +437,17 @@ public class RecordWorkService {
         AppUser actor = currentAppUser();
         requireActiveProject(projectId);
         WorkView work = getOwnedWork(actor, projectId, workId);
-        if (work.workType() != WorkType.FOLLOW_UP || !"COMPLETED".equals(work.state()) ||
-                work.completedSubmissionId() == null || work.visitKey() == null) {
-            throw completionConflict();
-        }
+        // Legacy completion endpoint remains FOLLOW_UP-only.
+        if (work.workType() != WorkType.FOLLOW_UP) throw completionConflict();
+        return completionEvidenceFor(actor, projectId, work);
+    }
+
+    private CompletionEvidence completionEvidenceFor(AppUser actor, UUID projectId, WorkView work) {
+        UUID workId = work.id();
+        if (!"COMPLETED".equals(work.state()) || work.completedSubmissionId() == null ||
+                (work.workType() == WorkType.FOLLOW_UP && work.visitKey() == null) ||
+                (work.workType() == WorkType.AMENDMENT &&
+                        (!protectedAmendmentsEnabled || work.visitKey() != null))) throw completionConflict();
         Submission source = accessibleSource(actor, projectId, work.sourceSubmissionId());
         Submission child = accessibleSource(actor, projectId, work.completedSubmissionId());
         FormVersion target = targetVersion(actor, projectId, work.targetFormVersionId());
@@ -405,11 +459,36 @@ public class RecordWorkService {
                 !target.getForm().getId().equals(child.getForm().getId())) {
             throw completionConflict();
         }
-        Integer links = jdbc.queryForObject("""
-                SELECT COUNT(*) FROM record_links
-                WHERE work_item_id = ? AND project_id = ? AND source_submission_id = ?
-                  AND child_submission_id = ? AND link_type = 'FOLLOW_UP' AND visit_key = ?
-                """, Integer.class, workId, projectId, source.getId(), child.getId(), work.visitKey());
+        Integer links;
+        if (work.workType() == WorkType.AMENDMENT) {
+            if (!source.getForm().getId().equals(child.getForm().getId()) ||
+                    source.getFormVersion() == null ||
+                    !Objects.equals(work.sourceFormVersionId(), source.getFormVersion().getId()))
+                throw completionConflict();
+            var archives = jdbc.query("""
+                    SELECT version_number, xml_content, instance_id, source_form_version_id,
+                           deprecated_id, submitted_by_id
+                    FROM submission_versions WHERE submission_id=? ORDER BY version_number LIMIT 2
+                    """, (rs, row) -> rs.getInt("version_number") == 1 &&
+                        Objects.equals(rs.getString("xml_content"), source.getXmlContent()) &&
+                        Objects.equals(rs.getString("instance_id"), source.getInstanceId()) &&
+                        Objects.equals(rs.getObject("source_form_version_id", UUID.class), work.sourceFormVersionId()) &&
+                        Objects.equals(rs.getString("deprecated_id"), source.getInstanceId()) &&
+                        Objects.equals(rs.getObject("submitted_by_id", UUID.class), actor.getId()),
+                    source.getId());
+            if (!archives.equals(List.of(true))) throw completionConflict();
+            links = jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM record_links
+                    WHERE work_item_id=? AND project_id=? AND source_submission_id=?
+                      AND child_submission_id=? AND link_type='AMENDMENT' AND visit_key IS NULL
+                    """, Integer.class, workId, projectId, source.getId(), child.getId());
+        } else {
+            links = jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM record_links
+                    WHERE work_item_id = ? AND project_id = ? AND source_submission_id = ?
+                      AND child_submission_id = ? AND link_type = 'FOLLOW_UP' AND visit_key = ?
+                    """, Integer.class, workId, projectId, source.getId(), child.getId(), work.visitKey());
+        }
         Integer allLinks = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM record_links WHERE work_item_id = ? OR child_submission_id = ?
                 """, Integer.class, workId, child.getId());

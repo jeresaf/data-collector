@@ -124,7 +124,7 @@ public class OpenRosaSubmissionService {
                             instanceId, envelope.deprecatedId() != null,
                             request.getHeader("X-DataCollector-Work-Item-Id"), attemptHeader,
                             duplicate.get().getId(), multipartFiles);
-                    return new Receipt(duplicate.get(), instanceId, false, detectSourceClient(request));
+                    return new Receipt(duplicate.get(), instanceId, envelope.deprecatedId() != null, detectSourceClient(request));
                 } catch (ResponseStatusException ex) {
                     throw new IntakeException(HttpStatus.valueOf(ex.getStatusCode().value()),
                             ex.getReason() == null ? "Protected replay denied" : ex.getReason());
