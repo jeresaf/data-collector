@@ -99,7 +99,7 @@ jobs:
         run: docker info
 
       - name: Run real PostgreSQL migration/schema gate
-        run: mvn -B -ntp -Dtest=PostgreSqlContainerMigrationIT,OpenRosaRealHttpPostgresIT test
+        run: mvn -B -ntp -Dtest=PostgreSqlContainerMigrationIT,OpenRosaRealHttpPostgresIT,EntityListPostgresLedgerContractIT,EntityListPostgresSchemaContractIT,EntityListPostgresRevocationRaceIT test
 
       - name: Upload PostgreSQL Surefire report on failure
         if: failure()

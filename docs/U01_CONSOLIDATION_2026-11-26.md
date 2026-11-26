@@ -46,3 +46,9 @@ M0-M21 historical task IDs and U01-U09 canonical milestones unchanged. G01-G06 r
 ## Next actions
 
 Verify exact ancestry of all 109 chain heads, reconcile #1/#33 and Android alternatives by file/behavior evidence, integrate #28 with schema/test conflict review and #32 with provenance. Add CI triggers for consolidated branches, repin Android to the qualified integrated backend, run full cross-repository tests. Close/mark superseded old PRs only after evidence and owner approval. No production release before all applicable gates pass.
+
+## Batch 2 — exact ancestry and U05 source integration
+
+All 27 backend chain heads found in complete paginated 225-commit comparison from main to seed; all 82 Android chain heads found in complete paginated 433-commit comparison from forward-port d6c4ecd0f1d470b501bcdbaaf43294820deeb61f to seed. No missing heads. This proves ancestry, not behavioral acceptance.
+
+U05 exact head efb92f20e852944d66d758823800575ff1353128 merged into this candidate with explicit second parent. Compared both sides of common ancestor 312c67c4a51b7ec7867531af5de3526f14939451: 44 U05 changed files, 43 non-overlapping paths reused as exact source blobs; one overlapping PostgreSqlContainerMigrationIT.java reconciled by verifying U05 is insertion-only relative to common ancestor, adding its imports, injected fields and all three test methods/helpers to the selected baseline without removing existing U06 tests. No production schema migrations or trust activation added by this integration. Full CI remains required; source branch and old drafts preserved.

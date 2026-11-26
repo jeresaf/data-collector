@@ -1,0 +1,83 @@
+package org.odk.platform.openrosa;
+
+import org.odk.platform.security.CurrentUserService;
+import java.util.Objects;
+import java.util.UUID;
+
+/** Inactive principal-bound removal-review facade; no route or Spring bean. */
+public final class EntityListAuthenticatedReviewService {
+    private final CurrentUserService currentUserService;
+    private final EntityListSnapshotWebAuthorization webAuthorization;
+    private final JdbcEntityListRemovalRoleGate transactionAuthorization;
+    private final JdbcEntityListRemovalReviewRegister register;
+    private final JdbcEntityListDenialEvidenceWriter denials;
+
+    public EntityListAuthenticatedReviewService(
+            CurrentUserService currentUserService,
+            EntityListSnapshotWebAuthorization webAuthorization,
+            JdbcEntityListRemovalRoleGate transactionAuthorization,
+            JdbcEntityListRemovalReviewRegister register,
+            JdbcEntityListDenialEvidenceWriter denials) {
+        this.currentUserService = Objects.requireNonNull(currentUserService);
+        this.webAuthorization = Objects.requireNonNull(webAuthorization);
+        this.transactionAuthorization = Objects.requireNonNull(transactionAuthorization);
+        if (transactionAuthorization.role() != JdbcEntityListRemovalRoleGate.Role.REVIEWER) {
+            throw new IllegalArgumentException("Incorrect removal delegation role for service");
+        }
+        this.register = Objects.requireNonNull(register);
+        this.denials = Objects.requireNonNull(denials);
+    }
+
+    private boolean deny(UUID reviewId, UUID actor, JdbcEntityListDenialEvidenceWriter.Reason reason) {
+        denials.record(reviewId, actor,
+                JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION, reason);
+        return false;
+    }
+
+    public boolean decide(UUID reviewId, JdbcEntityListRemovalReviewRegister.Decision decision) {
+        if (reviewId == null) {
+            return deny(null, null, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
+        }
+        var current = EntityListDenialExceptionAudit.call(denials, reviewId, null,
+                JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION,
+                currentUserService::getCurrentWebUser);
+        if (current.isEmpty() || current.get().getId() == null) {
+            return deny(reviewId, null, JdbcEntityListDenialEvidenceWriter.Reason.UNAUTHENTICATED);
+        }
+        UUID reviewer = current.get().getId();
+        if (!Boolean.TRUE.equals(current.get().getIsActive())) {
+            return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.INACTIVE_ACCOUNT);
+        }
+        if (decision == null) {
+            return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
+        }
+        var request = EntityListDenialExceptionAudit.call(denials, reviewId, reviewer,
+                JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION,
+                () -> register.get(reviewId));
+        if (request == null || !"PENDING".equals(request.state())) {
+            return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE);
+        }
+        if (reviewer.equals(request.requester())) {
+            return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.SELF_ACTION);
+        }
+        if (!EntityListDenialExceptionAudit.call(denials, reviewId, reviewer,
+                JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION,
+                () -> webAuthorization.mayInitialize(reviewer, request.key()))) {
+            return deny(reviewId, reviewer, JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED);
+        }
+        var outcome = EntityListDenialExceptionAudit.call(denials, reviewId, reviewer,
+                JdbcEntityListDenialEvidenceWriter.Operation.REVIEW_DECISION,
+                () -> register.decideAuthorizedOutcome(
+                        reviewId, reviewer, decision, transactionAuthorization));
+        if (outcome == JdbcEntityListRemovalReviewRegister.DecisionOutcome.DECIDED) {
+            return true;
+        }
+        JdbcEntityListDenialEvidenceWriter.Reason reason = switch (outcome) {
+            case INVALID_STATE -> JdbcEntityListDenialEvidenceWriter.Reason.INVALID_STATE;
+            case SELF_ACTION -> JdbcEntityListDenialEvidenceWriter.Reason.SELF_ACTION;
+            case PERMISSION_DENIED -> JdbcEntityListDenialEvidenceWriter.Reason.PERMISSION_DENIED;
+            case DECIDED -> throw new IllegalStateException("Successful review cannot be denied");
+        };
+        return deny(reviewId, reviewer, reason);
+    }
+}

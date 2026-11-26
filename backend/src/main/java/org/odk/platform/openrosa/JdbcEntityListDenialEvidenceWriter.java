@@ -1,0 +1,74 @@
+package org.odk.platform.openrosa;
+
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.Objects;
+import java.util.UUID;
+
+/**
+ * Opt-in, test-schema-only, immutable denial-evidence writer.
+ *
+ * A denial is recorded on its OWN database connection and transaction so a
+ * rollback of a rejected approval/review transaction cannot erase evidence.
+ * Records a fixed reason code, never candidate contents, credentials, or
+ * the removed entity IDs. The caller must identify an actual denied action;
+ * this class does not grant or deny authority itself.
+ *
+ * Not a Spring bean, production audit sink or HTTP integration.
+ */
+public final class JdbcEntityListDenialEvidenceWriter {
+    public enum Operation { REVIEW_DECISION, APPROVAL_VALIDATION }
+    public enum Reason {
+        UNAUTHENTICATED, INACTIVE_ACCOUNT, SELF_ACTION, INVALID_STATE,
+        PERMISSION_DENIED, STALE_HEAD, EVIDENCE_MISMATCH, REPLAY,
+        UNAVAILABLE
+    }
+
+    private final DataSource dataSource;
+
+    public JdbcEntityListDenialEvidenceWriter(DataSource dataSource) {
+        this.dataSource = Objects.requireNonNull(dataSource);
+    }
+
+    /**
+     * Null actor is intentional for unauthenticated denials; null review ID
+     * identifies a malformed or uncorrelated request. Neither value is
+     * replaced with a fabricated identity. The generated event ID always
+     * provides a durable correlation key. Fails closed if storage fails.
+     */
+    public UUID record(UUID reviewId, UUID authenticatedActor,
+            Operation operation, Reason reason) {
+        Objects.requireNonNull(operation);
+        Objects.requireNonNull(reason);
+        UUID eventId = UUID.randomUUID();
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement insert = connection.prepareStatement(
+                    "INSERT INTO entity_list_denial_evidence "
+                            + "(id,review_id,actor_id,operation,reason) VALUES (?,?,?,?,?)")) {
+                insert.setObject(1, eventId);
+                insert.setObject(2, reviewId);
+                insert.setObject(3, authenticatedActor);
+                insert.setString(4, operation.name());
+                insert.setString(5, reason.name());
+                if (insert.executeUpdate() != 1) {
+                    connection.rollback();
+                    throw new IllegalStateException("Denial evidence insert was not durable");
+                }
+                connection.commit();
+                return eventId;
+            } catch (SQLException | RuntimeException failure) {
+                try {
+                    connection.rollback();
+                } catch (SQLException suppressed) {
+                    failure.addSuppressed(suppressed);
+                }
+                throw failure;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot persist denial evidence", e);
+        }
+    }
+}
