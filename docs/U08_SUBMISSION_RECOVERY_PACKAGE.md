@@ -1,0 +1,9 @@
+# U08 protected submission and recovery — implementation package
+
+Tracker: #36. Baseline backend 81ded784256ac288d13cff36bf3b69ba10f42129; paired Android 4c629decc57785c1af4f8e18e1ba977b01a290ff. Post-promotion backend gates 45789268712, 45789268739, 45789268694, 45789268747 PASS; Android 45789278457 attempt 2 all four profiles PASS and 45789278786 PASS. All 118 historical drafts closed with evidence, no branches deleted.
+
+## Contract and implementation sequencing
+
+The first implementation commit adds a bounded V1 canonical content commitment over actual multipart bytes and server-verified identity fields. Its digest is **not** a permission, receipt, or proof of absence. Existing Android package digest is intentionally distinct; it binds local generation and vault details. Android must implement the same wire commitment only once it has an authenticated server-issued attempt identity and actor binding. The wire profile admits current canonical XML and JPEG/PNG attachments only; media MIME sniffing, XML parsing and actual reference ownership remain required at intake, separate from hashing. No change to legacy OpenRosa, database migrations or runtime routing in this first commit.
+
+Next commit(s) in this same branch: transactionally serialize admission with work lock and durable attempt identity, preserving source lock order for amendments; decide admission and replay semantics with a dedicated API that cannot be bypassed by unbound legacy linked writes for reserved work. Preserve all existing ordinary uploads. Add atomic acceptance evidence, current authorization checks, negative/concurrency/rollback PostgreSQL tests, then pair Android encrypted attempt identity, explicit retry, status/recovery UI and queue. Never infer permission from READY or clear old unbound markers. Do not enable runtime retry until exact paired tests pass. See issue #36 for full acceptance matrix.
