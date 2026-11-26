@@ -236,6 +236,113 @@ public class RecordWorkService {
         return prior.attemptId();
     }
 
+    public enum AttemptState { RESERVED_UNBOUND, BOUND_EXACT_CONTENT_ADMISSIBLE, COMPLETED_VERIFIED }
+    public record AttemptStatus(AttemptState state, AttemptView attempt, CompletionEvidence completion) {}
+
+    private ProtectedSubmissionCommitment.Binding bindingFor(AttemptView prior, WorkView work) {
+        return new ProtectedSubmissionCommitment.Binding(prior.projectId(), prior.actorId(), prior.workId(),
+                prior.sourceId(), prior.targetVersionId(), prior.attemptId(), prior.instanceId(), work.workType());
+    }
+
+    private void requireAttemptIdentity(AttemptView prior, WorkView work, AppUser actor,
+                                        UUID projectId, UUID formId, UUID attemptId) {
+        if (prior == null || !prior.attemptId().equals(attemptId) ||
+                !prior.projectId().equals(projectId) || !prior.actorId().equals(actor.getId()) ||
+                !prior.sourceId().equals(work.sourceSubmissionId()) ||
+                !prior.targetVersionId().equals(work.targetFormVersionId()) ||
+                !prior.formId().equals(formId) || work.workType() != WorkType.FOLLOW_UP)
+            throw attemptConflict();
+    }
+
+    private CompletionEvidence verifyAcceptedAttempt(AttemptView prior, WorkView work) {
+        if (!"COMPLETED".equals(work.state()) || prior.wireSha256() == null ||
+                prior.acceptedSubmissionId() == null ||
+                !prior.acceptedSubmissionId().equals(work.completedSubmissionId())) throw attemptConflict();
+        // The caller holds the form and work row locks. Reuse the existing
+        // ownership, exact link, attachment-answer and physical byte oracle.
+        CompletionEvidence evidence = completionEvidence(prior.projectId(), prior.workId());
+        if (!prior.acceptedSubmissionId().equals(evidence.submissionId()) ||
+                !prior.formId().equals(evidence.formId())) throw attemptConflict();
+        try {
+            if (!prior.wireSha256().equals(
+                    ProtectedSubmissionCommitment.fromVerifiedCompletion(bindingFor(prior, work), evidence)))
+                throw attemptConflict();
+        } catch (IllegalArgumentException e) {
+            throw attemptConflict();
+        }
+        return evidence;
+    }
+
+    /**
+     * Owner-only status, serialized with intake. A bound READY attempt permits
+     * only the same immutable content/attempt, never a new package or attempt.
+     * A delayed identical POST can still arrive after this response; it is safe
+     * because the same admission lock and commitment apply to every POST.
+     * No mutation, no authorization for an old unbound local marker.
+     */
+    @Transactional
+    public AttemptStatus protectedAttemptStatus(UUID projectId, UUID workId, UUID attemptId) {
+        requireAttemptFeature();
+        AppUser actor = currentAppUser();
+        requireActiveProject(projectId);
+        WorkView initial = getOwnedWork(actor, projectId, workId);
+        UUID formId = targetVersion(actor, projectId, initial.targetFormVersionId()).getForm().getId();
+        lockSubmissionForm(formId);
+        WorkView work = lockOwnedWork(actor, projectId, workId);
+        AttemptView prior = attempt(workId);
+        requireAttemptIdentity(prior, work, actor, projectId, formId, attemptId);
+        if (prior.acceptedSubmissionId() != null)
+            return new AttemptStatus(AttemptState.COMPLETED_VERIFIED, prior, verifyAcceptedAttempt(prior, work));
+        if (!formId.equals(authorizeAttemptWork(actor, projectId, work).getForm().getId()) ||
+                work.completedSubmissionId() != null ||
+                submissionRepository.findByFormIdAndInstanceId(formId, prior.instanceId()).isPresent() ||
+                !Integer.valueOf(0).equals(jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM record_links WHERE work_item_id=?", Integer.class, workId)))
+            throw attemptConflict();
+        return new AttemptStatus(prior.wireSha256() == null ? AttemptState.RESERVED_UNBOUND :
+                AttemptState.BOUND_EXACT_CONTENT_ADMISSIBLE, prior, null);
+    }
+
+    /** Existing accepted submission may be acknowledged again only after
+     * reauthorizing and recomputing both incoming and persisted commitments.
+     * Called by intake under the form lock; no writes, no audit duplication. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void verifyProtectedReplay(UUID projectId, AppUser actor, FormVersion target,
+            String instanceId, boolean replacement, String taskId, String attemptHeader,
+            UUID duplicateId,
+            org.springframework.util.MultiValueMap<String, org.springframework.web.multipart.MultipartFile> parts) {
+        requireAttemptFeature();
+        if (actor == null || replacement || taskId == null || attemptHeader == null)
+            throw attemptConflict();
+        UUID workId;
+        UUID attemptId;
+        try {
+            workId = UUID.fromString(taskId);
+            attemptId = UUID.fromString(attemptHeader);
+            if (!workId.toString().equals(taskId) || !attemptId.toString().equals(attemptHeader))
+                throw new IllegalArgumentException();
+        } catch (IllegalArgumentException e) {
+            throw attemptConflict();
+        }
+        AppUser current = currentAppUser();
+        if (!actor.getId().equals(current.getId())) throw attemptConflict();
+        requireActiveProject(projectId);
+        WorkView work = lockOwnedWork(current, projectId, workId);
+        AttemptView prior = attempt(workId);
+        requireAttemptIdentity(prior, work, current, projectId, target.getForm().getId(), attemptId);
+        if (!target.getId().equals(prior.targetVersionId()) || !prior.instanceId().equals(instanceId) ||
+                !duplicateId.equals(prior.acceptedSubmissionId()) || prior.wireSha256() == null)
+            throw attemptConflict();
+        try {
+            if (!prior.wireSha256().equals(
+                    ProtectedSubmissionCommitment.fromMultipart(bindingFor(prior, work), parts)))
+                throw attemptConflict();
+        } catch (IOException | IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid protected multipart content");
+        }
+        verifyAcceptedAttempt(prior, work);
+    }
+
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public void acceptProtectedAttempt(UUID attemptId, UUID submissionId) {
         if (attemptId == null) return;
@@ -246,6 +353,15 @@ public class RecordWorkService {
                     WHERE w.id=protected_submission_attempts.work_item_id
                     AND w.state='COMPLETED' AND w.completed_submission_id=?)
                 """, submissionId, attemptId, submissionId) != 1) throw attemptConflict();
+        // Verify persistence has not normalized or dropped any committed part.
+        // Any mismatch aborts the entire intake, including the registry update.
+        UUID workId = jdbc.queryForObject(
+                "SELECT work_item_id FROM protected_submission_attempts WHERE attempt_id=?", UUID.class, attemptId);
+        AttemptView prior = attempt(workId);
+        AppUser actor = currentAppUser();
+        WorkView work = lockOwnedWork(actor, prior.projectId(), workId);
+        requireAttemptIdentity(prior, work, actor, prior.projectId(), prior.formId(), attemptId);
+        verifyAcceptedAttempt(prior, work);
     }
 
 

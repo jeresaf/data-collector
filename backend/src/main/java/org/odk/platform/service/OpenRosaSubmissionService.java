@@ -117,6 +117,19 @@ public class OpenRosaSubmissionService {
         Optional<Submission> duplicate = submissionRepository
                 .findByFormIdAndInstanceId(form.getId(), instanceId);
         if (duplicate.isPresent()) {
+            String attemptHeader = request.getHeader("X-DataCollector-Attempt-Id");
+            if (attemptHeader != null) {
+                try {
+                    recordWorkService.verifyProtectedReplay(projectId, appUser, formVersion,
+                            instanceId, envelope.deprecatedId() != null,
+                            request.getHeader("X-DataCollector-Work-Item-Id"), attemptHeader,
+                            duplicate.get().getId(), multipartFiles);
+                    return new Receipt(duplicate.get(), instanceId, false, detectSourceClient(request));
+                } catch (ResponseStatusException ex) {
+                    throw new IntakeException(HttpStatus.valueOf(ex.getStatusCode().value()),
+                            ex.getReason() == null ? "Protected replay denied" : ex.getReason());
+                }
+            }
             Map<String, Object> details = auditDetails(
                     projectId, form, formVersion, instanceId, request);
             auditService.log(

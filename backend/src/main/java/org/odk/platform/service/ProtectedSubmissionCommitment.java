@@ -21,8 +21,8 @@ import java.util.UUID;
 /**
  * Versioned digest contract for the protected submission lifecycle.
  * Not an admission decision, retry token, or evidence of a committed write.
- * Deliberately not connected to the legacy intake until the durable admission
- * transaction and matching Android consumer have been qualified.
+ * Shared by the opt-in server admission and verified completion paths.
+ * Android interoperability requires separate exact-contract qualification.
  */
 public final class ProtectedSubmissionCommitment {
     private static final String XML = "xml_submission_file";
@@ -107,6 +107,37 @@ public final class ProtectedSubmissionCommitment {
             total += size;
             require(total <= MAX_TOTAL);
             parts.add(new Part(name, mime, size, hashBounded(part, size)));
+        }
+        return fromDigests(binding, xmlSize, xmlHash, parts);
+    }
+
+    /** Only use after the server has verified the actual persisted bytes and
+     * attachment ownership. This is not a client-supplied manifest parser. */
+    static String fromVerifiedCompletion(Binding binding, RecordWorkService.CompletionEvidence evidence) {
+        require(evidence != null && binding.workId().equals(evidence.workId()) &&
+                binding.sourceId().equals(evidence.sourceSubmissionId()) &&
+                binding.targetVersionId().equals(evidence.targetFormVersionId()) &&
+                binding.instanceId().equals(evidence.instanceId()));
+        List<Part> parts = new ArrayList<>();
+        for (var media : evidence.attachments()) {
+            parts.add(new Part(media.filename(), media.mime(), media.bytes(), media.sha256()));
+        }
+        return fromDigests(binding, evidence.xmlBytes(), evidence.xmlSha256(), parts);
+    }
+
+    private static String fromDigests(Binding binding, long xmlSize, String xmlHash, List<Part> parts) {
+        require(xmlSize > 0 && xmlSize <= MAX_XML && xmlHash != null && xmlHash.matches("[0-9a-f]{64}") &&
+                parts.size() <= MAX_PARTS);
+        long total = xmlSize;
+        var names = new java.util.HashSet<String>();
+        for (Part part : parts) {
+            require(part.filename() != null && part.filename().matches("[A-Za-z0-9._-]{1,255}") &&
+                    !part.filename().contains("..") && names.add(part.filename()) &&
+                    ("image/jpeg".equals(part.mime()) || "image/png".equals(part.mime())) &&
+                    part.bytes() > 0 && part.bytes() <= MAX_MEDIA &&
+                    part.sha256() != null && part.sha256().matches("[0-9a-f]{64}"));
+            total += part.bytes();
+            require(total <= MAX_TOTAL);
         }
         parts.sort(Comparator.comparing(Part::filename));
         MessageDigest commitment = digest();

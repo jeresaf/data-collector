@@ -609,6 +609,13 @@ class OpenRosaRealHttpIntegrationTest {
         assertEquals(view, mapper.readTree(sendM3("POST", reserveUrl, reserve, null).body()));
         UUID attempt = UUID.fromString(view.get("attemptId").asText());
         UUID actor = UUID.fromString(view.get("actorId").asText());
+        String statusUrl = reserveUrl + "/" + attempt;
+        var unbound = sendM3("GET", statusUrl, null, null);
+        assertEquals(200, unbound.statusCode());
+        assertTrue(unbound.headers().firstValue("Cache-Control").orElse("").contains("no-store"));
+        assertEquals("RESERVED_UNBOUND", mapper.readTree(unbound.body()).get("state").asText());
+        assertEquals(401, client.send(HttpRequest.newBuilder(localUri(statusUrl)).GET().build(),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
         String xml = m3Xml("2", instance, null, "U08 exact content");
         var parts = new org.springframework.util.LinkedMultiValueMap<String, org.springframework.web.multipart.MultipartFile>();
         parts.add("xml_submission_file", new org.springframework.mock.web.MockMultipartFile(
@@ -621,6 +628,10 @@ class OpenRosaRealHttpIntegrationTest {
         String bind = mapper.writeValueAsString(java.util.Map.of("wireSha256", digest));
         assertEquals(200, sendM3("POST", bindUrl, bind, null).statusCode());
         assertEquals(200, sendM3("POST", bindUrl, bind, null).statusCode());
+        var bound = mapper.readTree(sendM3("GET", statusUrl, null, null).body());
+        assertEquals("BOUND_EXACT_CONTENT_ADMISSIBLE", bound.get("state").asText());
+        assertEquals(digest, bound.get("attempt").get("wireSha256").asText());
+        assertTrue(bound.get("completion").isNull());
         assertEquals(409, sendM3("POST", bindUrl,
                 mapper.writeValueAsString(java.util.Map.of("wireSha256", "0".repeat(64))), null).statusCode());
         String body = multipartM3(xml).replace("filename=\"record.xml\"", "filename=\"submission.xml\"");
@@ -641,7 +652,7 @@ class OpenRosaRealHttpIntegrationTest {
         var one = client.sendAsync(upload.apply(body), HttpResponse.BodyHandlers.ofString());
         var two = client.sendAsync(upload.apply(body), HttpResponse.BodyHandlers.ofString());
         var statuses = java.util.stream.Stream.of(one.get().statusCode(), two.get().statusCode()).sorted().toList();
-        assertEquals(List.of(201, 409), statuses);
+        assertEquals(List.of(201, 201), statuses);
         UUID accepted = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id=?",
                 UUID.class, instance);
         assertEquals(accepted, jdbcTemplate.queryForObject(
@@ -653,6 +664,25 @@ class OpenRosaRealHttpIntegrationTest {
                 Integer.class, work));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions WHERE instance_id=?",
                 Integer.class, instance));
+        var completed = sendM3("GET", statusUrl, null, null);
+        assertEquals(200, completed.statusCode(), completed.body());
+        var complete = mapper.readTree(completed.body());
+        assertEquals("COMPLETED_VERIFIED", complete.get("state").asText());
+        assertEquals(accepted.toString(), complete.get("completion").get("submissionId").asText());
+        assertEquals(digest, complete.get("attempt").get("wireSha256").asText());
+        assertEquals(201, client.send(upload.apply(body), HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(409, client.send(upload.apply(body.replace("U08 exact content", "U08 changed content")),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(409, sendM3("POST", projectBase + "/submission", body, null).statusCode());
+        // A corrupted persisted XML must never be acknowledged as the original.
+        jdbcTemplate.update("UPDATE submissions SET xml_content=? WHERE id=?", xml + " ", accepted);
+        try {
+            assertEquals(409, sendM3("GET", statusUrl, null, null).statusCode());
+            assertEquals(409, client.send(upload.apply(body), HttpResponse.BodyHandlers.ofString()).statusCode());
+        } finally {
+            jdbcTemplate.update("UPDATE submissions SET xml_content=? WHERE id=?", xml, accepted);
+        }
+        assertEquals(200, sendM3("GET", statusUrl, null, null).statusCode());
         assertEquals(409, sendM3("POST", reserveUrl, reserve, null).statusCode());
     }
 

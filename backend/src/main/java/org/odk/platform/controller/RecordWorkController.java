@@ -88,6 +88,13 @@ public class RecordWorkController {
                 .body(service.bindAttempt(projectId, workId, attemptId, request));
     }
 
+    @GetMapping("/record-work-items/{workId}/protected-attempt/{attemptId}")
+    public ResponseEntity<RecordWorkService.AttemptStatus> attemptStatus(
+            @PathVariable UUID projectId, @PathVariable UUID workId, @PathVariable UUID attemptId) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(service.protectedAttemptStatus(projectId, workId, attemptId));
+    }
+
     @GetMapping("/record-work-items/{workId}/prepare")
     public Preparation prepare(@PathVariable UUID projectId,
                                @PathVariable UUID workId) {
