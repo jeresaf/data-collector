@@ -1,0 +1,48 @@
+# U01 — Consolidation checkpoint, 26 November 2026
+
+Status: development baselines created from qualified heads; **not integrated or release accepted**. No existing PR closed, force-pushed or merged. No deployment, production migration, signing or physical-device certification.
+
+## Exact paired seed baselines
+
+| Repository | development seed | Evidence |
+|---|---|---|
+| data-collector | `2292709bc4951c62a0adf12779adab9e79744f25` | PR #34; dedicated H2/PostgreSQL 45683860526 attempt 2 and general gates 45683875406/45683860349 |
+| collect | `a7740e8f4ead8e2943b0f7a41f7a453e1de0ab36` | PR #100; 45771369719 all four jobs PASS (normal, lost-response, interrupted ingress and upstream) |
+
+Preserve backend main 73ef37e54d3c6f3141b4b2b117ca8771e06e341d; Android master 3fde5d5ab6b37e750560a3c91f718525e0c013e4 and ubos-local 951dafd3d893003493db3c2de2d7568153889165. Backend seed is 225 ahead / 0 behind main; Android seed diverges from ubos-local (6003 ahead / 129 behind) and master (1696 ahead / 329 behind). Upstream history counts are not missing-feature counts.
+
+## Inventory and exception dispositions
+
+118 open drafts before this ledger: 33 backend, 85 Android. Declared PR dependency chains: 27 backend, 82 Android. Verify every exact PR head is an ancestor before closing it; do not infer that from the declared base ref alone. Nine divergent PRs:
+
+| PR | Ahead/behind vs seed | Disposition |
+|---|---:|---|
+| backend #1 | 4/225 | compare contract/workflow/auth tests; never replay blind |
+| backend #23 | 32/225 | documentation covered by descendant #26; verify content |
+| backend #26 | 35/225 | stage 12 documentation files from exact head 53c6853f28b3d2dcd5a7ef240cd206b84a2eb1bb; root roadmap links updated |
+| backend #28 | 212/51 | independent U05 functionality; reconcile code + test-only ledger and common PostgreSQL migration test; no activate trust or production migration |
+| backend #32 | 54/1 | independent HTTPS preflight workflow and two docs; compare with current emulator gate and preserve evidence |
+| backend #33 | 1/1 | alternate completion evidence; compare with qualified #34 before supersession |
+| Android #41 | 4/167 | compare standalone offline recovery instrumentation/workflow/docs with selected chain |
+| Android #71 | 3/40 | compare alternate image-binding implementation/test/workflow |
+| Android #73 | 3/40 | compare alternate image-binding implementation/test/workflow |
+
+U05 PR #28 earlier implementation CI 44964304472 at 77bf79f516e4727e09fd18c230da883201ae64c3 passed disposable schema only; current head efb92f20e852944d66d758823800575ff1353128 remains separately unverified. Both U05 and selected backend modify PostgreSqlContainerMigrationIT.java; require careful reconciliation and real PostgreSQL execution. No native importer or production custody claim.
+
+## Consolidated execution order (proposed 26 November)
+
+1. U01: preserve paired seed, reconcile divergent PRs, verify exact ancestry, source parity, and full CI at integration heads; owner approval before default-branch merges and PR cleanup.
+2. Complete submission/recovery lifecycle (U03/U04/U06/U08): explicit safe retry authority, concurrency, graphical recovery, queue, offline synchronization, amendment lifecycle.
+3. Cross-version editing/mapping (U03/U04/U06/U07): compatibility matrix, consent, actual approved trust and audit, unsupported mappings require re-entry.
+4. Native editor completeness (U04/U06): audit all necessary widget types, reuse native ODK, encrypted persistence.
+5. Periodic reference data and work management (U03/U05): scoped typed Entity Lists, refresh/expiry/revocation, offline behavior and scheduled independent visits.
+6. Generic client/legacy parity (U01/U02): configurable deployment, restore verified missing old customizations.
+7. Web/admin completeness (original M2-M20): assess current code and qualify operational workflows.
+8. Comprehensive integration/security qualification (U01-U08).
+9. Release readiness (U09): physical tests remain deferred for development only, migration/restore/security/pilot and signed release approval.
+
+M0-M21 historical task IDs and U01-U09 canonical milestones unchanged. G01-G06 remain gates. One cohesive feature branch per package per affected repository, logical commits, focused tests plus exact-head package qualification. Never imply that a passing draft or new development branch is integrated or released. Current safe-retry authorization and positive historical-value grants remain disabled.
+
+## Next actions
+
+Verify exact ancestry of all 109 chain heads, reconcile #1/#33 and Android alternatives by file/behavior evidence, integrate #28 with schema/test conflict review and #32 with provenance. Add CI triggers for consolidated branches, repin Android to the qualified integrated backend, run full cross-repository tests. Close/mark superseded old PRs only after evidence and owner approval. No production release before all applicable gates pass.
