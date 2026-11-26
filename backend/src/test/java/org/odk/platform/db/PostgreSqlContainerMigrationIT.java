@@ -103,6 +103,119 @@ class PostgreSqlContainerMigrationIT {
     String submissionsRoot;
 
     @Test
+    void u08JournalRecoveryWaitsForLiveWriterBeforeRollback(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path root) throws Exception {
+        var journal = new org.odk.platform.service.SubmissionAttachmentJournal(jdbcTemplate, transactionManager);
+        org.springframework.test.util.ReflectionTestUtils.setField(journal, "submissionsRoot", root.toString());
+        org.springframework.test.util.ReflectionTestUtils.setField(journal, "enabled", true);
+        var tx = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        var ready = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var pending = new java.util.concurrent.atomic.AtomicReference<
+                org.odk.platform.service.SubmissionAttachmentJournal.Pending>();
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var writer = pool.submit(() -> tx.executeWithoutResult(status -> {
+                try {
+                    var p = journal.begin(UUID.randomUUID());
+                    pending.set(p);
+                    java.nio.file.Files.write(p.target(), new byte[]{1, 2, 3});
+                    journal.forcePayload(p.target());
+                    ready.countDown();
+                    if (!release.await(15, java.util.concurrent.TimeUnit.SECONDS))
+                        throw new IllegalStateException("Writer release missing");
+                    status.setRollbackOnly();
+                } catch (Exception e) { throw new IllegalStateException(e); }
+            }));
+            assertThat(ready.await(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            var recovery = pool.submit(journal::recoverOnce);
+            // While the writer holds its transaction lock, recovery must not
+            // remove either payload or marker. No reliance on exact scheduling:
+            // verify the DB actually has a waiting row lock before release.
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            boolean blocked = false;
+            while (System.nanoTime() < deadline && !recovery.isDone()) {
+                Integer n = jdbcTemplate.queryForObject("""
+                        SELECT COUNT(*) FROM pg_stat_activity
+                        WHERE datname=current_database() AND wait_event_type='Lock'
+                          AND query LIKE '%attachment_journal_locks%'
+                        """, Integer.class);
+                if (n != null && n > 0) { blocked = true; break; }
+                Thread.sleep(50);
+            }
+            assertThat(blocked).as("recovery must acquire the same database lock").isTrue();
+            assertThat(java.nio.file.Files.readAllBytes(pending.get().target())).containsExactly(new byte[]{1, 2, 3});
+            assertThat(java.nio.file.Files.exists(pending.get().marker())).isTrue();
+            release.countDown();
+            writer.get(15, java.util.concurrent.TimeUnit.SECONDS);
+            recovery.get(15, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(java.nio.file.Files.exists(pending.get().target())).isFalse();
+            assertThat(java.nio.file.Files.exists(pending.get().marker())).isFalse();
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            pool.awaitTermination(20, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void u08JournalRecoversAfterWriterJvmIsForciblyTerminated(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path root) throws Exception {
+        var submission = UUID.randomUUID();
+        var namespace = jdbcTemplate.queryForObject(
+                "SELECT namespace FROM attachment_journal_identity WHERE id=1", UUID.class);
+        var javaExecutable = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        var classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+        var command = new ProcessBuilder(javaExecutable, "-cp", classpath,
+                AttachmentJournalCrashWriter.class.getName(), root.toString(), submission.toString());
+        command.environment().put("U08_CRASH_JDBC_URL", POSTGRES.getJdbcUrl());
+        command.environment().put("U08_CRASH_DB_USER", POSTGRES.getUsername());
+        command.environment().put("U08_CRASH_DB_PASSWORD", POSTGRES.getPassword());
+        command.redirectErrorStream(true);
+        command.redirectOutput(root.resolve("writer.log").toFile());
+        var child = command.start();
+        var directory = root.resolve(submission.toString());
+        var markers = root.resolve(".attachment-journal").resolve(namespace.toString());
+        try {
+            var ready = root.resolve("writer-ready");
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+            while (!java.nio.file.Files.exists(ready) && child.isAlive() && System.nanoTime() < deadline) {
+                Thread.sleep(50);
+            }
+            assertThat(child.isAlive()).as("writer process must still own transaction").isTrue();
+            assertThat(java.nio.file.Files.isRegularFile(ready)).isTrue();
+            java.nio.file.Path payload;
+            java.nio.file.Path marker;
+            try (var files = java.nio.file.Files.list(directory);
+                 var pendingFiles = java.nio.file.Files.list(markers)) {
+                payload = files.findFirst().orElseThrow();
+                marker = pendingFiles.findFirst().orElseThrow();
+            }
+            assertThat(java.nio.file.Files.readAllBytes(payload)).containsExactly(new byte[]{11, 22, 33});
+            assertThat(java.nio.file.Files.exists(marker)).isTrue();
+            child.destroyForcibly();
+            assertThat(child.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(child.exitValue()).isNotZero();
+            // A hard kill bypassed Java transaction synchronization. Evidence
+            // must remain until a separate process/context reconciles it.
+            assertThat(java.nio.file.Files.exists(payload)).isTrue();
+            assertThat(java.nio.file.Files.exists(marker)).isTrue();
+            var recovery = new org.odk.platform.service.SubmissionAttachmentJournal(jdbcTemplate, transactionManager);
+            org.springframework.test.util.ReflectionTestUtils.setField(recovery, "submissionsRoot", root.toString());
+            org.springframework.test.util.ReflectionTestUtils.setField(recovery, "enabled", true);
+            assertThat(recovery.recoverOnce()).isEqualTo(1);
+            assertThat(java.nio.file.Files.exists(payload)).isFalse();
+            assertThat(java.nio.file.Files.exists(marker)).isFalse();
+            assertThat(recovery.recoverOnce()).isZero();
+        } finally {
+            if (child.isAlive()) {
+                child.destroyForcibly();
+                child.waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
     void productionFlywayChainBuildsCurrentSchemaOnRealPostgreSql() {
         String databaseVersion =
                 jdbcTemplate.queryForObject("select version()", String.class);
@@ -145,6 +258,9 @@ class PostgreSqlContainerMigrationIT {
         // Normalized submission/reporting schema.
         assertTableExists("submission_answers");
         assertTableExists("submission_attachments");
+        assertTableExists("attachment_journal_identity");
+        assertTableExists("attachment_journal_locks");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM attachment_journal_locks", Integer.class)).isEqualTo(32);
         assertTableExists("submission_events");
         assertTableExists("report_definitions");
         assertTableExists("reference_lists");
@@ -977,7 +1093,8 @@ class PostgreSqlContainerMigrationIT {
                         return row;
                     });
             var attachmentWriter = new org.odk.platform.service.SubmissionAttachmentService(
-                    attachmentRepository, answerRepository);
+                    attachmentRepository, answerRepository,
+                    org.mockito.Mockito.mock(org.odk.platform.service.SubmissionAttachmentJournal.class));
             org.springframework.test.util.ReflectionTestUtils.setField(
                     attachmentWriter, "submissionsRoot", testFiles.toString());
             var savedPath = new java.util.concurrent.atomic.AtomicReference<java.nio.file.Path>();
