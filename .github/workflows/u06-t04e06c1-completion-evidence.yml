@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - codex/u06-t04e06c1-completion-evidence
+      - codex/u01-consolidation
+      - development
   workflow_dispatch:
 
 permissions:

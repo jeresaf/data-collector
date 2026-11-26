@@ -5,6 +5,8 @@ on:
     branches:
       - codex/odk-2026-openrosa-qualification
       - codex/m2-odk2026-integration-gate
+      - codex/u01-consolidation
+      - development
   workflow_dispatch:
 
 permissions:

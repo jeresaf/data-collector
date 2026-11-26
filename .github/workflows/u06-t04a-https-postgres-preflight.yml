@@ -1,0 +1,137 @@
+name: U06-T04A HTTPS PostgreSQL preflight (host only)
+
+on:
+  push:
+    branches:
+      - codex/u06-t04-connected-android-backend-gate
+      - codex/u01-consolidation
+      - development
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: u06-t04a-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tls-postgres-preflight:
+    name: Real Spring Boot + PostgreSQL + verified HTTPS (NOT Android)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: odk_platform
+          POSTGRES_USER: odk_user
+          POSTGRES_PASSWORD: synthetic-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U odk_user -d odk_platform"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - name: Build backend jar without reclassifying the test suite
+        working-directory: backend
+        run: mvn -B -ntp -DskipTests package
+      - name: Start real PostgreSQL/Flyway backend
+        env:
+          SPRING_PROFILES_ACTIVE: prod
+          SPRING_DATASOURCE_URL: jdbc:postgresql://127.0.0.1:5432/odk_platform
+          SPRING_DATASOURCE_USERNAME: odk_user
+          SPRING_DATASOURCE_PASSWORD: synthetic-ci-only
+          STORAGE_LOCAL_PATH: /tmp/u06-t04-private-storage
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/u06-t04-private-storage
+          export JWT_SECRET="$(openssl rand -hex 48)"
+          jar="$(find backend/target -maxdepth 1 -type f -name '*.jar' ! -name '*original*' | head -n1)"
+          test -n "$jar"
+          nohup java -jar "$jar" > /tmp/u06-t04-backend.log 2>&1 &
+          echo "$!" > /tmp/u06-t04-backend.pid
+          for attempt in $(seq 1 90); do
+            if curl --silent --fail http://127.0.0.1:8080/actuator/health >/tmp/u06-t04-health.json; then
+              grep -q '"status":"UP"' /tmp/u06-t04-health.json
+              exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/u06-t04-backend.pid)" 2>/dev/null; then
+              echo "::error::Backend exited before readiness"
+              tail -n 60 /tmp/u06-t04-backend.log | sed -E 's/(password|secret|authorization)[^ ]*/[REDACTED]/Ig'
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "::error::Backend health timeout"
+          exit 1
+      - name: Generate disposable CA and hostname-checked leaf certificate
+        run: |
+          set -euo pipefail
+          mkdir -m 700 -p /tmp/u06-t04-tls
+          cd /tmp/u06-t04-tls
+          openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 1 \
+            -keyout ca.key -out ca.crt -subj '/CN=U06-T04A Ephemeral Test CA' \
+            -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign,cRLSign' >/dev/null 2>&1
+          openssl req -newkey rsa:3072 -nodes -keyout server.key -out server.csr \
+            -subj '/CN=localhost' >/dev/null 2>&1
+          printf '%s\n' 'subjectAltName=DNS:localhost,IP:127.0.0.1,IP:10.0.2.2' \
+            'extendedKeyUsage=serverAuth' 'keyUsage=digitalSignature,keyEncipherment' \
+            > server.ext
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+            -out server.crt -days 1 -sha256 -extfile server.ext >/dev/null 2>&1
+          openssl verify -CAfile ca.crt server.crt
+      - name: Launch disposable TLS gateway (no certificate bypass)
+        run: |
+          set -euo pipefail
+          cat > /tmp/u06-t04-tls/nginx.conf <<'NGINX'
+          events {}
+          http {
+            access_log off;
+            server {
+              listen 8443 ssl;
+              server_name localhost;
+              ssl_certificate /tls/server.crt;
+              ssl_certificate_key /tls/server.key;
+              ssl_protocols TLSv1.2 TLSv1.3;
+              location / {
+                proxy_pass http://127.0.0.1:8080;
+                proxy_set_header Host $host;
+                proxy_set_header X-Forwarded-Proto https;
+              }
+            }
+          }
+          NGINX
+          docker run -d --name u06-t04a-nginx --network host \
+            -v /tmp/u06-t04-tls:/tls:ro \
+            -v /tmp/u06-t04-tls/nginx.conf:/etc/nginx/nginx.conf:ro \
+            nginx:1.27-alpine
+          sleep 3
+          test "$(docker inspect -f '{{.State.Running}}' u06-t04a-nginx)" = true
+      - name: Prove trusted TLS endpoint and reject untrusted identity
+        run: |
+          set -euo pipefail
+          test "$(curl --silent --show-error --fail --cacert /tmp/u06-t04-tls/ca.crt \
+            https://localhost:8443/actuator/health | grep -c '"status":"UP"')" -eq 1
+          if curl --silent --fail https://localhost:8443/actuator/health >/dev/null 2>&1; then
+            echo "::error::Unexpected trust of ephemeral CA without explicit CA bundle"
+            exit 1
+          fi
+          echo "U06-T04A server-side preflight PASS: PostgreSQL/Flyway real backend + verified TLS."
+          echo "Android-to-backend connectivity NOT TESTED. No U06-T04 acceptance."
+      - name: Remove disposable credentials, TLS keys and containers
+        if: always()
+        run: |
+          docker rm -f u06-t04a-nginx >/dev/null 2>&1 || true
+          if [ -f /tmp/u06-t04-backend.pid ]; then
+            kill "$(cat /tmp/u06-t04-backend.pid)" >/dev/null 2>&1 || true
+          fi
+          rm -rf /tmp/u06-t04-tls /tmp/u06-t04-private-storage /tmp/u06-t04-health.json

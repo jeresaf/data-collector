@@ -689,6 +689,26 @@ class OpenRosaRealHttpIntegrationTest {
             .header("Authorization", otherAuth).GET().build(), HttpResponse.BodyHandlers.ofString());
         assertEquals(404, denied.statusCode());
         assertFalse(denied.body().contains(childId.toString()));
+        // Preserve the independent #33 negative authentication and revocation coverage
+        // against the canonical #34 response contract.
+        assertEquals(401, client.send(HttpRequest.newBuilder(localUri(evidenceUrl)).GET().build(),
+            HttpResponse.BodyHandlers.ofString()).statusCode());
+        UUID evidenceOwner = jdbcTemplate.queryForObject(
+            "SELECT submitted_by_id FROM submissions WHERE id = ?", UUID.class, childId);
+        UUID evidenceForm = UUID.fromString(evidence.get("formId").asText());
+        int assignmentChanges = jdbcTemplate.update(
+            "UPDATE app_user_projects SET status = 'INACTIVE' WHERE app_user_id = ? AND project_id = ? AND form_id = ? AND status = 'ACTIVE'",
+            evidenceOwner, TEST_PROJECT_ID, evidenceForm);
+        assertEquals(1, assignmentChanges);
+        try {
+            assertEquals(403, sendM3("GET", evidenceUrl, null, null).statusCode());
+        } finally {
+            jdbcTemplate.update(
+                "UPDATE app_user_projects SET status = 'ACTIVE' WHERE app_user_id = ? AND project_id = ? AND form_id = ?",
+                evidenceOwner, TEST_PROJECT_ID, evidenceForm);
+        }
+        assertFalse(proof.body().contains(jdbcTemplate.queryForObject(
+            "SELECT storage_path FROM submission_attachments WHERE submission_id = ?", String.class, childId)));
         var storedPath = java.nio.file.Path.of(jdbcTemplate.queryForObject(
             "SELECT storage_path FROM submission_attachments WHERE submission_id = ?", String.class, childId));
         byte[] originalBytes = java.nio.file.Files.readAllBytes(storedPath);
