@@ -111,6 +111,9 @@ public class OpenRosaSubmissionService {
             instanceId = "uuid:" + UUID.randomUUID();
         }
 
+        // Serialize reservation and intake for this form, including legacy
+        // OpenRosa uploads. The lock is retained through the intake commit.
+        recordWorkService.lockSubmissionForm(form.getId());
         Optional<Submission> duplicate = submissionRepository
                 .findByFormIdAndInstanceId(form.getId(), instanceId);
         if (duplicate.isPresent()) {
@@ -204,6 +207,15 @@ public class OpenRosaSubmissionService {
                         ex.getReason() == null ? "Stale amendment work" : ex.getReason());
             }
         }
+        UUID protectedAttempt;
+        try {
+            protectedAttempt = recordWorkService.admitProtectedAttempt(projectId, appUser, formVersion,
+                    instanceId, replacement, request.getHeader("X-DataCollector-Work-Item-Id"),
+                    request.getHeader("X-DataCollector-Attempt-Id"), multipartFiles);
+        } catch (ResponseStatusException ex) {
+            throw new IntakeException(HttpStatus.valueOf(ex.getStatusCode().value()),
+                    ex.getReason() == null ? "Protected submission denied" : ex.getReason());
+        }
         Submission saved = replacement
                 ? replacementService.createReplacement(original, submission, envelope.deprecatedId())
                 : submissionRepository.saveAndFlush(submission);
@@ -235,6 +247,7 @@ public class OpenRosaSubmissionService {
         try {
             recordWorkService.completeIfPresent(projectId, appUser, original, saved,
                     formVersion, request.getHeader("X-DataCollector-Work-Item-Id"));
+            if (protectedAttempt != null) recordWorkService.acceptProtectedAttempt(protectedAttempt, saved.getId());
         } catch (ResponseStatusException ex) {
             throw new IntakeException(HttpStatus.valueOf(ex.getStatusCode().value()),
                     ex.getReason() == null ? "Invalid work item" : ex.getReason());

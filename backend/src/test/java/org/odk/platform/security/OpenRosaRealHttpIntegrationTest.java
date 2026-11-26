@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-    properties = "odk.test.m2-real-http=true"
+    properties = {"odk.test.m2-real-http=true", "odk.protected-attempts.enabled=true"}
 )
 @ActiveProfiles("test")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
@@ -583,6 +583,77 @@ class OpenRosaRealHttpIntegrationTest {
             + "\"workType\":\"" + kind + "\","
             + "\"clientRequestId\":\"" + requestId + "\","
             + "\"visitKey\":" + (visitKey == null ? "null" : "\"" + visitKey + "\"") + "}";
+    }
+
+    @Test
+    void u08ProtectedFollowUpRequiresImmutableBoundAttemptAndCommitsExactlyOnce() throws Exception {
+        UUID target = m3VersionTwo();
+        String sourceInstance = "uuid:" + UUID.randomUUID();
+        assertEquals(201, sendM3("POST", projectBase + "/submission",
+                multipartM3(m3Xml("1", sourceInstance, null, "U08 source")), null).statusCode());
+        UUID source = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id=?",
+                UUID.class, sourceInstance);
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var created = sendM3("POST", projectBase + "/record-work-items",
+                m3CreateWork(source, target, "FOLLOW_UP", "u08-" + UUID.randomUUID(),
+                        "u08-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode());
+        UUID work = UUID.fromString(mapper.readTree(created.body()).get("id").asText());
+        String instance = "uuid:" + UUID.randomUUID();
+        String reserveUrl = projectBase + "/record-work-items/" + work + "/protected-attempt";
+        String reserve = mapper.writeValueAsString(java.util.Map.of("clientRequestId", UUID.randomUUID(),
+                "instanceId", instance));
+        var reserved = sendM3("POST", reserveUrl, reserve, null);
+        assertEquals(200, reserved.statusCode(), reserved.body());
+        var view = mapper.readTree(reserved.body());
+        assertEquals(view, mapper.readTree(sendM3("POST", reserveUrl, reserve, null).body()));
+        UUID attempt = UUID.fromString(view.get("attemptId").asText());
+        UUID actor = UUID.fromString(view.get("actorId").asText());
+        String xml = m3Xml("2", instance, null, "U08 exact content");
+        var parts = new org.springframework.util.LinkedMultiValueMap<String, org.springframework.web.multipart.MultipartFile>();
+        parts.add("xml_submission_file", new org.springframework.mock.web.MockMultipartFile(
+                "xml_submission_file", "submission.xml", "text/xml", xml.getBytes(StandardCharsets.UTF_8)));
+        String digest = org.odk.platform.service.ProtectedSubmissionCommitment.fromMultipart(
+                new org.odk.platform.service.ProtectedSubmissionCommitment.Binding(TEST_PROJECT_ID, actor,
+                        work, source, target, attempt, instance,
+                        org.odk.platform.service.RecordWorkService.WorkType.FOLLOW_UP), parts);
+        String bindUrl = reserveUrl + "/" + attempt + "/commitment";
+        String bind = mapper.writeValueAsString(java.util.Map.of("wireSha256", digest));
+        assertEquals(200, sendM3("POST", bindUrl, bind, null).statusCode());
+        assertEquals(200, sendM3("POST", bindUrl, bind, null).statusCode());
+        assertEquals(409, sendM3("POST", bindUrl,
+                mapper.writeValueAsString(java.util.Map.of("wireSha256", "0".repeat(64))), null).statusCode());
+        String body = multipartM3(xml).replace("filename=\"record.xml\"", "filename=\"submission.xml\"");
+        assertEquals(409, sendM3("POST", projectBase + "/submission", body, null).statusCode());
+        assertEquals(409, sendM3("POST", projectBase + "/submission", body, work.toString()).statusCode());
+        java.util.function.Function<String, HttpRequest> upload = content -> HttpRequest.newBuilder(
+                localUri(projectBase + "/submission")).timeout(Duration.ofSeconds(20))
+                .header("Authorization", authorization)
+                .header("X-DataCollector-Work-Item-Id", work.toString())
+                .header("X-DataCollector-Attempt-Id", attempt.toString())
+                .header("Content-Type", "multipart/form-data; boundary=m3Boundary")
+                .POST(HttpRequest.BodyPublishers.ofString(content, StandardCharsets.UTF_8)).build();
+        assertEquals(409, client.send(upload.apply(body.replace("U08 exact content", "U08 changed content")),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions WHERE instance_id=?",
+                Integer.class, instance));
+        // Competing exact requests may only produce one acceptance.
+        var one = client.sendAsync(upload.apply(body), HttpResponse.BodyHandlers.ofString());
+        var two = client.sendAsync(upload.apply(body), HttpResponse.BodyHandlers.ofString());
+        var statuses = java.util.stream.Stream.of(one.get().statusCode(), two.get().statusCode()).sorted().toList();
+        assertEquals(List.of(201, 409), statuses);
+        UUID accepted = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id=?",
+                UUID.class, instance);
+        assertEquals(accepted, jdbcTemplate.queryForObject(
+                "SELECT accepted_submission_id FROM protected_submission_attempts WHERE work_item_id=?",
+                UUID.class, work));
+        assertEquals(accepted, jdbcTemplate.queryForObject(
+                "SELECT completed_submission_id FROM record_work_items WHERE id=?", UUID.class, work));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                Integer.class, work));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions WHERE instance_id=?",
+                Integer.class, instance));
+        assertEquals(409, sendM3("POST", reserveUrl, reserve, null).statusCode());
     }
 
     @Test

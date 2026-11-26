@@ -59,7 +59,195 @@ public class RecordWorkService {
     @Value("${odk.storage.submissions-root:uploads/submissions}")
     private String submissionsRoot;
 
+    @Value("${odk.protected-attempts.enabled:false}")
+    private boolean protectedAttemptsEnabled;
+
     public enum WorkType { AMENDMENT, FOLLOW_UP }
+
+    public record ReserveAttempt(UUID clientRequestId, String instanceId) {}
+    public record BindAttempt(String wireSha256) {}
+    public record AttemptView(UUID workId, UUID attemptId, UUID clientRequestId, UUID projectId,
+            UUID actorId, UUID sourceId, UUID targetVersionId, UUID formId, String instanceId,
+            String wireSha256, UUID acceptedSubmissionId) {}
+
+    private void requireAttemptFeature() {
+        if (!protectedAttemptsEnabled)
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Protected attempts unavailable");
+    }
+
+    private static ResponseStatusException attemptConflict() {
+        return new ResponseStatusException(HttpStatus.CONFLICT, "Protected submission attempt conflict");
+    }
+
+    /** Form row first, then source (for amendments), then work. All OpenRosa
+     * intake paths participate, including unlinked submissions and when the
+     * feature is disabled, so a reserved instance cannot be taken by an
+     * unbound OpenRosa writer. No transaction may release this lock early. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void lockSubmissionForm(UUID formId) {
+        jdbc.queryForObject("SELECT id FROM xforms WHERE id = ? FOR UPDATE", UUID.class, formId);
+    }
+
+    private WorkView lockOwnedWork(AppUser actor, UUID projectId, UUID workId) {
+        return jdbc.query("""
+                SELECT * FROM record_work_items WHERE id = ? AND project_id = ?
+                AND assigned_app_user_id = ? FOR UPDATE
+                """, this::fromRow, workId, projectId, actor.getId()).stream().findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Work item not found"));
+    }
+
+    private AttemptView attempt(UUID workId) {
+        return jdbc.query("""
+                SELECT * FROM protected_submission_attempts WHERE work_item_id = ?
+                """, (rs, row) -> new AttemptView(rs.getObject("work_item_id", UUID.class),
+                rs.getObject("attempt_id", UUID.class), rs.getObject("client_request_id", UUID.class),
+                rs.getObject("project_id", UUID.class), rs.getObject("actor_id", UUID.class),
+                rs.getObject("source_submission_id", UUID.class), rs.getObject("target_form_version_id", UUID.class),
+                rs.getObject("form_id", UUID.class), rs.getString("instance_id"),
+                rs.getString("wire_sha256"), rs.getObject("accepted_submission_id", UUID.class)),
+                workId).stream().findFirst().orElse(null);
+    }
+
+    private FormVersion authorizeAttemptWork(AppUser actor, UUID projectId, WorkView work) {
+        if (work.workType() != WorkType.FOLLOW_UP || !"READY".equals(work.state()))
+            throw attemptConflict();
+        Submission source = accessibleSource(actor, projectId, work.sourceSubmissionId());
+        if (!Objects.equals(source.getInstanceId(), work.sourceInstanceId())) throw attemptConflict();
+        return targetVersion(actor, projectId, work.targetFormVersionId());
+    }
+
+    @Transactional
+    public AttemptView reserveAttempt(UUID projectId, UUID workId, ReserveAttempt request) {
+        requireAttemptFeature();
+        AppUser actor = currentAppUser();
+        requireActiveProject(projectId);
+        if (request == null || request.clientRequestId() == null || request.instanceId() == null)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid attempt request");
+        WorkView initial = getOwnedWork(actor, projectId, workId);
+        FormVersion target = authorizeAttemptWork(actor, projectId, initial);
+        UUID formId = target.getForm().getId();
+        try {
+            new ProtectedSubmissionCommitment.Binding(projectId, actor.getId(), workId,
+                    initial.sourceSubmissionId(), initial.targetFormVersionId(), UUID.randomUUID(),
+                    request.instanceId(), initial.workType());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid attempt instance");
+        }
+        lockSubmissionForm(formId);
+        WorkView work = lockOwnedWork(actor, projectId, workId);
+        if (!formId.equals(authorizeAttemptWork(actor, projectId, work).getForm().getId()))
+            throw attemptConflict();
+        AttemptView prior = attempt(workId);
+        if (prior != null) {
+            if (!prior.clientRequestId().equals(request.clientRequestId()) ||
+                    !prior.instanceId().equals(request.instanceId())) throw attemptConflict();
+            return prior;
+        }
+        if (submissionRepository.findByFormIdAndInstanceId(formId, request.instanceId()).isPresent() ||
+                Boolean.TRUE.equals(jdbc.queryForObject("""
+                    SELECT EXISTS (SELECT 1 FROM protected_submission_attempts WHERE form_id=? AND instance_id=?)
+                    """, Boolean.class, formId, request.instanceId()))) throw attemptConflict();
+        UUID attemptId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO protected_submission_attempts
+                (work_item_id, attempt_id, client_request_id, project_id, actor_id, source_submission_id,
+                 target_form_version_id, form_id, instance_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, workId, attemptId, request.clientRequestId(), projectId, actor.getId(),
+                work.sourceSubmissionId(), work.targetFormVersionId(), formId, request.instanceId());
+        return attempt(workId);
+    }
+
+    @Transactional
+    public AttemptView bindAttempt(UUID projectId, UUID workId, UUID attemptId, BindAttempt request) {
+        requireAttemptFeature();
+        AppUser actor = currentAppUser();
+        requireActiveProject(projectId);
+        if (request == null || request.wireSha256() == null || !request.wireSha256().matches("[0-9a-f]{64}"))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid wire commitment");
+        WorkView initial = getOwnedWork(actor, projectId, workId);
+        UUID formId = authorizeAttemptWork(actor, projectId, initial).getForm().getId();
+        lockSubmissionForm(formId);
+        WorkView work = lockOwnedWork(actor, projectId, workId);
+        if (!formId.equals(authorizeAttemptWork(actor, projectId, work).getForm().getId()))
+            throw attemptConflict();
+        AttemptView prior = attempt(workId);
+        if (prior == null || !prior.attemptId().equals(attemptId) || prior.acceptedSubmissionId() != null)
+            throw attemptConflict();
+        if (prior.wireSha256() != null) {
+            if (!prior.wireSha256().equals(request.wireSha256())) throw attemptConflict();
+            return prior;
+        }
+        if (jdbc.update("""
+                UPDATE protected_submission_attempts SET wire_sha256=?
+                WHERE work_item_id=? AND attempt_id=? AND wire_sha256 IS NULL
+                """, request.wireSha256(), workId, attemptId) != 1) throw attemptConflict();
+        return attempt(workId);
+    }
+
+    /** Called under the form lock, after the existing amendment source lock,
+     * before any submission/attachment writes. Returns the admitted attempt,
+     * or null for an ordinary unreserved OpenRosa write. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public UUID admitProtectedAttempt(UUID projectId, AppUser actor, FormVersion target,
+            String instanceId, boolean replacement, String taskId, String attemptHeader,
+            org.springframework.util.MultiValueMap<String, org.springframework.web.multipart.MultipartFile> parts) {
+        UUID formId = target.getForm().getId();
+        var instanceReservations = jdbc.query("""
+                SELECT work_item_id FROM protected_submission_attempts WHERE form_id=? AND instance_id=?
+                """, (rs, row) -> rs.getObject(1, UUID.class), formId, instanceId);
+        if (taskId == null || taskId.isBlank()) {
+            if (attemptHeader != null || !instanceReservations.isEmpty()) throw attemptConflict();
+            return null;
+        }
+        if (actor == null) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "App User required");
+        UUID workId;
+        try { workId = UUID.fromString(taskId); }
+        catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid work item ID");
+        }
+        WorkView work = lockOwnedWork(actor, projectId, workId);
+        AttemptView prior = attempt(workId);
+        if (prior == null) {
+            if (attemptHeader != null || !instanceReservations.isEmpty()) throw attemptConflict();
+            return null;
+        }
+        if (!protectedAttemptsEnabled || attemptHeader == null ||
+                !prior.attemptId().toString().equals(attemptHeader) ||
+                prior.wireSha256() == null || prior.acceptedSubmissionId() != null ||
+                !prior.projectId().equals(projectId) || !prior.actorId().equals(actor.getId()) ||
+                !prior.sourceId().equals(work.sourceSubmissionId()) ||
+                !prior.targetVersionId().equals(target.getId()) ||
+                !prior.formId().equals(formId) || !prior.instanceId().equals(instanceId) || replacement)
+            throw attemptConflict();
+        AppUser current = currentAppUser();
+        if (!current.getId().equals(actor.getId())) throw attemptConflict();
+        requireActiveProject(projectId);
+        if (!target.getId().equals(authorizeAttemptWork(current, projectId, work).getId()))
+            throw attemptConflict();
+        try {
+            String actual = ProtectedSubmissionCommitment.fromMultipart(
+                    new ProtectedSubmissionCommitment.Binding(projectId, actor.getId(), workId,
+                            prior.sourceId(), target.getId(), prior.attemptId(), instanceId, work.workType()), parts);
+            if (!prior.wireSha256().equals(actual)) throw attemptConflict();
+        } catch (IOException | IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid protected multipart content");
+        }
+        return prior.attemptId();
+    }
+
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void acceptProtectedAttempt(UUID attemptId, UUID submissionId) {
+        if (attemptId == null) return;
+        if (jdbc.update("""
+                UPDATE protected_submission_attempts SET accepted_submission_id=?
+                WHERE attempt_id=? AND wire_sha256 IS NOT NULL AND accepted_submission_id IS NULL
+                AND EXISTS (SELECT 1 FROM record_work_items w
+                    WHERE w.id=protected_submission_attempts.work_item_id
+                    AND w.state='COMPLETED' AND w.completed_submission_id=?)
+                """, submissionId, attemptId, submissionId) != 1) throw attemptConflict();
+    }
+
 
     /** Digest-only evidence of current durable completed work, not resend authority. */
     public record CompletionMedia(String filename, String mime, long bytes, String sha256) { }
