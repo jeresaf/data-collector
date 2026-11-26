@@ -66,6 +66,9 @@ public class RecordWorkService {
 
     public record ReserveAttempt(UUID clientRequestId, String instanceId) {}
     public record BindAttempt(String wireSha256) {}
+    // The Android protocol distinguishes explicit null from missing fields.
+    // Production Jackson defaults to NON_NULL; this DTO's wire shape is fixed.
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.ALWAYS)
     public record AttemptView(UUID workId, UUID attemptId, UUID clientRequestId, UUID projectId,
             UUID actorId, UUID sourceId, UUID targetVersionId, UUID formId, String instanceId,
             String wireSha256, UUID acceptedSubmissionId) {}
@@ -237,6 +240,7 @@ public class RecordWorkService {
     }
 
     public enum AttemptState { RESERVED_UNBOUND, BOUND_EXACT_CONTENT_ADMISSIBLE, COMPLETED_VERIFIED }
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.ALWAYS)
     public record AttemptStatus(AttemptState state, AttemptView attempt, CompletionEvidence completion) {}
 
     private ProtectedSubmissionCommitment.Binding bindingFor(AttemptView prior, WorkView work) {

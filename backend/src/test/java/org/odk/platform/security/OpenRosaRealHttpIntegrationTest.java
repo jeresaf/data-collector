@@ -606,6 +606,9 @@ class OpenRosaRealHttpIntegrationTest {
         var reserved = sendM3("POST", reserveUrl, reserve, null);
         assertEquals(200, reserved.statusCode(), reserved.body());
         var view = mapper.readTree(reserved.body());
+        assertEquals(11, view.size());
+        assertTrue(view.has("wireSha256") && view.get("wireSha256").isNull());
+        assertTrue(view.has("acceptedSubmissionId") && view.get("acceptedSubmissionId").isNull());
         assertEquals(view, mapper.readTree(sendM3("POST", reserveUrl, reserve, null).body()));
         UUID attempt = UUID.fromString(view.get("attemptId").asText());
         UUID actor = UUID.fromString(view.get("actorId").asText());
@@ -613,7 +616,10 @@ class OpenRosaRealHttpIntegrationTest {
         var unbound = sendM3("GET", statusUrl, null, null);
         assertEquals(200, unbound.statusCode());
         assertTrue(unbound.headers().firstValue("Cache-Control").orElse("").contains("no-store"));
-        assertEquals("RESERVED_UNBOUND", mapper.readTree(unbound.body()).get("state").asText());
+        var unboundStatus = mapper.readTree(unbound.body());
+        assertEquals("RESERVED_UNBOUND", unboundStatus.get("state").asText());
+        assertEquals(3, unboundStatus.size());
+        assertTrue(unboundStatus.has("completion") && unboundStatus.get("completion").isNull());
         assertEquals(401, client.send(HttpRequest.newBuilder(localUri(statusUrl)).GET().build(),
                 HttpResponse.BodyHandlers.ofString()).statusCode());
         String xml = m3Xml("2", instance, null, "U08 exact content");
