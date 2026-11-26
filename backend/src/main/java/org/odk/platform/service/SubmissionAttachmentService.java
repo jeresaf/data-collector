@@ -35,6 +35,7 @@ public class SubmissionAttachmentService {
 
     private final SubmissionAttachmentRepository attachmentRepository;
     private final SubmissionAnswerRepository answerRepository;
+    private final SubmissionAttachmentJournal journal;
 
     @Value("${odk.storage.submissions-root:uploads/submissions}")
     private String submissionsRoot;
@@ -43,7 +44,7 @@ public class SubmissionAttachmentService {
      * Stores one respondent-uploaded attachment on local disk and persists its
      * metadata. The returned storage path is absolute and normalized.
      */
-    @Transactional
+    @Transactional(rollbackFor = IOException.class)
     public SubmissionAttachment store(
             Submission submission,
             MultipartFile file,
@@ -59,29 +60,31 @@ public class SubmissionAttachmentService {
 
         String fileName = safeFileName(file.getOriginalFilename());
 
-        Path root = Paths.get(submissionsRoot).toAbsolutePath().normalize();
-        Path submissionDirectory = root
-                .resolve(submission.getId().toString())
-                .normalize();
-
-        if (!submissionDirectory.startsWith(root)) {
-            throw new IllegalArgumentException("Invalid submission storage path");
-        }
-
-        Files.createDirectories(submissionDirectory);
-
-        String storedName = UUID.randomUUID() + "_" + fileName;
-        Path target = submissionDirectory.resolve(storedName).normalize();
-
-        if (!target.startsWith(submissionDirectory)) {
-            throw new IllegalArgumentException("Invalid attachment path");
-        }
-
-        try (InputStream inputStream = file.getInputStream()) {
-            Files.copy(inputStream, target, StandardCopyOption.REPLACE_EXISTING);
+        boolean managed = journal.enabled();
+        Path target;
+        if (managed) {
+            target = journal.begin(submission.getId()).target();
+        } else {
+            Path root = Paths.get(submissionsRoot).toAbsolutePath().normalize();
+            Path directory = root.resolve(submission.getId().toString());
+            Files.createDirectories(directory);
+            if (!directory.toRealPath().equals(directory)) {
+                throw new IOException("Unsafe attachment directory");
+            }
+            target = directory.resolve(UUID.randomUUID() + "_" + fileName);
+            // CREATE_NEW establishes ownership before any cleanup is registered.
+            Files.createFile(target);
+            registerLegacyRollback(target);
         }
 
         try {
+            try (InputStream input = file.getInputStream();
+                 var output = Files.newOutputStream(target, StandardOpenOption.WRITE,
+                         LinkOption.NOFOLLOW_LINKS)) {
+                input.transferTo(output);
+            }
+            if (Files.size(target) != file.getSize()) throw new IOException("Incomplete attachment");
+            if (managed) journal.forcePayload(target);
             SubmissionAnswer linkedAnswer =
                     resolveLinkedAnswer(submission.getId(), fileName);
 
@@ -116,37 +119,29 @@ public class SubmissionAttachmentService {
                     .metadata(metadata)
                     .build();
 
-            SubmissionAttachment saved = attachmentRepository.saveAndFlush(attachment);
-            // The enclosing OpenRosa intake is transactional, but writing a local
-            // file is not part of JDBC rollback. Remove the physical file if a
-            // subsequent work-item, history, or audit operation aborts intake.
-            // Do not remove it on an uncertain completion status: a committed
-            // attachment must never be deleted due to ambiguous transaction state.
-            if (TransactionSynchronizationManager.isActualTransactionActive()
-                    && TransactionSynchronizationManager.isSynchronizationActive()) {
-                TransactionSynchronizationManager.registerSynchronization(
-                        new TransactionSynchronization() {
-                            @Override
-                            public void afterCompletion(int status) {
-                                if (status == TransactionSynchronization.STATUS_ROLLED_BACK) {
-                                    try {
-                                        Files.deleteIfExists(target);
-                                    } catch (IOException cleanupError) {
-                                        log.warn("Unable to clean up rolled-back attachment at {}",
-                                                target, cleanupError);
-                                    }
-                                }
-                            }
-                        });
+            return attachmentRepository.saveAndFlush(attachment);
+        } catch (IOException | RuntimeException ex) {
+            // The journal/transaction callback owns managed cleanup; on an
+            // ambiguous outcome retain evidence rather than remove a committed file.
+            if (!managed) {
+                try { Files.deleteIfExists(target); }
+                catch (IOException ignored) { log.warn("Attachment cleanup failed"); }
             }
-            return saved;
-        } catch (RuntimeException e) {
-            try {
-                Files.deleteIfExists(target);
-            } catch (IOException ignored) {
-                // Preserve the original persistence exception.
-            }
-            throw e;
+            throw ex;
+        }
+    }
+
+    private void registerLegacyRollback(Path target) {
+        if (TransactionSynchronizationManager.isActualTransactionActive() &&
+                TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCompletion(int status) {
+                    if (status == STATUS_ROLLED_BACK) {
+                        try { Files.deleteIfExists(target); }
+                        catch (IOException ignored) { log.warn("Attachment rollback cleanup failed"); }
+                    }
+                }
+            });
         }
     }
 

@@ -313,6 +313,7 @@ public class RecordWorkService {
                 !prior.acceptedSubmissionId().equals(work.completedSubmissionId())) throw attemptConflict();
         // The caller holds the form and work row locks. Reuse the existing
         // ownership, exact link, attachment-answer and physical byte oracle.
+        requireActiveProject(prior.projectId());
         CompletionEvidence evidence = completionEvidenceFor(currentAppUser(), prior.projectId(), work);
         if (!prior.acceptedSubmissionId().equals(evidence.submissionId()) ||
                 !prior.formId().equals(evidence.formId())) throw attemptConflict();

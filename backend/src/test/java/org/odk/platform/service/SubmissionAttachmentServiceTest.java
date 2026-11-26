@@ -54,7 +54,7 @@ class SubmissionAttachmentServiceTest {
 
         SubmissionAttachmentService service =
                 new SubmissionAttachmentService(
-                        attachmentRepository, answerRepository);
+                        attachmentRepository, answerRepository, mock(SubmissionAttachmentJournal.class));
         ReflectionTestUtils.setField(
                 service, "submissionsRoot", tempDir.toString());
 
@@ -96,7 +96,7 @@ class SubmissionAttachmentServiceTest {
 
         SubmissionAttachmentService service =
                 new SubmissionAttachmentService(
-                        attachmentRepository, answerRepository);
+                        attachmentRepository, answerRepository, mock(SubmissionAttachmentJournal.class));
         ReflectionTestUtils.setField(
                 service, "submissionsRoot", tempDir.toString());
 
@@ -140,7 +140,7 @@ class SubmissionAttachmentServiceTest {
         when(answerRepository.findBySubmissionIdAndValueText(
                 submissionId, "visit-photo.jpg")).thenReturn(List.of());
         var service = new SubmissionAttachmentService(
-                attachmentRepository, answerRepository);
+                attachmentRepository, answerRepository, mock(SubmissionAttachmentJournal.class));
         ReflectionTestUtils.setField(service, "submissionsRoot", tempDir.toString());
         var submission = Submission.builder().id(submissionId).build();
         var photo = new MockMultipartFile(
@@ -168,11 +168,33 @@ class SubmissionAttachmentServiceTest {
     }
 
     @Test
+    void partialInputFailureDoesNotLeaveLegacyPayload() throws Exception {
+        var service = new SubmissionAttachmentService(mock(SubmissionAttachmentRepository.class),
+                mock(SubmissionAnswerRepository.class), mock(SubmissionAttachmentJournal.class));
+        ReflectionTestUtils.setField(service, "submissionsRoot", tempDir.toString());
+        var file = mock(org.springframework.web.multipart.MultipartFile.class);
+        when(file.getOriginalFilename()).thenReturn("photo.jpg");
+        when(file.getSize()).thenReturn(5L);
+        when(file.getInputStream()).thenReturn(new java.io.InputStream() {
+            int count;
+            @Override public int read() throws java.io.IOException {
+                if (++count < 3) return 1;
+                throw new java.io.IOException("synthetic partial read");
+            }
+        });
+        assertThrows(java.io.IOException.class, () ->
+                service.store(Submission.builder().id(UUID.randomUUID()).build(), file, ""));
+        try (var files = Files.walk(tempDir)) {
+            assertEquals(0, files.filter(Files::isRegularFile).count());
+        }
+    }
+
+    @Test
     void rejectsPathTraversalFilename() {
         SubmissionAttachmentService service =
                 new SubmissionAttachmentService(
                         mock(SubmissionAttachmentRepository.class),
-                        mock(SubmissionAnswerRepository.class));
+                        mock(SubmissionAnswerRepository.class), mock(SubmissionAttachmentJournal.class));
         ReflectionTestUtils.setField(
                 service, "submissionsRoot", tempDir.toString());
 

@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-    properties = {"odk.test.m2-real-http=true", "odk.protected-attempts.enabled=true", "odk.protected-amendments.enabled=true"}
+    properties = {"odk.test.m2-real-http=true", "odk.protected-attempts.enabled=true", "odk.protected-amendments.enabled=true", "odk.attachment-journal.enabled=true"}
 )
 @ActiveProfiles("test")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
@@ -583,6 +583,99 @@ class OpenRosaRealHttpIntegrationTest {
             + "\"workType\":\"" + kind + "\","
             + "\"clientRequestId\":\"" + requestId + "\","
             + "\"visitKey\":" + (visitKey == null ? "null" : "\"" + visitKey + "\"") + "}";
+    }
+
+    @Autowired private org.odk.platform.service.SubmissionAttachmentJournal attachmentJournal;
+    @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
+    @org.springframework.beans.factory.annotation.Value("${odk.storage.submissions-root:uploads/submissions}")
+    private String journalStorageRoot;
+
+    @Test
+    void u08AttachmentJournalReconcilesRollbackAbandonmentAndCommittedPayload() throws Exception {
+        var tx = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        var root = java.nio.file.Path.of(journalStorageRoot).toAbsolutePath().normalize();
+        var namespace = jdbcTemplate.queryForObject(
+                "SELECT namespace FROM attachment_journal_identity WHERE id=1", UUID.class);
+        var submission = UUID.randomUUID();
+        var file = UUID.randomUUID();
+        var directory = root.resolve(submission.toString());
+        var journalDir = root.resolve(".attachment-journal").resolve(namespace.toString());
+        java.nio.file.Files.createDirectories(directory);
+        java.nio.file.Files.createDirectories(journalDir);
+        var abandoned = directory.resolve("u08-" + namespace + "-" + file + ".media");
+        var marker = journalDir.resolve(submission + "_" + file + ".pending");
+        var legacy = directory.resolve("legacy-photo.jpg");
+        java.nio.file.Files.write(legacy, new byte[] {7, 8, 9});
+        // Simulate the durable state left by a process that died after writing
+        // bytes but before committing attachment metadata. No callback ran.
+        java.nio.file.Files.createFile(marker);
+        java.nio.file.Files.write(abandoned, new byte[] {1, 2, 3});
+        assertTrue(attachmentJournal.recoverOnce() >= 1);
+        assertFalse(java.nio.file.Files.exists(abandoned));
+        assertFalse(java.nio.file.Files.exists(marker));
+        assertArrayEquals(new byte[] {7, 8, 9}, java.nio.file.Files.readAllBytes(legacy));
+
+        var rolledBack = new java.util.concurrent.atomic.AtomicReference<
+                org.odk.platform.service.SubmissionAttachmentJournal.Pending>();
+        tx.executeWithoutResult(status -> {
+            try {
+                var pending = attachmentJournal.begin(submission);
+                rolledBack.set(pending);
+                java.nio.file.Files.write(pending.target(), new byte[] {4, 5});
+                attachmentJournal.forcePayload(pending.target());
+                assertTrue(java.nio.file.Files.exists(pending.marker()));
+                status.setRollbackOnly();
+            } catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+        });
+        assertFalse(java.nio.file.Files.exists(rolledBack.get().target()));
+        assertFalse(java.nio.file.Files.exists(rolledBack.get().marker()));
+
+        // Use an actual committed source and exact persisted attachment row;
+        // recreate only the marker to model lost post-commit callback.
+        String instance = "uuid:" + UUID.randomUUID();
+        String xml = m3Xml("1", instance, null, "U08 attachment journal fixture");
+        assertEquals(201, sendM3("POST", projectBase + "/submission", multipartM3(xml), null).statusCode());
+        UUID committedId = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id=?",
+                UUID.class, instance);
+        byte[] bytes = new byte[] {11, 22, 33};
+        var accepted = tx.execute(status -> {
+            try {
+                var pending = attachmentJournal.begin(committedId);
+                java.nio.file.Files.write(pending.target(), bytes);
+                attachmentJournal.forcePayload(pending.target());
+                jdbcTemplate.update("""
+                        INSERT INTO submission_attachments(id,submission_id,file_name,content_type,file_size,
+                            storage_path,storage_driver,content_hash,created_at)
+                        VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                        """, UUID.randomUUID(), committedId, "journal-test.jpg", "image/jpeg", bytes.length,
+                        pending.target().toString(), "local",
+                        java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)));
+                return pending;
+            } catch (java.io.IOException | java.security.NoSuchAlgorithmException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        assertNotNull(accepted);
+        assertFalse(java.nio.file.Files.exists(accepted.marker()));
+        assertArrayEquals(bytes, java.nio.file.Files.readAllBytes(accepted.target()));
+        java.nio.file.Files.createFile(accepted.marker());
+        assertTrue(attachmentJournal.recoverOnce() >= 1);
+        assertFalse(java.nio.file.Files.exists(accepted.marker()));
+        assertArrayEquals(bytes, java.nio.file.Files.readAllBytes(accepted.target()));
+
+        // Committed content mismatch is not permission to delete or repair.
+        java.nio.file.Files.createFile(accepted.marker());
+        java.nio.file.Files.write(accepted.target(), new byte[] {99});
+        try {
+            attachmentJournal.recoverOnce();
+            assertTrue(java.nio.file.Files.exists(accepted.marker()));
+            assertArrayEquals(new byte[] {99}, java.nio.file.Files.readAllBytes(accepted.target()));
+        } finally {
+            java.nio.file.Files.write(accepted.target(), bytes);
+        }
+        attachmentJournal.recoverOnce();
+        assertFalse(java.nio.file.Files.exists(accepted.marker()));
+        java.nio.file.Files.delete(legacy);
     }
 
     @Test
