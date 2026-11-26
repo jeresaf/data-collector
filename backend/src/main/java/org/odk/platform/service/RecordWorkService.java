@@ -91,6 +91,16 @@ public class RecordWorkService {
         jdbc.queryForObject("SELECT id FROM xforms WHERE id = ? FOR UPDATE", UUID.class, formId);
     }
 
+    /** Legacy/non-OpenRosa creation has no protected work authority. It must
+     * participate in the same form lock and may never consume a reservation. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void denyReservedInstanceForUnlinkedCreation(UUID formId, String instanceId) {
+        lockSubmissionForm(formId);
+        if (Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM protected_submission_attempts WHERE form_id=? AND instance_id=?)
+                """, Boolean.class, formId, instanceId))) throw attemptConflict();
+    }
+
     private WorkView lockOwnedWork(AppUser actor, UUID projectId, UUID workId) {
         return jdbc.query("""
                 SELECT * FROM record_work_items WHERE id = ? AND project_id = ?

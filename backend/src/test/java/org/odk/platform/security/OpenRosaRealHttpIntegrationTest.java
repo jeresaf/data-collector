@@ -638,6 +638,21 @@ class OpenRosaRealHttpIntegrationTest {
         assertEquals("BOUND_EXACT_CONTENT_ADMISSIBLE", bound.get("state").asText());
         assertEquals(digest, bound.get("attempt").get("wireSha256").asText());
         assertTrue(bound.get("completion").isNull());
+        UUID form = UUID.fromString(view.get("formId").asText());
+        // A second collector with access to the same form is still not the owner.
+        String otherUser = "u08_other_" + UUID.randomUUID().toString().replace("-", "");
+        String otherPassword = "synthetic-u08-other-only";
+        UUID otherActor = ensureAppUser(otherUser, otherPassword);
+        ensureAppUserAssignment(otherActor, ensureFixtureOwner(), form);
+        String otherAuth = "Basic " + java.util.Base64.getEncoder().encodeToString(
+                (otherUser + ":" + otherPassword).getBytes(StandardCharsets.UTF_8));
+        assertEquals(404, client.send(HttpRequest.newBuilder(localUri(statusUrl))
+                .header("Authorization", otherAuth).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(404, client.send(HttpRequest.newBuilder(localUri(bindUrl))
+                .header("Authorization", otherAuth).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(bind)).build(),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(409, sendM3("GET", reserveUrl + "/" + UUID.randomUUID(), null, null).statusCode());
         assertEquals(409, sendM3("POST", bindUrl,
                 mapper.writeValueAsString(java.util.Map.of("wireSha256", "0".repeat(64))), null).statusCode());
         String body = multipartM3(xml).replace("filename=\"record.xml\"", "filename=\"submission.xml\"");
@@ -654,6 +669,35 @@ class OpenRosaRealHttpIntegrationTest {
                 HttpResponse.BodyHandlers.ofString()).statusCode());
         assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions WHERE instance_id=?",
                 Integer.class, instance));
+        // A known attempt ID never grants cross-account or revoked-assignment authority.
+        var otherUpload = HttpRequest.newBuilder(localUri(projectBase + "/submission"))
+                .header("Authorization", otherAuth)
+                .header("X-DataCollector-Work-Item-Id", work.toString())
+                .header("X-DataCollector-Attempt-Id", attempt.toString())
+                .header("Content-Type", "multipart/form-data; boundary=m3Boundary")
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
+        assertEquals(404, client.send(otherUpload, HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(1, jdbcTemplate.update("""
+                UPDATE app_user_projects SET status='INACTIVE'
+                WHERE app_user_id=? AND project_id=? AND form_id=? AND status='ACTIVE'
+                """, actor, TEST_PROJECT_ID, form));
+        try {
+            assertEquals(403, sendM3("GET", statusUrl, null, null).statusCode());
+            assertEquals(403, sendM3("POST", bindUrl, bind, null).statusCode());
+            assertEquals(403, client.send(upload.apply(body), HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions WHERE instance_id=?",
+                    Integer.class, instance));
+            assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                    Integer.class, work));
+            assertNull(jdbcTemplate.queryForObject(
+                    "SELECT accepted_submission_id FROM protected_submission_attempts WHERE work_item_id=?",
+                    UUID.class, work));
+        } finally {
+            jdbcTemplate.update("""
+                    UPDATE app_user_projects SET status='ACTIVE'
+                    WHERE app_user_id=? AND project_id=? AND form_id=?
+                    """, actor, TEST_PROJECT_ID, form);
+        }
         // Competing exact requests may only produce one acceptance.
         var one = client.sendAsync(upload.apply(body), HttpResponse.BodyHandlers.ofString());
         var two = client.sendAsync(upload.apply(body), HttpResponse.BodyHandlers.ofString());
@@ -680,6 +724,25 @@ class OpenRosaRealHttpIntegrationTest {
         assertEquals(409, client.send(upload.apply(body.replace("U08 exact content", "U08 changed content")),
                 HttpResponse.BodyHandlers.ofString()).statusCode());
         assertEquals(409, sendM3("POST", projectBase + "/submission", body, null).statusCode());
+        assertEquals(404, client.send(HttpRequest.newBuilder(localUri(statusUrl))
+                .header("Authorization", otherAuth).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(404, client.send(otherUpload, HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(1, jdbcTemplate.update("""
+                UPDATE app_user_projects SET status='INACTIVE'
+                WHERE app_user_id=? AND project_id=? AND form_id=? AND status='ACTIVE'
+                """, actor, TEST_PROJECT_ID, form));
+        try {
+            assertEquals(403, sendM3("GET", statusUrl, null, null).statusCode());
+            assertEquals(403, client.send(upload.apply(body), HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(accepted, jdbcTemplate.queryForObject(
+                    "SELECT accepted_submission_id FROM protected_submission_attempts WHERE work_item_id=?",
+                    UUID.class, work));
+        } finally {
+            jdbcTemplate.update("""
+                    UPDATE app_user_projects SET status='ACTIVE'
+                    WHERE app_user_id=? AND project_id=? AND form_id=?
+                    """, actor, TEST_PROJECT_ID, form);
+        }
         // A corrupted persisted XML must never be acknowledged as the original.
         jdbcTemplate.update("UPDATE submissions SET xml_content=? WHERE id=?", xml + " ", accepted);
         try {
