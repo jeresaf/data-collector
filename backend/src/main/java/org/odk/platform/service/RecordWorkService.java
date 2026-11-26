@@ -429,7 +429,9 @@ public class RecordWorkService {
     /** Digest-only evidence of current durable completed work, not resend authority. */
     public record CompletionMedia(String filename, String mime, long bytes, String sha256) { }
     public record CompletionEvidence(UUID workId, UUID sourceSubmissionId, String sourceInstanceId,
-            UUID targetFormVersionId, UUID formId, String visitKey, UUID submissionId,
+            UUID targetFormVersionId, UUID formId,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.ALWAYS)
+            String visitKey, UUID submissionId,
             String instanceId, int xmlBytes, String xmlSha256, List<CompletionMedia> attachments) { }
 
     @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
