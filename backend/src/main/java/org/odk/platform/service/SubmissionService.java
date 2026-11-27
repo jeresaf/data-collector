@@ -31,6 +31,7 @@ public class SubmissionService {
     private final SubmissionProcessingService processingService;
     private final JavaRosaFormLoader formLoader;
     private final FormVersionService formVersionService;
+    private final RecordWorkService recordWorkService;
 
     /**
      * Process and save a new submission.
@@ -48,6 +49,10 @@ public class SubmissionService {
         // Process the submission
         SubmissionProcessingService.ProcessedSubmission processed = 
             processingService.processSubmission(xmlContent, formDef);
+
+        // This older service has no protected attempt identity. A reservation
+        // may only be consumed through the authoritative OpenRosa intake.
+        recordWorkService.denyReservedInstanceForUnlinkedCreation(form.getId(), processed.getInstanceId());
 
         // Create submission entity
         Submission submission = new Submission();

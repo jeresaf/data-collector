@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-    properties = "odk.test.m2-real-http=true"
+    properties = {"odk.test.m2-real-http=true", "odk.protected-attempts.enabled=true", "odk.protected-amendments.enabled=true", "odk.attachment-journal.enabled=true"}
 )
 @ActiveProfiles("test")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
@@ -583,6 +583,360 @@ class OpenRosaRealHttpIntegrationTest {
             + "\"workType\":\"" + kind + "\","
             + "\"clientRequestId\":\"" + requestId + "\","
             + "\"visitKey\":" + (visitKey == null ? "null" : "\"" + visitKey + "\"") + "}";
+    }
+
+    @Autowired private org.odk.platform.service.SubmissionAttachmentJournal attachmentJournal;
+    @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
+    @org.springframework.beans.factory.annotation.Value("${odk.storage.submissions-root:uploads/submissions}")
+    private String journalStorageRoot;
+
+    @Test
+    void u08AttachmentJournalReconcilesRollbackAbandonmentAndCommittedPayload() throws Exception {
+        var tx = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        var root = java.nio.file.Path.of(journalStorageRoot).toAbsolutePath().normalize();
+        var namespace = jdbcTemplate.queryForObject(
+                "SELECT namespace FROM attachment_journal_identity WHERE id=1", UUID.class);
+        var submission = UUID.randomUUID();
+        var file = UUID.randomUUID();
+        var directory = root.resolve(submission.toString());
+        var journalDir = root.resolve(".attachment-journal").resolve(namespace.toString());
+        java.nio.file.Files.createDirectories(directory);
+        java.nio.file.Files.createDirectories(journalDir);
+        var abandoned = directory.resolve("u08-" + namespace + "-" + file + ".media");
+        var marker = journalDir.resolve(submission + "_" + file + ".pending");
+        var legacy = directory.resolve("legacy-photo.jpg");
+        java.nio.file.Files.write(legacy, new byte[] {7, 8, 9});
+        // Simulate the durable state left by a process that died after writing
+        // bytes but before committing attachment metadata. No callback ran.
+        java.nio.file.Files.createFile(marker);
+        java.nio.file.Files.write(abandoned, new byte[] {1, 2, 3});
+        assertTrue(attachmentJournal.recoverOnce() >= 1);
+        assertFalse(java.nio.file.Files.exists(abandoned));
+        assertFalse(java.nio.file.Files.exists(marker));
+        assertArrayEquals(new byte[] {7, 8, 9}, java.nio.file.Files.readAllBytes(legacy));
+
+        var rolledBack = new java.util.concurrent.atomic.AtomicReference<
+                org.odk.platform.service.SubmissionAttachmentJournal.Pending>();
+        tx.executeWithoutResult(status -> {
+            try {
+                var pending = attachmentJournal.begin(submission);
+                rolledBack.set(pending);
+                java.nio.file.Files.write(pending.target(), new byte[] {4, 5});
+                attachmentJournal.forcePayload(pending.target());
+                assertTrue(java.nio.file.Files.exists(pending.marker()));
+                status.setRollbackOnly();
+            } catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+        });
+        assertFalse(java.nio.file.Files.exists(rolledBack.get().target()));
+        assertFalse(java.nio.file.Files.exists(rolledBack.get().marker()));
+
+        // Use an actual committed source and exact persisted attachment row;
+        // recreate only the marker to model lost post-commit callback.
+        String instance = "uuid:" + UUID.randomUUID();
+        String xml = m3Xml("1", instance, null, "U08 attachment journal fixture");
+        assertEquals(201, sendM3("POST", projectBase + "/submission", multipartM3(xml), null).statusCode());
+        UUID committedId = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id=?",
+                UUID.class, instance);
+        byte[] bytes = new byte[] {11, 22, 33};
+        var accepted = tx.execute(status -> {
+            try {
+                var pending = attachmentJournal.begin(committedId);
+                java.nio.file.Files.write(pending.target(), bytes);
+                attachmentJournal.forcePayload(pending.target());
+                jdbcTemplate.update("""
+                        INSERT INTO submission_attachments(id,submission_id,file_name,content_type,file_size,
+                            storage_path,storage_driver,content_hash,created_at)
+                        VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                        """, UUID.randomUUID(), committedId, "journal-test.jpg", "image/jpeg", bytes.length,
+                        pending.target().toString(), "local",
+                        java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)));
+                return pending;
+            } catch (java.io.IOException | java.security.NoSuchAlgorithmException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        assertNotNull(accepted);
+        assertFalse(java.nio.file.Files.exists(accepted.marker()));
+        assertArrayEquals(bytes, java.nio.file.Files.readAllBytes(accepted.target()));
+        java.nio.file.Files.createFile(accepted.marker());
+        assertTrue(attachmentJournal.recoverOnce() >= 1);
+        assertFalse(java.nio.file.Files.exists(accepted.marker()));
+        assertArrayEquals(bytes, java.nio.file.Files.readAllBytes(accepted.target()));
+
+        // Committed content mismatch is not permission to delete or repair.
+        java.nio.file.Files.createFile(accepted.marker());
+        java.nio.file.Files.write(accepted.target(), new byte[] {99});
+        try {
+            attachmentJournal.recoverOnce();
+            assertTrue(java.nio.file.Files.exists(accepted.marker()));
+            assertArrayEquals(new byte[] {99}, java.nio.file.Files.readAllBytes(accepted.target()));
+        } finally {
+            java.nio.file.Files.write(accepted.target(), bytes);
+        }
+        attachmentJournal.recoverOnce();
+        assertFalse(java.nio.file.Files.exists(accepted.marker()));
+        java.nio.file.Files.delete(legacy);
+    }
+
+    @Test
+    void u08ProtectedAmendmentSerializesSourceAndReplaysWithoutAnotherArchive() throws Exception {
+        UUID target = m3VersionTwo();
+        String sourceInstance = "uuid:" + UUID.randomUUID();
+        String sourceXml = m3Xml("1", sourceInstance, null, "U08 amendment original");
+        assertEquals(201, sendM3("POST", projectBase + "/submission", multipartM3(sourceXml), null).statusCode());
+        UUID source = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id=?",
+                UUID.class, sourceInstance);
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        record Candidate(UUID work, UUID attempt, String instance, String url, String body) {}
+        java.util.List<Candidate> candidates = new java.util.ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            var created = sendM3("POST", projectBase + "/record-work-items",
+                    m3CreateWork(source, target, "AMENDMENT", null, "u08-amend-" + UUID.randomUUID()), null);
+            assertEquals(201, created.statusCode(), created.body());
+            UUID work = UUID.fromString(mapper.readTree(created.body()).get("id").asText());
+            String instance = "uuid:" + UUID.randomUUID();
+            String reserveUrl = projectBase + "/record-work-items/" + work + "/protected-attempt";
+            var reserved = sendM3("POST", reserveUrl, mapper.writeValueAsString(java.util.Map.of(
+                    "clientRequestId", UUID.randomUUID(), "instanceId", instance)), null);
+            assertEquals(200, reserved.statusCode(), reserved.body());
+            var view = mapper.readTree(reserved.body());
+            UUID attempt = UUID.fromString(view.get("attemptId").asText());
+            UUID actor = UUID.fromString(view.get("actorId").asText());
+            String url = reserveUrl + "/" + attempt;
+            String xml = m3Xml("2", instance, sourceInstance, "U08 amendment exact " + i);
+            var parts = new org.springframework.util.LinkedMultiValueMap<String, org.springframework.web.multipart.MultipartFile>();
+            parts.add("xml_submission_file", new org.springframework.mock.web.MockMultipartFile(
+                    "xml_submission_file", "submission.xml", "text/xml", xml.getBytes(StandardCharsets.UTF_8)));
+            String digest = org.odk.platform.service.ProtectedSubmissionCommitment.fromMultipart(
+                    new org.odk.platform.service.ProtectedSubmissionCommitment.Binding(TEST_PROJECT_ID, actor,
+                            work, source, target, attempt, instance,
+                            org.odk.platform.service.RecordWorkService.WorkType.AMENDMENT), parts);
+            assertEquals(200, sendM3("POST", url + "/commitment",
+                    mapper.writeValueAsString(java.util.Map.of("wireSha256", digest)), null).statusCode());
+            assertEquals("BOUND_EXACT_CONTENT_ADMISSIBLE",
+                    mapper.readTree(sendM3("GET", url, null, null).body()).get("state").asText());
+            candidates.add(new Candidate(work, attempt, instance, url,
+                    multipartM3(xml).replace("filename=\"record.xml\"", "filename=\"submission.xml\"")));
+        }
+        java.util.function.BiFunction<Candidate, String, HttpRequest> upload = (c, body) ->
+                HttpRequest.newBuilder(localUri(projectBase + "/submission")).timeout(Duration.ofSeconds(20))
+                    .header("Authorization", authorization)
+                    .header("X-DataCollector-Work-Item-Id", c.work().toString())
+                    .header("X-DataCollector-Attempt-Id", c.attempt().toString())
+                    .header("Content-Type", "multipart/form-data; boundary=m3Boundary")
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
+        Candidate a = candidates.get(0), b = candidates.get(1);
+        assertEquals(409, sendM3("POST", projectBase + "/submission", a.body(), a.work().toString()).statusCode());
+        assertEquals(409, client.send(upload.apply(a, a.body().replace(
+                "<deprecatedID>" + sourceInstance + "</deprecatedID>", "")),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submission_versions WHERE submission_id=?",
+                Integer.class, source));
+        var first = client.sendAsync(upload.apply(a, a.body()), HttpResponse.BodyHandlers.ofString());
+        var second = client.sendAsync(upload.apply(b, b.body()), HttpResponse.BodyHandlers.ofString());
+        int firstStatus = first.get().statusCode(), secondStatus = second.get().statusCode();
+        assertEquals(List.of(201, 409), java.util.stream.Stream.of(firstStatus, secondStatus).sorted().toList());
+        Candidate winner = firstStatus == 201 ? a : b;
+        Candidate loser = firstStatus == 201 ? b : a;
+        assertEquals(409, sendM3("GET", loser.url(), null, null).statusCode());
+        assertEquals(409, client.send(upload.apply(loser, loser.body()), HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(201, client.send(upload.apply(winner, winner.body()), HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(409, client.send(upload.apply(winner, winner.body().replace("U08 amendment exact", "U08 changed")),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
+        UUID child = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id=?", UUID.class, winner.instance());
+        assertEquals(child, jdbcTemplate.queryForObject("SELECT accepted_submission_id FROM protected_submission_attempts WHERE work_item_id=?",
+                UUID.class, winner.work()));
+        assertNull(jdbcTemplate.queryForObject("SELECT accepted_submission_id FROM protected_submission_attempts WHERE work_item_id=?",
+                UUID.class, loser.work()));
+        assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions WHERE instance_id=?", Integer.class, loser.instance()));
+        assertEquals(sourceXml, jdbcTemplate.queryForObject("SELECT xml_content FROM submissions WHERE id=?", String.class, source));
+        assertEquals(sourceXml, jdbcTemplate.queryForObject("SELECT xml_content FROM submission_versions WHERE submission_id=?", String.class, source));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submission_versions WHERE submission_id=?", Integer.class, source));
+        assertEquals(1, jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM record_links WHERE source_submission_id=? AND child_submission_id=?
+                  AND work_item_id=? AND link_type='AMENDMENT' AND visit_key IS NULL
+                """, Integer.class, source, child, winner.work()));
+        var completed = sendM3("GET", winner.url(), null, null);
+        assertEquals(200, completed.statusCode(), completed.body());
+        assertEquals("COMPLETED_VERIFIED", mapper.readTree(completed.body()).get("state").asText());
+        jdbcTemplate.update("UPDATE submission_versions SET xml_content=? WHERE submission_id=?", sourceXml + " ", source);
+        try {
+            assertEquals(409, sendM3("GET", winner.url(), null, null).statusCode());
+            assertEquals(409, client.send(upload.apply(winner, winner.body()), HttpResponse.BodyHandlers.ofString()).statusCode());
+        } finally {
+            jdbcTemplate.update("UPDATE submission_versions SET xml_content=? WHERE submission_id=?", sourceXml, source);
+        }
+        assertEquals(200, sendM3("GET", winner.url(), null, null).statusCode());
+    }
+
+    @Test
+    void u08ProtectedFollowUpRequiresImmutableBoundAttemptAndCommitsExactlyOnce() throws Exception {
+        UUID target = m3VersionTwo();
+        String sourceInstance = "uuid:" + UUID.randomUUID();
+        assertEquals(201, sendM3("POST", projectBase + "/submission",
+                multipartM3(m3Xml("1", sourceInstance, null, "U08 source")), null).statusCode());
+        UUID source = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id=?",
+                UUID.class, sourceInstance);
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var created = sendM3("POST", projectBase + "/record-work-items",
+                m3CreateWork(source, target, "FOLLOW_UP", "u08-" + UUID.randomUUID(),
+                        "u08-" + UUID.randomUUID()), null);
+        assertEquals(201, created.statusCode());
+        UUID work = UUID.fromString(mapper.readTree(created.body()).get("id").asText());
+        String instance = "uuid:" + UUID.randomUUID();
+        String reserveUrl = projectBase + "/record-work-items/" + work + "/protected-attempt";
+        String reserve = mapper.writeValueAsString(java.util.Map.of("clientRequestId", UUID.randomUUID(),
+                "instanceId", instance));
+        var reserved = sendM3("POST", reserveUrl, reserve, null);
+        assertEquals(200, reserved.statusCode(), reserved.body());
+        var view = mapper.readTree(reserved.body());
+        assertEquals(11, view.size());
+        assertTrue(view.has("wireSha256") && view.get("wireSha256").isNull());
+        assertTrue(view.has("acceptedSubmissionId") && view.get("acceptedSubmissionId").isNull());
+        assertEquals(view, mapper.readTree(sendM3("POST", reserveUrl, reserve, null).body()));
+        UUID attempt = UUID.fromString(view.get("attemptId").asText());
+        UUID actor = UUID.fromString(view.get("actorId").asText());
+        String statusUrl = reserveUrl + "/" + attempt;
+        var unbound = sendM3("GET", statusUrl, null, null);
+        assertEquals(200, unbound.statusCode());
+        assertTrue(unbound.headers().firstValue("Cache-Control").orElse("").contains("no-store"));
+        var unboundStatus = mapper.readTree(unbound.body());
+        assertEquals("RESERVED_UNBOUND", unboundStatus.get("state").asText());
+        assertEquals(3, unboundStatus.size());
+        assertTrue(unboundStatus.has("completion") && unboundStatus.get("completion").isNull());
+        assertEquals(401, client.send(HttpRequest.newBuilder(localUri(statusUrl)).GET().build(),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
+        String xml = m3Xml("2", instance, null, "U08 exact content");
+        var parts = new org.springframework.util.LinkedMultiValueMap<String, org.springframework.web.multipart.MultipartFile>();
+        parts.add("xml_submission_file", new org.springframework.mock.web.MockMultipartFile(
+                "xml_submission_file", "submission.xml", "text/xml", xml.getBytes(StandardCharsets.UTF_8)));
+        String digest = org.odk.platform.service.ProtectedSubmissionCommitment.fromMultipart(
+                new org.odk.platform.service.ProtectedSubmissionCommitment.Binding(TEST_PROJECT_ID, actor,
+                        work, source, target, attempt, instance,
+                        org.odk.platform.service.RecordWorkService.WorkType.FOLLOW_UP), parts);
+        String bindUrl = reserveUrl + "/" + attempt + "/commitment";
+        String bind = mapper.writeValueAsString(java.util.Map.of("wireSha256", digest));
+        assertEquals(200, sendM3("POST", bindUrl, bind, null).statusCode());
+        assertEquals(200, sendM3("POST", bindUrl, bind, null).statusCode());
+        var bound = mapper.readTree(sendM3("GET", statusUrl, null, null).body());
+        assertEquals("BOUND_EXACT_CONTENT_ADMISSIBLE", bound.get("state").asText());
+        assertEquals(digest, bound.get("attempt").get("wireSha256").asText());
+        assertTrue(bound.get("completion").isNull());
+        UUID form = UUID.fromString(view.get("formId").asText());
+        // A second collector with access to the same form is still not the owner.
+        String otherUser = "u08_other_" + UUID.randomUUID().toString().replace("-", "");
+        String otherPassword = "synthetic-u08-other-only";
+        UUID otherActor = ensureAppUser(otherUser, otherPassword);
+        ensureAppUserAssignment(otherActor, ensureFixtureOwner(), form);
+        String otherAuth = "Basic " + java.util.Base64.getEncoder().encodeToString(
+                (otherUser + ":" + otherPassword).getBytes(StandardCharsets.UTF_8));
+        assertEquals(404, client.send(HttpRequest.newBuilder(localUri(statusUrl))
+                .header("Authorization", otherAuth).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(404, client.send(HttpRequest.newBuilder(localUri(bindUrl))
+                .header("Authorization", otherAuth).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(bind)).build(),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(409, sendM3("GET", reserveUrl + "/" + UUID.randomUUID(), null, null).statusCode());
+        assertEquals(409, sendM3("POST", bindUrl,
+                mapper.writeValueAsString(java.util.Map.of("wireSha256", "0".repeat(64))), null).statusCode());
+        String body = multipartM3(xml).replace("filename=\"record.xml\"", "filename=\"submission.xml\"");
+        assertEquals(409, sendM3("POST", projectBase + "/submission", body, null).statusCode());
+        assertEquals(409, sendM3("POST", projectBase + "/submission", body, work.toString()).statusCode());
+        java.util.function.Function<String, HttpRequest> upload = content -> HttpRequest.newBuilder(
+                localUri(projectBase + "/submission")).timeout(Duration.ofSeconds(20))
+                .header("Authorization", authorization)
+                .header("X-DataCollector-Work-Item-Id", work.toString())
+                .header("X-DataCollector-Attempt-Id", attempt.toString())
+                .header("Content-Type", "multipart/form-data; boundary=m3Boundary")
+                .POST(HttpRequest.BodyPublishers.ofString(content, StandardCharsets.UTF_8)).build();
+        assertEquals(409, client.send(upload.apply(body.replace("U08 exact content", "U08 changed content")),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions WHERE instance_id=?",
+                Integer.class, instance));
+        // A known attempt ID never grants cross-account or revoked-assignment authority.
+        var otherUpload = HttpRequest.newBuilder(localUri(projectBase + "/submission"))
+                .header("Authorization", otherAuth)
+                .header("X-DataCollector-Work-Item-Id", work.toString())
+                .header("X-DataCollector-Attempt-Id", attempt.toString())
+                .header("Content-Type", "multipart/form-data; boundary=m3Boundary")
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
+        assertEquals(404, client.send(otherUpload, HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(1, jdbcTemplate.update("""
+                UPDATE app_user_projects SET status='INACTIVE'
+                WHERE app_user_id=? AND project_id=? AND form_id=? AND status='ACTIVE'
+                """, actor, TEST_PROJECT_ID, form));
+        try {
+            assertEquals(403, sendM3("GET", statusUrl, null, null).statusCode());
+            assertEquals(403, sendM3("POST", bindUrl, bind, null).statusCode());
+            assertEquals(403, client.send(upload.apply(body), HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions WHERE instance_id=?",
+                    Integer.class, instance));
+            assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                    Integer.class, work));
+            assertNull(jdbcTemplate.queryForObject(
+                    "SELECT accepted_submission_id FROM protected_submission_attempts WHERE work_item_id=?",
+                    UUID.class, work));
+        } finally {
+            jdbcTemplate.update("""
+                    UPDATE app_user_projects SET status='ACTIVE'
+                    WHERE app_user_id=? AND project_id=? AND form_id=?
+                    """, actor, TEST_PROJECT_ID, form);
+        }
+        // Competing exact requests may only produce one acceptance.
+        var one = client.sendAsync(upload.apply(body), HttpResponse.BodyHandlers.ofString());
+        var two = client.sendAsync(upload.apply(body), HttpResponse.BodyHandlers.ofString());
+        var statuses = java.util.stream.Stream.of(one.get().statusCode(), two.get().statusCode()).sorted().toList();
+        assertEquals(List.of(201, 201), statuses);
+        UUID accepted = jdbcTemplate.queryForObject("SELECT id FROM submissions WHERE instance_id=?",
+                UUID.class, instance);
+        assertEquals(accepted, jdbcTemplate.queryForObject(
+                "SELECT accepted_submission_id FROM protected_submission_attempts WHERE work_item_id=?",
+                UUID.class, work));
+        assertEquals(accepted, jdbcTemplate.queryForObject(
+                "SELECT completed_submission_id FROM record_work_items WHERE id=?", UUID.class, work));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM record_links WHERE work_item_id=?",
+                Integer.class, work));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM submissions WHERE instance_id=?",
+                Integer.class, instance));
+        var completed = sendM3("GET", statusUrl, null, null);
+        assertEquals(200, completed.statusCode(), completed.body());
+        var complete = mapper.readTree(completed.body());
+        assertEquals("COMPLETED_VERIFIED", complete.get("state").asText());
+        assertEquals(accepted.toString(), complete.get("completion").get("submissionId").asText());
+        assertEquals(digest, complete.get("attempt").get("wireSha256").asText());
+        assertEquals(201, client.send(upload.apply(body), HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(409, client.send(upload.apply(body.replace("U08 exact content", "U08 changed content")),
+                HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(409, sendM3("POST", projectBase + "/submission", body, null).statusCode());
+        assertEquals(404, client.send(HttpRequest.newBuilder(localUri(statusUrl))
+                .header("Authorization", otherAuth).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(404, client.send(otherUpload, HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(1, jdbcTemplate.update("""
+                UPDATE app_user_projects SET status='INACTIVE'
+                WHERE app_user_id=? AND project_id=? AND form_id=? AND status='ACTIVE'
+                """, actor, TEST_PROJECT_ID, form));
+        try {
+            assertEquals(403, sendM3("GET", statusUrl, null, null).statusCode());
+            assertEquals(403, client.send(upload.apply(body), HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(accepted, jdbcTemplate.queryForObject(
+                    "SELECT accepted_submission_id FROM protected_submission_attempts WHERE work_item_id=?",
+                    UUID.class, work));
+        } finally {
+            jdbcTemplate.update("""
+                    UPDATE app_user_projects SET status='ACTIVE'
+                    WHERE app_user_id=? AND project_id=? AND form_id=?
+                    """, actor, TEST_PROJECT_ID, form);
+        }
+        // A corrupted persisted XML must never be acknowledged as the original.
+        jdbcTemplate.update("UPDATE submissions SET xml_content=? WHERE id=?", xml + " ", accepted);
+        try {
+            assertEquals(409, sendM3("GET", statusUrl, null, null).statusCode());
+            assertEquals(409, client.send(upload.apply(body), HttpResponse.BodyHandlers.ofString()).statusCode());
+        } finally {
+            jdbcTemplate.update("UPDATE submissions SET xml_content=? WHERE id=?", xml, accepted);
+        }
+        assertEquals(200, sendM3("GET", statusUrl, null, null).statusCode());
+        assertEquals(409, sendM3("POST", reserveUrl, reserve, null).statusCode());
     }
 
     @Test

@@ -1256,3 +1256,33 @@ CREATE TABLE typed_mapping_key_ceremony_commitments (
 );
 CREATE INDEX idx_ceremony_commitments_project
     ON typed_mapping_key_ceremony_commitments(project_id, recorded_at);
+
+-- U08 additive protected attempt registry; existing work is not backfilled.
+-- A reservation is immutable and not evidence of receipt. Acceptance is written
+-- in the same database transaction as work completion and submission persistence.
+CREATE TABLE protected_submission_attempts (
+    work_item_id UUID PRIMARY KEY REFERENCES record_work_items(id),
+    attempt_id UUID NOT NULL UNIQUE,
+    client_request_id UUID NOT NULL,
+    project_id UUID NOT NULL REFERENCES projects(id),
+    actor_id UUID NOT NULL REFERENCES app_users(id),
+    source_submission_id UUID NOT NULL REFERENCES submissions(id),
+    target_form_version_id UUID NOT NULL REFERENCES form_versions(id),
+    form_id UUID NOT NULL REFERENCES xforms(id),
+    instance_id VARCHAR(255) NOT NULL,
+    wire_sha256 VARCHAR(64),
+    accepted_submission_id UUID UNIQUE REFERENCES submissions(id),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_protected_attempt_instance UNIQUE(form_id, instance_id),
+    CONSTRAINT ck_protected_attempt_accepted CHECK
+        (accepted_submission_id IS NULL OR wire_sha256 IS NOT NULL)
+);
+
+-- U08: additive database-scoped attachment journal coordination.
+CREATE TABLE attachment_journal_identity (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    namespace UUID NOT NULL UNIQUE
+);
+INSERT INTO attachment_journal_identity (id, namespace) VALUES (1, RANDOM_UUID());
+CREATE TABLE attachment_journal_locks (bucket INTEGER PRIMARY KEY CHECK (bucket BETWEEN 0 AND 31));
+INSERT INTO attachment_journal_locks (bucket) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13),(14),(15),(16),(17),(18),(19),(20),(21),(22),(23),(24),(25),(26),(27),(28),(29),(30),(31);

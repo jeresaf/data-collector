@@ -23,6 +23,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
         "spring.flyway.baseline-on-migrate=true",
         "spring.flyway.validate-on-migrate=true",
         "app.audit.async=false",
+        "odk.protected-attempts.enabled=true",
+        "odk.protected-amendments.enabled=true",
+        "odk.attachment-journal.enabled=true",
         "app.jwt.secret=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
         "app.storage.local.path=${java.io.tmpdir}/odk-m2-http-postgres-it"
     }
