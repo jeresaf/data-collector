@@ -233,6 +233,87 @@ public class TypedMappingRecommendationService {
         return receipt(recommendationId, live, digest, decisions.size());
     }
 
+    public record ExplicitProposalRequest(String recommendationEvidenceSha256, ExplicitMappingManifest manifest) { }
+    public record ExplicitProposalReceipt(UUID recommendationId, String manifestSha256,
+            String recommendationEvidenceSha256, String state, boolean canTransfer, boolean canSubmit) {
+        public ExplicitProposalReceipt {
+            if (canTransfer || canSubmit) throw new IllegalArgumentException("Proposal is not authority");
+        }
+    }
+
+    @Transactional
+    public ExplicitProposalReceipt bindExplicitProposal(UUID projectId, UUID workId, UUID recommendationId,
+            String authorization, ExplicitProposalRequest request) {
+        // Authenticate before locking; recheck under the same READY row lock used by denials.
+        context(projectId, workId, authorization);
+        lockReadyWork(jdbc, projectId, workId);
+        var live = context(projectId, workId, authorization);
+        if (request == null || request.manifest() == null ||
+                !request.manifest().matchesScope(workId, live.sourceSubmissionId(), live.targetFormVersionId(),
+                        live.sourceXFormSha256(), live.targetXFormSha256()))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Explicit proposal scope differs");
+        var rows = jdbc.query("""
+                SELECT client_request_id, reason_code, evidence_sha256, source_xml_sha256
+                FROM typed_mapping_review_recommendations
+                WHERE id=? AND project_id=? AND work_item_id=? AND reviewer_user_id=?
+                """, (rs, n) -> List.of(rs.getString(1), rs.getString(2),
+                    rs.getString(3), rs.getString(4)),
+                recommendationId, projectId, workId, live.reviewerId());
+        if (rows.size() != 1)
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Reviewer recommendation unavailable");
+        var row = rows.get(0);
+        var decisions = storedDecisions(recommendationId);
+        if (!ReasonCode.EXPLICIT_RULE_REVIEW_NEEDED.name().equals(row.get(1)) ||
+                !live.sourceXmlSha256().equals(row.get(3)) ||
+                !row.get(2).equals(request.recommendationEvidenceSha256()) ||
+                !row.get(2).equals(digest(live, row.get(0), ReasonCode.EXPLICIT_RULE_REVIEW_NEEDED, decisions)))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Recommendation evidence changed");
+        var targets = decisions.entrySet().stream()
+                .filter(e -> e.getValue() == Disposition.ESCALATE_FOR_RULE_REVIEW)
+                .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet());
+        var manifest = request.manifest();
+        if (!targets.equals(manifest.rules().stream().map(ExplicitMappingManifest.FieldRule::targetPath)
+                .collect(java.util.stream.Collectors.toSet())))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Explicit proposal differs from review destinations");
+        requireNoDenial(jdbc, recommendationId);
+        String canonical = new String(manifest.canonicalBytes(), StandardCharsets.US_ASCII);
+        String hash = manifest.sha256();
+        var prior = jdbc.query("""
+                SELECT manifest_sha256, manifest_canonical, recommendation_sha256, recorded_by
+                FROM typed_mapping_explicit_proposals WHERE recommendation_id=?
+                """, (rs, n) -> List.of(rs.getString(1), rs.getString(2), rs.getString(3),
+                        rs.getObject(4, UUID.class).toString()), recommendationId);
+        var expected = List.of(hash, canonical, row.get(2), live.reviewerId().toString());
+        if (prior.isEmpty()) {
+            jdbc.update("""
+                    INSERT INTO typed_mapping_explicit_proposals
+                    (recommendation_id, manifest_sha256, manifest_canonical, recommendation_sha256, recorded_by)
+                    VALUES (?,?,?,?,?)
+                    """, recommendationId, hash, canonical, row.get(2), live.reviewerId());
+        } else if (prior.size() != 1 || !prior.get(0).equals(expected)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Explicit proposal cannot be replaced");
+        }
+        return new ExplicitProposalReceipt(recommendationId, hash, row.get(2),
+                "RECORDED_EXPLICIT_PROPOSAL_NO_GRANT", false, false);
+    }
+
+    static void lockReadyWork(JdbcTemplate jdbc, UUID projectId, UUID workId) {
+        var locks = jdbc.query("""
+                SELECT id FROM record_work_items WHERE id=? AND project_id=? AND state='READY'
+                FOR UPDATE
+                """, (rs, n) -> rs.getObject(1, UUID.class), workId, projectId);
+        if (locks.size() != 1)
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Work is not ready");
+    }
+
+    static void requireNoDenial(JdbcTemplate jdbc, UUID recommendationId) {
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM typed_mapping_final_denials WHERE recommendation_id=?",
+                Integer.class, recommendationId);
+        if (count == null || count != 0)
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Recommendation has a final denial veto");
+    }
+
     private SourceData sourceData(UUID projectId, UUID workId) {
         List<SourceData> matches = jdbc.query("""
                 SELECT w.source_submission_id, w.source_instance_id, w.target_form_version_id,

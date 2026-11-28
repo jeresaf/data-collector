@@ -1286,3 +1286,43 @@ CREATE TABLE attachment_journal_identity (
 INSERT INTO attachment_journal_identity (id, namespace) VALUES (1, RANDOM_UUID());
 CREATE TABLE attachment_journal_locks (bucket INTEGER PRIMARY KEY CHECK (bucket BETWEEN 0 AND 31));
 INSERT INTO attachment_journal_locks (bucket) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13),(14),(15),(16),(17),(18),(19),(20),(21),(22),(23),(24),(25),(26),(27),(28),(29),(30),(31);
+
+-- U06 Package 3: non-authorizing explicit mapping provenance.
+-- No backfill, no issuer, no operational grants.
+CREATE TABLE typed_mapping_explicit_proposals (
+    recommendation_id UUID PRIMARY KEY REFERENCES typed_mapping_review_recommendations(id),
+    manifest_sha256 VARCHAR(64) NOT NULL,
+    manifest_canonical VARCHAR(18000) NOT NULL,
+    recommendation_sha256 VARCHAR(64) NOT NULL,
+    recorded_by UUID NOT NULL REFERENCES users(id),
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE typed_mapping_explicit_endorsements (
+    recommendation_id UUID PRIMARY KEY REFERENCES typed_mapping_explicit_proposals(recommendation_id),
+    manifest_sha256 VARCHAR(64) NOT NULL,
+    recommendation_sha256 VARCHAR(64) NOT NULL,
+    reviewer_id UUID NOT NULL REFERENCES users(id),
+    signer_id UUID NOT NULL REFERENCES users(id),
+    evidence_sha256 VARCHAR(64) NOT NULL,
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (reviewer_id <> signer_id)
+);
+
+-- Non-authorizing consent-evidence records. No consent or grants are backfilled.
+CREATE TABLE typed_mapping_consent_evidence (
+    recommendation_id UUID PRIMARY KEY REFERENCES typed_mapping_explicit_endorsements(recommendation_id),
+    endorsement_sha256 VARCHAR(64) NOT NULL,
+    manifest_sha256 VARCHAR(64) NOT NULL,
+    external_evidence_sha256 VARCHAR(64) NOT NULL,
+    attestor_id UUID NOT NULL REFERENCES users(id),
+    expires_epoch_second BIGINT NOT NULL,
+    evidence_sha256 VARCHAR(64) NOT NULL,
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE typed_mapping_consent_withdrawals (
+    recommendation_id UUID PRIMARY KEY REFERENCES typed_mapping_consent_evidence(recommendation_id),
+    consent_evidence_sha256 VARCHAR(64) NOT NULL,
+    recorded_by UUID NOT NULL REFERENCES users(id),
+    reason VARCHAR(32) NOT NULL CHECK (reason IN ('CONSENT_WITHDRAWN','EVIDENCE_INVALID','SECURITY')),
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

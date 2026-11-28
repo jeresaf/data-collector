@@ -61,6 +61,7 @@ class OpenRosaRealHttpIntegrationTest {
                   <meta><instanceID/></meta><name/>
                 </data>
               </instance>
+              <bind nodeset="/data/name" type="string"/>
             </model>
           </h:head>
           <h:body>
@@ -2328,6 +2329,128 @@ class OpenRosaRealHttpIntegrationTest {
         var noIssue = m3d4b2Post(url, f.signerToken(),
             "{\"canIssueGrant\":true,\"canTransfer\":true}");
         assertTrue(noIssue.statusCode() == 404 || noIssue.statusCode() == 405);
+    }
+
+    @Test
+    void u06ExplicitInspectionReusesIndependentReviewerAndExactScope() throws Exception {
+        var f = m3d4b2bFixture();
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String base = m3d4b2b2bNativeUrl(f);
+        var prior = mapper.readTree(m3d4bReviewerGet(base, f.signerToken()).body());
+        UUID work = UUID.fromString(f.workId());
+        var body = mapper.createObjectNode();
+        body.put("workId", work.toString());
+        body.put("sourceSubmissionId", jdbcTemplate.queryForObject(
+                "SELECT source_submission_id FROM record_work_items WHERE id=?", UUID.class, work).toString());
+        body.put("targetFormVersionId", jdbcTemplate.queryForObject(
+                "SELECT target_form_version_id FROM record_work_items WHERE id=?", UUID.class, work).toString());
+        body.put("sourceXFormSha256", prior.get("sourceXFormSha256").asText());
+        body.put("targetXFormSha256", prior.get("targetXFormSha256").asText());
+        var rule = body.putArray("rules").addObject();
+        rule.put("sourcePath", "/data/name");
+        rule.put("targetPath", "/data/name");
+        rule.put("type", "TEXT");
+        String url = base + "/explicit-inspection";
+        var allowed = m3d4b2Post(url, f.signerToken(), body.toString());
+        assertEquals(200, allowed.statusCode(), allowed.body());
+        var proof = mapper.readTree(allowed.body());
+        assertEquals("ADVISORY_EXPLICIT_NATIVE_SCHEMA_ONLY_NO_GRANT", proof.get("state").asText());
+        assertTrue(proof.get("manifestSha256").asText().matches("[0-9a-f]{64}"));
+        assertFalse(proof.get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(proof.get("canTransfer").asBoolean());
+        assertFalse(proof.get("canIssueGrant").asBoolean());
+        assertFalse(allowed.body().contains("NONDISCLOSABLE TEST ANSWER"));
+        var self = m3d4b2Post(url, f.reviewerToken(), body.toString());
+        assertTrue(self.statusCode() == 404 || self.statusCode() == 409);
+        var mobile = m3d4b2Post(url, authorization, body.toString());
+        assertTrue(mobile.statusCode() == 401 || mobile.statusCode() == 403);
+        var proposal = mapper.createObjectNode();
+        proposal.put("recommendationEvidenceSha256", f.recommendationSha256());
+        proposal.set("manifest", body.deepCopy());
+        String proposalUrl = m3d4b2Endpoint(f.workId()) + "/" + f.recommendationId() + "/explicit-proposal";
+        assertEquals(404, m3d4b2Post(proposalUrl, f.signerToken(), proposal.toString()).statusCode());
+        var bound = m3d4b2Post(proposalUrl, f.reviewerToken(), proposal.toString());
+        assertEquals(200, bound.statusCode(), bound.body());
+        assertEquals(bound.body(), m3d4b2Post(proposalUrl, f.reviewerToken(), proposal.toString()).body());
+        var confirmed = m3d4b2Post(url, f.signerToken(), body.toString());
+        assertEquals(200, confirmed.statusCode(), confirmed.body());
+        var confirmedProof = mapper.readTree(confirmed.body());
+        assertEquals("REVIEWER_BOUND_NATIVE_SCHEMA_ONLY_NO_GRANT", confirmedProof.get("state").asText());
+        var changed = proposal.deepCopy();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) changed.get("manifest").get("rules").get(0))
+                .put("sourcePath", "/data/substitute");
+        assertEquals(409, m3d4b2Post(proposalUrl, f.reviewerToken(), changed.toString()).statusCode());
+        assertEquals(409, m3d4b2Post(url, f.signerToken(), changed.get("manifest").toString()).statusCode());
+        // Endorsement only when the actual JavaRosa fixture proves native compatibility.
+        var endorse = mapper.createObjectNode();
+        endorse.set("manifest", body.deepCopy());
+        endorse.put("recommendationEvidenceSha256", f.recommendationSha256());
+        endorse.put("manifestSha256", confirmedProof.get("manifestSha256").asText());
+        var receipt = m3d4b2Post(base + "/explicit-endorsement", f.signerToken(), endorse.toString());
+        assertEquals("NATIVE_EXPLICIT_CANDIDATE_ONLY", confirmedProof.get("fields").get(0).get("state").asText(),
+                confirmed.body());
+        assertEquals(200, receipt.statusCode(), receipt.body());
+        assertFalse(mapper.readTree(receipt.body()).get("canTransfer").asBoolean());
+        assertEquals(receipt.body(), m3d4b2Post(base + "/explicit-endorsement",
+                f.signerToken(), endorse.toString()).body());
+
+        String consentUrl = base + "/consent-evidence";
+        var scope = mapper.createObjectNode();
+        scope.set("manifest", body.deepCopy());
+        scope.put("endorsementSha256", mapper.readTree(receipt.body()).get("evidenceSha256").asText());
+        var attestation = mapper.createObjectNode();
+        attestation.set("scope", scope);
+        attestation.put("externalEvidenceSha256", "e".repeat(64));
+        long expiry = java.time.Instant.now().getEpochSecond() + 3600;
+        attestation.put("expiresEpochSecond", expiry);
+        assertEquals("MISSING_EXTERNAL_CONSENT_EVIDENCE", mapper.readTree(
+                m3d4b2Post(consentUrl + "/inspect", f.signerToken(), scope.toString()).body()).get("state").asText());
+        var mobileConsent = m3d4b2Post(consentUrl, authorization, attestation.toString());
+        assertTrue(mobileConsent.statusCode() == 401 || mobileConsent.statusCode() == 403);
+        attestation.put("expiresEpochSecond", expiry + 86400);
+        assertEquals(400, m3d4b2Post(consentUrl, f.signerToken(), attestation.toString()).statusCode());
+        attestation.put("expiresEpochSecond", expiry);
+        var consent = m3d4b2Post(consentUrl, f.signerToken(), attestation.toString());
+        assertEquals(200, consent.statusCode(), consent.body());
+        var consentEvidence = mapper.readTree(consent.body());
+        assertFalse(consentEvidence.get("canTransfer").asBoolean());
+        assertFalse(consentEvidence.get("canIssueGrant").asBoolean());
+        assertEquals(consent.body(), m3d4b2Post(consentUrl, f.signerToken(), attestation.toString()).body());
+        attestation.put("externalEvidenceSha256", "f".repeat(64));
+        assertEquals(409, m3d4b2Post(consentUrl, f.signerToken(), attestation.toString()).statusCode());
+        attestation.put("externalEvidenceSha256", "e".repeat(64));
+        var status = m3d4b2Post(consentUrl + "/inspect", f.signerToken(), scope.toString());
+        assertEquals(200, status.statusCode(), status.body());
+        assertEquals("EXTERNAL_CONSENT_ATTESTATION_ONLY_NO_GRANT", mapper.readTree(status.body()).get("state").asText());
+        UUID rec = UUID.fromString(f.recommendationId());
+        try {
+            jdbcTemplate.update("UPDATE typed_mapping_consent_evidence SET external_evidence_sha256=? WHERE recommendation_id=?",
+                    "0".repeat(64), rec);
+            assertEquals(409, m3d4b2Post(consentUrl + "/inspect", f.signerToken(), scope.toString()).statusCode());
+        } finally {
+            jdbcTemplate.update("UPDATE typed_mapping_consent_evidence SET external_evidence_sha256=? WHERE recommendation_id=?",
+                    "e".repeat(64), rec);
+        }
+        var withdrawal = mapper.createObjectNode();
+        withdrawal.put("consentEvidenceSha256", consentEvidence.get("evidenceSha256").asText());
+        withdrawal.put("reason", "CONSENT_WITHDRAWN");
+        var withdrawn = m3d4b2Post(consentUrl + "/withdraw", f.signerToken(), withdrawal.toString());
+        assertEquals(200, withdrawn.statusCode(), withdrawn.body());
+        assertEquals(withdrawn.body(), m3d4b2Post(consentUrl + "/withdraw", f.signerToken(), withdrawal.toString()).body());
+        assertEquals("WITHDRAWN_NO_GRANT", mapper.readTree(m3d4b2Post(consentUrl + "/inspect",
+                f.signerToken(), scope.toString()).body()).get("state").asText());
+        assertEquals(409, m3d4b2Post(consentUrl, f.signerToken(), attestation.toString()).statusCode());
+        var denial = mapper.createObjectNode();
+        denial.put("clientRequestId", "explicit-veto-" + UUID.randomUUID());
+        denial.put("reasonCode", "CONSENT_UNCLEAR");
+        denial.put("recommendationEvidenceSha256", f.recommendationSha256());
+        assertEquals(201, m3d4b2Post(m3d4b2bUrl(f), f.signerToken(), denial.toString()).statusCode());
+        assertEquals(409, m3d4b2Post(base + "/explicit-endorsement", f.signerToken(), endorse.toString()).statusCode());
+        rule.put("targetPath", "/data/another");
+        assertEquals(409, m3d4b2Post(url, f.signerToken(), body.toString()).statusCode());
+        rule.put("targetPath", "/data/name");
+        body.put("sourceXFormSha256", "0".repeat(64));
+        assertEquals(409, m3d4b2Post(url, f.signerToken(), body.toString()).statusCode());
     }
 
     @Test

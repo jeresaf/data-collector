@@ -103,6 +103,44 @@ class NativeTypedMappingSchemaProbeTest {
                 List.of("/data/age"), null));
     }
 
+    private ExplicitMappingManifest explicit(String source, String target) {
+        return new ExplicitMappingManifest(java.util.UUID.randomUUID(), java.util.UUID.randomUUID(),
+                java.util.UUID.randomUUID(), "a".repeat(64), "b".repeat(64),
+                List.of(new ExplicitMappingManifest.FieldRule(source, target,
+                        ExplicitMappingManifest.ScalarType.INTEGER)));
+    }
+
+    @Test void explicitRenameRequiresIndependentNativeTypeAgreement() {
+        String old = xform("1", "int");
+        String target = xform("2", "int").replace("/data/age", "/data/years")
+                .replace("<age/>", "<years/>");
+        var proof = NativeTypedMappingSchemaProbe.inspectExplicit(old, target,
+                explicit("/data/age", "/data/years"), javaRosa).get(0);
+        assertEquals("NATIVE_EXPLICIT_CANDIDATE_ONLY", proof.state());
+        assertFalse(proof.canTransfer());
+        assertEquals("INTEGER", proof.sourceNativeType());
+        assertEquals("INTEGER", proof.targetNativeType());
+        var changed = NativeTypedMappingSchemaProbe.inspectExplicit(old,
+                target.replace("type=\"int\"", "type=\"decimal\""),
+                explicit("/data/age", "/data/years"), javaRosa).get(0);
+        assertEquals("BLOCKED_STATIC_POLICY", changed.state());
+    }
+
+    @Test void explicitSchemaRejectsDuplicateAndBlocksInheritedRules() {
+        String old = xform("1", "int"), target = xform("2", "int");
+        var manifest = explicit("/data/age", "/data/age");
+        assertThrows(IllegalArgumentException.class, () ->
+                NativeTypedMappingSchemaProbe.inspectExplicit(old,
+                    target.replace("</model>", "<bind nodeset=\"/data/age\" type=\"int\"/></model>"),
+                    manifest, javaRosa));
+        assertEquals("BLOCKED_STATIC_POLICY", NativeTypedMappingSchemaProbe.inspectExplicit(old,
+                target.replace("</model>", "<bind nodeset=\"/data\" relevant=\"false()\"/></model>"),
+                manifest, javaRosa).get(0).state());
+        assertEquals("BLOCKED_STATIC_POLICY", NativeTypedMappingSchemaProbe.inspectExplicit(old,
+                target.replace("id=\"household\"", "id=\"another\""),
+                manifest, javaRosa).get(0).state());
+    }
+
     @Test
     void evidenceConstructorForbidsAllTransferAndUploadRights() {
         assertThrows(IllegalArgumentException.class, () -> new
