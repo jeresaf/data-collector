@@ -61,6 +61,7 @@ class OpenRosaRealHttpIntegrationTest {
                   <meta><instanceID/></meta><name/>
                 </data>
               </instance>
+              <bind nodeset="/data/name" type="string"/>
             </model>
           </h:head>
           <h:body>
@@ -2386,14 +2387,59 @@ class OpenRosaRealHttpIntegrationTest {
         endorse.put("recommendationEvidenceSha256", f.recommendationSha256());
         endorse.put("manifestSha256", confirmedProof.get("manifestSha256").asText());
         var receipt = m3d4b2Post(base + "/explicit-endorsement", f.signerToken(), endorse.toString());
-        if ("NATIVE_EXPLICIT_CANDIDATE_ONLY".equals(confirmedProof.get("fields").get(0).get("state").asText())) {
-            assertEquals(200, receipt.statusCode(), receipt.body());
-            assertFalse(mapper.readTree(receipt.body()).get("canTransfer").asBoolean());
-            assertEquals(receipt.body(), m3d4b2Post(base + "/explicit-endorsement",
-                    f.signerToken(), endorse.toString()).body());
-        } else {
-            assertEquals(409, receipt.statusCode(), receipt.body());
+        assertEquals("NATIVE_EXPLICIT_CANDIDATE_ONLY", confirmedProof.get("fields").get(0).get("state").asText(),
+                confirmed.body());
+        assertEquals(200, receipt.statusCode(), receipt.body());
+        assertFalse(mapper.readTree(receipt.body()).get("canTransfer").asBoolean());
+        assertEquals(receipt.body(), m3d4b2Post(base + "/explicit-endorsement",
+                f.signerToken(), endorse.toString()).body());
+
+        String consentUrl = base + "/consent-evidence";
+        var scope = mapper.createObjectNode();
+        scope.set("manifest", body.deepCopy());
+        scope.put("endorsementSha256", mapper.readTree(receipt.body()).get("evidenceSha256").asText());
+        var attestation = mapper.createObjectNode();
+        attestation.set("scope", scope);
+        attestation.put("externalEvidenceSha256", "e".repeat(64));
+        long expiry = java.time.Instant.now().getEpochSecond() + 3600;
+        attestation.put("expiresEpochSecond", expiry);
+        assertEquals("MISSING_EXTERNAL_CONSENT_EVIDENCE", mapper.readTree(
+                m3d4b2Post(consentUrl + "/inspect", f.signerToken(), scope.toString()).body()).get("state").asText());
+        var mobileConsent = m3d4b2Post(consentUrl, authorization, attestation.toString());
+        assertTrue(mobileConsent.statusCode() == 401 || mobileConsent.statusCode() == 403);
+        attestation.put("expiresEpochSecond", expiry + 86400);
+        assertEquals(400, m3d4b2Post(consentUrl, f.signerToken(), attestation.toString()).statusCode());
+        attestation.put("expiresEpochSecond", expiry);
+        var consent = m3d4b2Post(consentUrl, f.signerToken(), attestation.toString());
+        assertEquals(200, consent.statusCode(), consent.body());
+        var consentEvidence = mapper.readTree(consent.body());
+        assertFalse(consentEvidence.get("canTransfer").asBoolean());
+        assertFalse(consentEvidence.get("canIssueGrant").asBoolean());
+        assertEquals(consent.body(), m3d4b2Post(consentUrl, f.signerToken(), attestation.toString()).body());
+        attestation.put("externalEvidenceSha256", "f".repeat(64));
+        assertEquals(409, m3d4b2Post(consentUrl, f.signerToken(), attestation.toString()).statusCode());
+        attestation.put("externalEvidenceSha256", "e".repeat(64));
+        var status = m3d4b2Post(consentUrl + "/inspect", f.signerToken(), scope.toString());
+        assertEquals(200, status.statusCode(), status.body());
+        assertEquals("EXTERNAL_CONSENT_ATTESTATION_ONLY_NO_GRANT", mapper.readTree(status.body()).get("state").asText());
+        UUID rec = UUID.fromString(f.recommendationId());
+        try {
+            jdbcTemplate.update("UPDATE typed_mapping_consent_evidence SET external_evidence_sha256=? WHERE recommendation_id=?",
+                    "0".repeat(64), rec);
+            assertEquals(409, m3d4b2Post(consentUrl + "/inspect", f.signerToken(), scope.toString()).statusCode());
+        } finally {
+            jdbcTemplate.update("UPDATE typed_mapping_consent_evidence SET external_evidence_sha256=? WHERE recommendation_id=?",
+                    "e".repeat(64), rec);
         }
+        var withdrawal = mapper.createObjectNode();
+        withdrawal.put("consentEvidenceSha256", consentEvidence.get("evidenceSha256").asText());
+        withdrawal.put("reason", "CONSENT_WITHDRAWN");
+        var withdrawn = m3d4b2Post(consentUrl + "/withdraw", f.signerToken(), withdrawal.toString());
+        assertEquals(200, withdrawn.statusCode(), withdrawn.body());
+        assertEquals(withdrawn.body(), m3d4b2Post(consentUrl + "/withdraw", f.signerToken(), withdrawal.toString()).body());
+        assertEquals("WITHDRAWN_NO_GRANT", mapper.readTree(m3d4b2Post(consentUrl + "/inspect",
+                f.signerToken(), scope.toString()).body()).get("state").asText());
+        assertEquals(409, m3d4b2Post(consentUrl, f.signerToken(), attestation.toString()).statusCode());
         var denial = mapper.createObjectNode();
         denial.put("clientRequestId", "explicit-veto-" + UUID.randomUUID());
         denial.put("reasonCode", "CONSENT_UNCLEAR");
