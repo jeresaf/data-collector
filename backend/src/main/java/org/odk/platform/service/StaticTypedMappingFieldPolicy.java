@@ -82,6 +82,81 @@ public final class StaticTypedMappingFieldPolicy {
         return List.copyOf(result);
     }
 
+    /** Independent, conservative preflight for explicit one-to-one proposals. */
+    public record ExplicitFinding(ExplicitMappingManifest.FieldRule rule, String state) { }
+
+    public static List<ExplicitFinding> inspectExplicit(
+            String sourceXml, String targetXml, ExplicitMappingManifest manifest) {
+        if (manifest == null) throw new IllegalArgumentException("Mapping manifest required");
+        Model old = model(sourceXml);
+        Model next = model(targetXml);
+        // A rename may map only a removed leaf to a genuinely new leaf;
+        // ambiguity anywhere in either inventory blocks the entire proposal.
+        Set<String> oldPaths = explicitInventory(old);
+        Set<String> newPaths = explicitInventory(next);
+        boolean identity = !old.data().getAttribute("id").isBlank() &&
+                old.data().getAttribute("id").equals(next.data().getAttribute("id")) &&
+                !old.data().getAttribute("version").isBlank() &&
+                !next.data().getAttribute("version").isBlank();
+        List<ExplicitFinding> findings = new ArrayList<>();
+        for (var rule : manifest.rules()) {
+            String state;
+            if (!identity || !old.safe() || !next.safe()) {
+                state = "BLOCKED_DYNAMIC_OR_EXTERNAL_FORM";
+            } else if (isMetadata(rule.sourcePath()) || isMetadata(rule.targetPath())) {
+                state = "BLOCKED_METADATA";
+            } else if (!oldPaths.contains(rule.sourcePath()) || !newPaths.contains(rule.targetPath())) {
+                state = "BLOCKED_UNKNOWN_PATH";
+            } else if (!rule.sourcePath().equals(rule.targetPath()) &&
+                    (newPaths.contains(rule.sourcePath()) || oldPaths.contains(rule.targetPath()))) {
+                state = "BLOCKED_RENAME_COLLISION";
+            } else if (!rule.type().name().equals(old.type(rule.sourcePath())) ||
+                    !rule.type().name().equals(next.type(rule.targetPath()))) {
+                state = "BLOCKED_TYPE_OR_UNSUPPORTED";
+            } else {
+                state = "STATIC_EXPLICIT_CANDIDATE_ONLY";
+            }
+            findings.add(new ExplicitFinding(rule, state));
+        }
+        return List.copyOf(findings);
+    }
+
+    private static Set<String> explicitInventory(Model model) {
+        Set<String> paths = new java.util.HashSet<>();
+        Set<String> all = new java.util.HashSet<>();
+        record NodePath(Element element, String path, int depth) { }
+        var pending = new java.util.ArrayDeque<NodePath>();
+        pending.add(new NodePath(model.data(), "/" + model.data().getLocalName(), 1));
+        while (!pending.isEmpty()) {
+            var item = pending.removeLast();
+            if (item.depth() > 80 || all.size() >= 48000 || !all.add(item.path()))
+                throw new IllegalArgumentException("Ambiguous or oversized primary instance");
+            if (!hasElementChild(item.element())) paths.add(item.path());
+            for (Node n = item.element().getFirstChild(); n != null; n = n.getNextSibling()) {
+                if (n instanceof Element e)
+                    pending.add(new NodePath(e, item.path() + "/" + e.getLocalName(), item.depth() + 1));
+            }
+        }
+        // Ref and nodeset are mutually exclusive; do not silently drop
+        // unsupported references or duplicate definitions.
+        for (String kind : List.of("bind", "input", "group")) {
+            Set<String> seen = new java.util.HashSet<>();
+            NodeList nodes = model.document().getElementsByTagNameNS(XF, kind);
+            for (int i = 0; i < nodes.getLength(); i++) {
+                Element e = (Element) nodes.item(i);
+                String ref = e.getAttribute("ref"), nodeset = e.getAttribute("nodeset");
+                if ("group".equals(kind) && ref.isEmpty() && nodeset.isEmpty() && !e.hasAttribute("bind"))
+                    continue;
+                String path = ref.isEmpty() ? nodeset : ref;
+                if ((!ref.isEmpty() && !nodeset.isEmpty()) || e.hasAttribute("bind") ||
+                        !all.contains(path) || !path.matches("/[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*){0,79}") ||
+                        !seen.add(path))
+                    throw new IllegalArgumentException("Ambiguous or unsupported form reference");
+            }
+        }
+        return paths;
+    }
+
     private static boolean isMetadata(String path) {
         String lower = path.toLowerCase(java.util.Locale.ROOT);
         return lower.contains("/meta/") ||
@@ -150,6 +225,8 @@ public final class StaticTypedMappingFieldPolicy {
             factory.setExpandEntityReferences(false);
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+            factory.setAttribute("http://www.oracle.com/xml/jaxp/properties/maxElementDepth", "100");
+            factory.setAttribute("http://www.oracle.com/xml/jaxp/properties/elementAttributeLimit", "100");
             Document doc = factory.newDocumentBuilder().parse(
                     new InputSource(new StringReader(xml)));
             NodeList models = doc.getElementsByTagNameNS(XF, "model");
@@ -164,7 +241,9 @@ public final class StaticTypedMappingFieldPolicy {
             Element instance = (Element) instances.item(0);
             Element data = firstChild(instance);
             if (data == null || firstChild(data) == null ||
-                    instance.hasAttribute("src")) {
+                    instance.hasAttribute("src") ||
+                    java.util.stream.IntStream.range(0, instance.getChildNodes().getLength())
+                        .filter(i -> instance.getChildNodes().item(i) instanceof Element).count() != 1) {
                 throw new IllegalArgumentException("Non-inline instance blocked");
             }
             boolean safe = true;

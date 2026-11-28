@@ -54,6 +54,71 @@ public class NativeTypedMappingInspectionService {
         var permitted = staticPolicy.inspect(
                 projectId, workId, recommendationId, authorization);
 
+        ExactForms forms = exactForms(projectId, workId, recommendationId, permitted);
+
+        List<String> paths = permitted.fields().stream()
+                .map(StaticTypedMappingFieldPolicy.Finding::targetPath).toList();
+        var proof = NativeTypedMappingSchemaProbe.inspect(
+                forms.sourceXForm(), forms.targetXForm(), paths, loader);
+        return new NativeInspection(
+                projectId, workId, recommendationId,
+                permitted.originatingReviewerId(),
+                permitted.independentSignerId(),
+                permitted.sourceXFormSha256(), permitted.targetXFormSha256(),
+                proof, "ADVISORY_NATIVE_SCHEMA_PROOF_ONLY_NO_GRANT",
+                false, false, false, false, false, false);
+    }
+
+    public record ExplicitInspection(UUID projectId, UUID workId, UUID recommendationId,
+            UUID originatingReviewerId, UUID independentSignerId,
+            String recommendationEvidenceSha256, String manifestSha256,
+            List<NativeTypedMappingSchemaProbe.ExplicitEvidence> fields, String state,
+            boolean canApproveMapping, boolean canReadHistoricalAnswers,
+            boolean canIssueGrant, boolean canTransfer, boolean canFinalize, boolean canSubmit) {
+        public ExplicitInspection {
+            fields = List.copyOf(fields);
+            if (canApproveMapping || canReadHistoricalAnswers || canIssueGrant ||
+                    canTransfer || canFinalize || canSubmit)
+                throw new IllegalArgumentException("Explicit inspection cannot grant rights");
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public ExplicitInspection inspectExplicit(UUID projectId, UUID workId, UUID recommendationId,
+            String authorization, ExplicitMappingManifest manifest) {
+        // Reuse fresh independent reviewer/signer policy, evidence rehash and denial veto.
+        var permitted = staticPolicy.inspect(projectId, workId, recommendationId, authorization);
+        ExactForms forms = exactForms(projectId, workId, recommendationId, permitted);
+        UUID sourceId = jdbc.queryForObject(
+                "SELECT source_submission_id FROM record_work_items WHERE id=? AND project_id=?",
+                UUID.class, workId, projectId);
+        UUID targetId = jdbc.queryForObject(
+                "SELECT target_form_version_id FROM record_work_items WHERE id=? AND project_id=?",
+                UUID.class, workId, projectId);
+        if (manifest == null || !manifest.matchesScope(workId, sourceId, targetId,
+                permitted.sourceXFormSha256(), permitted.targetXFormSha256()))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Explicit mapping scope differs");
+        var escalated = permitted.fields().stream().map(StaticTypedMappingFieldPolicy.Finding::targetPath)
+                .collect(java.util.stream.Collectors.toSet());
+        if (!escalated.equals(manifest.rules().stream().map(ExplicitMappingManifest.FieldRule::targetPath)
+                .collect(java.util.stream.Collectors.toSet())))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Mapping destinations differ from reviewed scope");
+        List<NativeTypedMappingSchemaProbe.ExplicitEvidence> proof;
+        try {
+            proof = NativeTypedMappingSchemaProbe.inspectExplicit(
+                    forms.sourceXForm(), forms.targetXForm(), manifest, loader);
+        } catch (IllegalArgumentException rejected) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Explicit schema inspection rejected");
+        }
+        return new ExplicitInspection(projectId, workId, recommendationId,
+                permitted.originatingReviewerId(), permitted.independentSignerId(),
+                permitted.recommendationEvidenceSha256(), manifest.sha256(), proof,
+                "ADVISORY_EXPLICIT_NATIVE_SCHEMA_ONLY_NO_GRANT",
+                false, false, false, false, false, false);
+    }
+
+    private ExactForms exactForms(UUID projectId, UUID workId, UUID recommendationId,
+            TypedMappingPolicyInspectionService.CandidateInspection permitted) {
         // Read exact immutable historical/target form versions, not caller
         // supplied XForms. Work and recommendation are scoped in both joins.
         List<ExactForms> rows = jdbc.query("""
@@ -86,17 +151,7 @@ public class NativeTypedMappingInspectionService {
                     "Exact versions changed after independent reviewer inspection");
         }
 
-        List<String> paths = permitted.fields().stream()
-                .map(StaticTypedMappingFieldPolicy.Finding::targetPath).toList();
-        var proof = NativeTypedMappingSchemaProbe.inspect(
-                forms.sourceXForm(), forms.targetXForm(), paths, loader);
-        return new NativeInspection(
-                projectId, workId, recommendationId,
-                permitted.originatingReviewerId(),
-                permitted.independentSignerId(),
-                permitted.sourceXFormSha256(), permitted.targetXFormSha256(),
-                proof, "ADVISORY_NATIVE_SCHEMA_PROOF_ONLY_NO_GRANT",
-                false, false, false, false, false, false);
+        return forms;
     }
 
     private static String sha256(String text) {

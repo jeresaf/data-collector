@@ -102,6 +102,45 @@ public final class NativeTypedMappingSchemaProbe {
         return List.copyOf(result);
     }
 
+    public record ExplicitEvidence(ExplicitMappingManifest.FieldRule rule, String staticState,
+                                   String sourceNativeType, String targetNativeType, String state) {
+        public boolean canTransfer() { return false; }
+    }
+
+    public static List<ExplicitEvidence> inspectExplicit(String source, String target,
+            ExplicitMappingManifest manifest, JavaRosaFormLoader loader) {
+        if (loader == null) throw new IllegalArgumentException("Independent JavaRosa parser required");
+        var findings = StaticTypedMappingFieldPolicy.inspectExplicit(source, target, manifest);
+        FormDef historical = null, current = null;
+        if (findings.stream().anyMatch(f -> "STATIC_EXPLICIT_CANDIDATE_ONLY".equals(f.state()))) {
+            try {
+                historical = loader.loadFormDef(source);
+                current = loader.loadFormDef(target);
+            } catch (RuntimeException failure) {
+                historical = null;
+                current = null;
+            }
+        }
+        List<ExplicitEvidence> result = new ArrayList<>();
+        for (var finding : findings) {
+            var rule = finding.rule();
+            String a = null, b = null, state;
+            if (!"STATIC_EXPLICIT_CANDIDATE_ONLY".equals(finding.state())) {
+                state = "BLOCKED_STATIC_POLICY";
+            } else if (historical == null || current == null) {
+                state = "BLOCKED_NATIVE_FORM_PARSE";
+            } else {
+                a = nativeType(historical, rule.sourcePath());
+                b = nativeType(current, rule.targetPath());
+                state = rule.type().name().equals(a) && rule.type().name().equals(b)
+                        ? "NATIVE_EXPLICIT_CANDIDATE_ONLY"
+                        : "BLOCKED_STATIC_NATIVE_DISAGREEMENT";
+            }
+            result.add(new ExplicitEvidence(rule, finding.state(), a, b, state));
+        }
+        return List.copyOf(result);
+    }
+
     private static String nativeType(FormDef def, String path) {
         if (def == null || def.getMainInstance() == null ||
                 def.getMainInstance().getRoot() == null) return null;

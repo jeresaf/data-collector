@@ -2331,6 +2331,46 @@ class OpenRosaRealHttpIntegrationTest {
     }
 
     @Test
+    void u06ExplicitInspectionReusesIndependentReviewerAndExactScope() throws Exception {
+        var f = m3d4b2bFixture();
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String base = m3d4b2b2bNativeUrl(f);
+        var prior = mapper.readTree(m3d4bReviewerGet(base, f.signerToken()).body());
+        UUID work = UUID.fromString(f.workId());
+        var body = mapper.createObjectNode();
+        body.put("workId", work.toString());
+        body.put("sourceSubmissionId", jdbcTemplate.queryForObject(
+                "SELECT source_submission_id FROM record_work_items WHERE id=?", UUID.class, work).toString());
+        body.put("targetFormVersionId", jdbcTemplate.queryForObject(
+                "SELECT target_form_version_id FROM record_work_items WHERE id=?", UUID.class, work).toString());
+        body.put("sourceXFormSha256", prior.get("sourceXFormSha256").asText());
+        body.put("targetXFormSha256", prior.get("targetXFormSha256").asText());
+        var rule = body.putArray("rules").addObject();
+        rule.put("sourcePath", "/data/name");
+        rule.put("targetPath", "/data/name");
+        rule.put("type", "TEXT");
+        String url = base + "/explicit-inspection";
+        var allowed = m3d4b2Post(url, f.signerToken(), body.toString());
+        assertEquals(200, allowed.statusCode(), allowed.body());
+        var proof = mapper.readTree(allowed.body());
+        assertEquals("ADVISORY_EXPLICIT_NATIVE_SCHEMA_ONLY_NO_GRANT", proof.get("state").asText());
+        assertTrue(proof.get("manifestSha256").asText().matches("[0-9a-f]{64}"));
+        assertFalse(proof.get("canReadHistoricalAnswers").asBoolean());
+        assertFalse(proof.get("canTransfer").asBoolean());
+        assertFalse(proof.get("canIssueGrant").asBoolean());
+        assertFalse(allowed.body().contains("NONDISCLOSABLE TEST ANSWER"));
+        var self = m3d4b2Post(url, f.reviewerToken(), body.toString());
+        assertTrue(self.statusCode() == 404 || self.statusCode() == 409);
+        var mobile = m3d4b2Post(url, authorization, body.toString());
+        assertTrue(mobile.statusCode() == 401 || mobile.statusCode() == 403);
+        rule.put("targetPath", "/data/another");
+        assertEquals(409, m3d4b2Post(url, f.signerToken(), body.toString()).statusCode());
+        rule.put("targetPath", "/data/name");
+        body.put("sourceXFormSha256", "0".repeat(64));
+        assertEquals(409, m3d4b2Post(url, f.signerToken(), body.toString()).statusCode());
+    }
+
+    @Test
     void m3d4b2b2bChangedRecommendationOrFinalDenialVetoesNativeProof()
             throws Exception {
         var f = m3d4b2bFixture();

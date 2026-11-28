@@ -22,6 +22,17 @@ import java.util.UUID;
 public class NativeTypedMappingInspectionController {
     private final NativeTypedMappingInspectionService service;
 
+    @org.springframework.web.bind.annotation.PostMapping("/{recommendationId}/explicit-inspection")
+    public ResponseEntity<NativeTypedMappingInspectionService.ExplicitInspection> inspectExplicit(
+            @PathVariable UUID projectId, @PathVariable UUID workId,
+            @PathVariable UUID recommendationId,
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @org.springframework.web.bind.annotation.RequestBody
+            org.odk.platform.service.ExplicitMappingManifest manifest) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.inspectExplicit(projectId, workId, recommendationId, authorization, manifest));
+    }
+
     @GetMapping("/{recommendationId}")
     public ResponseEntity<NativeTypedMappingInspectionService.NativeInspection> inspect(
             @PathVariable UUID projectId, @PathVariable UUID workId,
