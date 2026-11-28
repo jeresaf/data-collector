@@ -25,7 +25,7 @@ public record ExplicitMappingManifest(
     private static final Pattern PATH = Pattern.compile(
             "/[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*){1,11}");
     private static final Pattern HASH = Pattern.compile("[0-9a-f]{64}");
-    private static final Set<String> RESERVED = Set.of("meta", "instanceid", "deprecatedid");
+    private static final Set<String> RESERVED = Set.of("meta", "instanceid", "deprecatedid", "deviceid");
 
     public enum ScalarType { TEXT, INTEGER, DECIMAL, DATE }
 

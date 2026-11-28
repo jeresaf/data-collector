@@ -103,6 +103,16 @@ public class NativeTypedMappingInspectionService {
         if (!escalated.equals(manifest.rules().stream().map(ExplicitMappingManifest.FieldRule::targetPath)
                 .collect(java.util.stream.Collectors.toSet())))
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Mapping destinations differ from reviewed scope");
+        var proposal = jdbc.query("""
+                SELECT manifest_sha256, manifest_canonical, recommendation_sha256, recorded_by
+                FROM typed_mapping_explicit_proposals WHERE recommendation_id=?
+                """, (rs, n) -> List.of(rs.getString(1), rs.getString(2), rs.getString(3),
+                        rs.getObject(4, UUID.class).toString()), recommendationId);
+        boolean reviewerBound = !proposal.isEmpty();
+        if (reviewerBound && (proposal.size() != 1 || !proposal.get(0).equals(List.of(
+                manifest.sha256(), new String(manifest.canonicalBytes(), StandardCharsets.US_ASCII),
+                permitted.recommendationEvidenceSha256(), permitted.originatingReviewerId().toString()))))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Explicit reviewer proposal differs");
         List<NativeTypedMappingSchemaProbe.ExplicitEvidence> proof;
         try {
             proof = NativeTypedMappingSchemaProbe.inspectExplicit(
@@ -113,8 +123,60 @@ public class NativeTypedMappingInspectionService {
         return new ExplicitInspection(projectId, workId, recommendationId,
                 permitted.originatingReviewerId(), permitted.independentSignerId(),
                 permitted.recommendationEvidenceSha256(), manifest.sha256(), proof,
-                "ADVISORY_EXPLICIT_NATIVE_SCHEMA_ONLY_NO_GRANT",
+                reviewerBound ? "REVIEWER_BOUND_NATIVE_SCHEMA_ONLY_NO_GRANT" :
+                        "ADVISORY_EXPLICIT_NATIVE_SCHEMA_ONLY_NO_GRANT",
                 false, false, false, false, false, false);
+    }
+
+    public record ExplicitEndorsementRequest(String recommendationEvidenceSha256,
+            String manifestSha256, ExplicitMappingManifest manifest) { }
+    public record ExplicitEndorsementReceipt(UUID recommendationId, UUID signerId,
+            String evidenceSha256, String state, boolean canIssueGrant, boolean canTransfer) {
+        public ExplicitEndorsementReceipt {
+            if (canIssueGrant || canTransfer) throw new IllegalArgumentException("Endorsement is not authority");
+        }
+    }
+
+    @Transactional
+    public ExplicitEndorsementReceipt endorseExplicit(UUID projectId, UUID workId, UUID recommendationId,
+            String authorization, ExplicitEndorsementRequest request) {
+        // First authenticate before taking a lock; repeat policy checks under lock.
+        staticPolicy.inspect(projectId, workId, recommendationId, authorization);
+        TypedMappingRecommendationService.lockReadyWork(jdbc, projectId, workId);
+        if (request == null || request.manifest() == null)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Exact manifest required");
+        var proof = inspectExplicit(projectId, workId, recommendationId, authorization, request.manifest());
+        if (!"REVIEWER_BOUND_NATIVE_SCHEMA_ONLY_NO_GRANT".equals(proof.state()) ||
+                !proof.manifestSha256().equals(request.manifestSha256()) ||
+                !proof.recommendationEvidenceSha256().equals(request.recommendationEvidenceSha256()) ||
+                proof.fields().isEmpty() || proof.fields().stream().anyMatch(
+                    f -> !"NATIVE_EXPLICIT_CANDIDATE_ONLY".equals(f.state())))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Reviewer-bound native evidence required");
+        TypedMappingRecommendationService.requireNoDenial(jdbc, recommendationId);
+        String digest = sha256(String.join("\n", "DC_EXPLICIT_ENDORSEMENT_V1",
+                projectId.toString(), workId.toString(), recommendationId.toString(),
+                proof.originatingReviewerId().toString(), proof.independentSignerId().toString(),
+                proof.recommendationEvidenceSha256(), proof.manifestSha256()));
+        var expected = List.of(proof.manifestSha256(), proof.recommendationEvidenceSha256(),
+                proof.originatingReviewerId().toString(), proof.independentSignerId().toString(), digest);
+        var prior = jdbc.query("""
+                SELECT manifest_sha256, recommendation_sha256, reviewer_id, signer_id, evidence_sha256
+                FROM typed_mapping_explicit_endorsements WHERE recommendation_id=?
+                """, (rs, n) -> List.of(rs.getString(1), rs.getString(2),
+                        rs.getObject(3, UUID.class).toString(), rs.getObject(4, UUID.class).toString(),
+                        rs.getString(5)), recommendationId);
+        if (prior.isEmpty()) {
+            jdbc.update("""
+                    INSERT INTO typed_mapping_explicit_endorsements
+                    (recommendation_id, manifest_sha256, recommendation_sha256, reviewer_id, signer_id, evidence_sha256)
+                    VALUES (?,?,?,?,?,?)
+                    """, recommendationId, proof.manifestSha256(), proof.recommendationEvidenceSha256(),
+                    proof.originatingReviewerId(), proof.independentSignerId(), digest);
+        } else if (prior.size() != 1 || !prior.get(0).equals(expected)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Explicit endorsement cannot be replaced");
+        }
+        return new ExplicitEndorsementReceipt(recommendationId, proof.independentSignerId(), digest,
+                "RECORDED_NATIVE_COMPATIBILITY_ENDORSEMENT_NO_GRANT", false, false);
     }
 
     private ExactForms exactForms(UUID projectId, UUID workId, UUID recommendationId,

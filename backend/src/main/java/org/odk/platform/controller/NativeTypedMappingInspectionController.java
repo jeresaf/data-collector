@@ -33,6 +33,16 @@ public class NativeTypedMappingInspectionController {
                 .body(service.inspectExplicit(projectId, workId, recommendationId, authorization, manifest));
     }
 
+    @org.springframework.web.bind.annotation.PostMapping("/{recommendationId}/explicit-endorsement")
+    public ResponseEntity<NativeTypedMappingInspectionService.ExplicitEndorsementReceipt> endorse(
+            @PathVariable UUID projectId, @PathVariable UUID workId, @PathVariable UUID recommendationId,
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @org.springframework.web.bind.annotation.RequestBody
+            NativeTypedMappingInspectionService.ExplicitEndorsementRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.endorseExplicit(projectId, workId, recommendationId, authorization, request));
+    }
+
     @GetMapping("/{recommendationId}")
     public ResponseEntity<NativeTypedMappingInspectionService.NativeInspection> inspect(
             @PathVariable UUID projectId, @PathVariable UUID workId,

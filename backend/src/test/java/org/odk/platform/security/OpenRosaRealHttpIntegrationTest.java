@@ -2363,6 +2363,43 @@ class OpenRosaRealHttpIntegrationTest {
         assertTrue(self.statusCode() == 404 || self.statusCode() == 409);
         var mobile = m3d4b2Post(url, authorization, body.toString());
         assertTrue(mobile.statusCode() == 401 || mobile.statusCode() == 403);
+        var proposal = mapper.createObjectNode();
+        proposal.put("recommendationEvidenceSha256", f.recommendationSha256());
+        proposal.set("manifest", body.deepCopy());
+        String proposalUrl = m3d4b2Endpoint(f.workId()) + "/" + f.recommendationId() + "/explicit-proposal";
+        assertEquals(404, m3d4b2Post(proposalUrl, f.signerToken(), proposal.toString()).statusCode());
+        var bound = m3d4b2Post(proposalUrl, f.reviewerToken(), proposal.toString());
+        assertEquals(200, bound.statusCode(), bound.body());
+        assertEquals(bound.body(), m3d4b2Post(proposalUrl, f.reviewerToken(), proposal.toString()).body());
+        var confirmed = m3d4b2Post(url, f.signerToken(), body.toString());
+        assertEquals(200, confirmed.statusCode(), confirmed.body());
+        var confirmedProof = mapper.readTree(confirmed.body());
+        assertEquals("REVIEWER_BOUND_NATIVE_SCHEMA_ONLY_NO_GRANT", confirmedProof.get("state").asText());
+        var changed = proposal.deepCopy();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) changed.get("manifest").get("rules").get(0))
+                .put("sourcePath", "/data/substitute");
+        assertEquals(409, m3d4b2Post(proposalUrl, f.reviewerToken(), changed.toString()).statusCode());
+        assertEquals(409, m3d4b2Post(url, f.signerToken(), changed.get("manifest").toString()).statusCode());
+        // Endorsement only when the actual JavaRosa fixture proves native compatibility.
+        var endorse = mapper.createObjectNode();
+        endorse.set("manifest", body.deepCopy());
+        endorse.put("recommendationEvidenceSha256", f.recommendationSha256());
+        endorse.put("manifestSha256", confirmedProof.get("manifestSha256").asText());
+        var receipt = m3d4b2Post(base + "/explicit-endorsement", f.signerToken(), endorse.toString());
+        if ("NATIVE_EXPLICIT_CANDIDATE_ONLY".equals(confirmedProof.get("fields").get(0).get("state").asText())) {
+            assertEquals(200, receipt.statusCode(), receipt.body());
+            assertFalse(mapper.readTree(receipt.body()).get("canTransfer").asBoolean());
+            assertEquals(receipt.body(), m3d4b2Post(base + "/explicit-endorsement",
+                    f.signerToken(), endorse.toString()).body());
+        } else {
+            assertEquals(409, receipt.statusCode(), receipt.body());
+        }
+        var denial = mapper.createObjectNode();
+        denial.put("clientRequestId", "explicit-veto-" + UUID.randomUUID());
+        denial.put("reasonCode", "CONSENT_UNCLEAR");
+        denial.put("recommendationEvidenceSha256", f.recommendationSha256());
+        assertEquals(201, m3d4b2Post(m3d4b2bUrl(f), f.signerToken(), denial.toString()).statusCode());
+        assertEquals(409, m3d4b2Post(base + "/explicit-endorsement", f.signerToken(), endorse.toString()).statusCode());
         rule.put("targetPath", "/data/another");
         assertEquals(409, m3d4b2Post(url, f.signerToken(), body.toString()).statusCode());
         rule.put("targetPath", "/data/name");

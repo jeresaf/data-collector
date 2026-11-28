@@ -28,6 +28,15 @@ public class TypedMappingRecommendationController {
                 .body(service.context(projectId, workId, authorization));
     }
 
+    @PostMapping("/{recommendationId}/explicit-proposal")
+    public ResponseEntity<TypedMappingRecommendationService.ExplicitProposalReceipt> bindExplicit(
+            @PathVariable UUID projectId, @PathVariable UUID workId, @PathVariable UUID recommendationId,
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestBody TypedMappingRecommendationService.ExplicitProposalRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.bindExplicitProposal(projectId, workId, recommendationId, authorization, request));
+    }
+
     @PostMapping
     public ResponseEntity<TypedMappingRecommendationService.RecommendationReceipt> record(
             @PathVariable UUID projectId, @PathVariable UUID workId,
